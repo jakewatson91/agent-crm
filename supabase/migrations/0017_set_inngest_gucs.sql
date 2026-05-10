@@ -1,11 +1,13 @@
--- agent-crm v0: set the Postgres GUCs the pg_net signal/gate triggers depend on.
--- Without these, notify_inngest_signal() and notify_inngest_gate() silently skip,
--- leaving signals queued but never delivered to Inngest cloud.
+-- agent-crm v0: SUPERSEDED.
 --
--- DO NOT commit real secrets here. Apply via:
---   pnpm exec tsx scripts/set_inngest_gucs.ts
--- which reads INNGEST_EVENT_KEY from .env.local at runtime.
+-- This migration originally tried to use ALTER DATABASE SET app.* GUCs to
+-- configure the Inngest publish triggers. Hosted Supabase blocks that for the
+-- postgres user, so the GUC approach is dead.
 --
--- For reference, the resulting commands are:
---   alter database postgres set app.inngest_endpoint = 'https://inn.gs/e/<EVENT_KEY>';
---   alter database postgres set app.inngest_event_key = '<EVENT_KEY>';
+-- Migration 0018 replaces it: notify_inngest_signal/gate read from
+-- Supabase Vault instead, and scripts/setup_inngest_publishing.ts handles
+-- the one-time vault secret creation.
+--
+-- Kept as a placeholder for migration ordering; this file is intentionally
+-- a no-op.
+select 1;
