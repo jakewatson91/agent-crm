@@ -277,6 +277,13 @@ export async function runAgent(
     const post = await callTool(supabase, actor, 'post_to_channel', {
       channel_id, kind: 'claim', body: summary, cites: assertedIds,
     }, meta);
+    // Auditable decision post explaining the extraction reasoning.
+    const reasoning = sanitizeText(((decision as { reasoning?: string }).reasoning ?? '').toString());
+    if (reasoning && post.ok) {
+      await callTool(supabase, actor, 'post_to_channel', {
+        channel_id, kind: 'decision', body: reasoning, cites: assertedIds, parent_post_id: post.target_id,
+      }, meta);
+    }
     return {
       ok: true, action: 'enrich',
       channel_post_id: post.ok ? post.target_id : undefined,
@@ -392,10 +399,12 @@ Each claim should be:
 
 Use object_text for the value. Confidence: 0.95 explicit, 0.7 implied. Skip lower.
 
-Output strictly valid JSON:
-{"facts":[{"predicate":"<verb>","object_text":"<value>","confidence":0.0-1.0},...],"summary":"<1 sentence>"}
+REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.
 
-If nothing genuinely new is extractable, output {"facts":[],"summary":"No new facts; data already known or signal too vague."}`;
+Output strictly valid JSON:
+{"facts":[{"predicate":"<verb>","object_text":"<value>","confidence":0.0-1.0},...],"summary":"<1 sentence>","reasoning":"<why these facts, 1-2 sentences>"}
+
+If nothing genuinely new is extractable, output {"facts":[],"summary":"No new facts; data already known or signal too vague.","reasoning":"<why nothing new>"}`;
 
 function buildUserPrompt(
   agentId: string,
