@@ -11,7 +11,7 @@ import { inngest } from '../client.js';
 export const matchSignal = inngest.createFunction(
   {
     id: 'match-signal',
-    concurrency: { limit: 50, key: 'event.data.workspace_id' },
+    concurrency: { limit: 5, key: 'event.data.workspace_id' },
   },
   { event: 'signal.created' },
   async ({ event, step }) => {

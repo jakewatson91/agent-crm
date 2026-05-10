@@ -6,7 +6,7 @@ import { runAgent } from './agent_logic.js';
  * subscription.matched -> agent.run (if owner is an agent).
  */
 export const onSubscriptionMatched = inngest.createFunction(
-  { id: 'on-subscription-matched', concurrency: { limit: 25, key: 'event.data.workspace_id' } },
+  { id: 'on-subscription-matched', concurrency: { limit: 5, key: 'event.data.workspace_id' } },
   { event: 'subscription.matched' },
   async ({ event, step }) => {
     if (event.data.owner_kind !== 'agent') {
@@ -33,7 +33,7 @@ export const onSubscriptionMatched = inngest.createFunction(
  * step so failures retry independently.
  */
 export const agentRun = inngest.createFunction(
-  { id: 'agent-run', concurrency: { limit: 10, key: 'event.data.workspace_id' } },
+  { id: 'agent-run', concurrency: { limit: 5, key: 'event.data.workspace_id' } },
   { event: 'agent.run' },
   async ({ event, step }) => {
     const result = await step.run('run-agent', async () => {
