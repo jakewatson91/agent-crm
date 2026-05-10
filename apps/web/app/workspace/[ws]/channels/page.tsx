@@ -41,9 +41,9 @@ export default async function OutreachAuditPage({ params }: { params: Promise<{ 
 
   return (
     <section>
-      <h2 style={{ marginTop: 0 }}>Inbox</h2>
+      <h2 style={{ marginTop: 0 }}>Feed</h2>
       <p style={{ color: '#666', fontSize: '.85rem', marginBottom: '1.25rem' }}>
-        What the agent has surfaced. Same data the agent sees via the <code>list_entities</code> MCP tool.
+        What the agent has been doing. Same data the agent sees via the <code>list_entities</code> MCP tool.
         Click a row to walk provenance.
       </p>
 

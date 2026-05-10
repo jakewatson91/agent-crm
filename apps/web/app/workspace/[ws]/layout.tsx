@@ -10,9 +10,9 @@ export default async function WorkspaceLayout({
 }) {
   const { ws } = await params;
   const nav = [
-    { href: `/workspace/${ws}/gates`, label: 'Gates', hint: 'approval inbox · empty = healthy' },
-    { href: `/workspace/${ws}/channels`, label: 'Inbox', hint: 'what the agent surfaced' },
-    { href: `/workspace/${ws}/activity`, label: 'Activity', hint: 'ambient feed' },
+    { href: `/workspace/${ws}/gates`, label: 'Inbox', hint: 'approval queue · empty = healthy' },
+    { href: `/workspace/${ws}/channels`, label: 'Feed', hint: 'what the agent has been doing' },
+    { href: `/workspace/${ws}/activity`, label: 'Activity', hint: 'raw event log' },
     { href: `/workspace/${ws}/sources`, label: 'Sources', hint: 'where signals come from' },
     { href: `/workspace/${ws}/agents`, label: 'Agents', hint: 'saved filter rules' },
     { href: `/workspace/${ws}/query`, label: 'Query', hint: 'ad-hoc pull' },

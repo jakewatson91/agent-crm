@@ -95,9 +95,9 @@ export default function GatesPage() {
 
   return (
     <section>
-      <h2 style={{ marginTop: 0 }}>Gates</h2>
+      <h2 style={{ marginTop: 0 }}>Inbox</h2>
       <p style={{ color: '#666', fontSize: '.9rem' }}>
-        Empty inbox is the success state. Items here are exception cases the system flagged for you.
+        Approval queue. Empty is the success state. Items here are exceptions the agent flagged for you.
         For draft posts: copy → paste into your email tool → approve once sent.
       </p>
 
