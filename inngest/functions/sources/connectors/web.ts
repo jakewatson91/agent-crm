@@ -225,24 +225,57 @@ function normalizeDomain(url: string | undefined | null): string | null {
   } catch { return null; }
 }
 
+/** Reject candidate company names that match user-handle shape: lowercase, no
+ *  spaces, possibly digits/_/-, no TLD. Catches the Indie Hackers username-as-
+ *  company bug ("manishbhusal", "jakew_91") without dropping legit lowercase
+ *  one-word brands ("stripe", "ramp") which usually appear capitalized in
+ *  article text and are caught by the LLM disambiguation step regardless. */
+function looksLikeHandle(name: string): boolean {
+  const s = name.trim();
+  if (!s) return true;
+  // Allow if it has uppercase chars, spaces, or a dot (suggests a domain or proper noun)
+  if (/[A-Z\s.]/.test(s)) return false;
+  // Single short word (≤4 chars) might be a real lowercased brand reference; let LLM decide
+  if (s.length <= 4) return false;
+  // Long lowercase token, possibly with digits/underscore/hyphen → handle-shaped
+  return /^[a-z][a-z0-9_-]+$/.test(s);
+}
+
 /** RSS feeds (TechCrunch, Substacks, etc.) don't tell us which company each post is
  *  about. In discover mode we ask the LLM in one batched call. Returns the same
- *  items array with company_name and company_domain populated when extractable. */
+ *  items array with company_name and company_domain populated when extractable.
+ *  Captures rejection reasons for the audit trail. */
 async function enrichItemsWithCompanyName(
   items: ExtractedItem[],
   opts: { hint: string; roles: string[]; keywords: string[] },
   model: string,
-): Promise<ExtractedItem[]> {
+): Promise<{ items: ExtractedItem[]; notes: Map<string, string> }> {
   const filterClauses: string[] = [];
   if (opts.roles.length) filterClauses.push(`Only include items whose role/title matches: ${opts.roles.join(' | ')}.`);
   if (opts.keywords.length) filterClauses.push(`Only include items matching: ${opts.keywords.join(' | ')}.`);
   const filterBlock = filterClauses.length ? `\nFilters: ${filterClauses.join(' ')}\n` : '';
 
-  const sysPrompt = `Each item below is an RSS entry: a title, url, and short body. Identify the COMPANY each item is about (the subject — for funding news, the company that raised; for product news, the company that shipped; for hiring posts, the hiring company; for blog posts, sometimes there is no specific company and you should omit that item).${filterBlock}
+  const sysPrompt = `Each item below is an RSS entry: a title, url, and short body. Identify the COMPANY each item is about (the SUBJECT). For funding news, the company that raised. For product news, the company that shipped. For hiring posts, the hiring company. For blog posts, often there is no specific company subject — omit those.${filterBlock}
 
-Return JSON: {"companies": [{"guid": "<exa-style guid from input>", "company_name": "<name>", "company_domain": "<root domain or empty>"}]}.
+When an article mentions multiple companies (partnerships, comparisons, customer references), pick the SUBJECT — the one the article is about, not just the first mentioned.
 
-Don't invent companies. Omit items where there's no clear company subject. Don't return entries for items that fail the filter above.`;
+NEVER return:
+- A user handle as a company name (single lowercase word like "manishbhusal" or "jakeawatson"). If the article was POSTED BY a user but doesn't have a clear company subject, omit the item.
+- A generic noun ("the company", "the team", "the startup") as a company_name.
+- A person's name as a company. People are not companies.
+- An invented company. If unsure, omit the item.
+
+Return JSON:
+{
+  "companies": [
+    {"guid": "<from input>", "company_name": "<name>", "company_domain": "<root domain or empty>"}
+  ],
+  "rejected": [
+    {"guid": "<from input>", "reason": "<short why omitted: e.g. 'no company subject', 'handle not company', 'multi-subject ambiguous'>"}
+  ]
+}
+
+Every input guid must appear in exactly one of the two arrays.`;
 
   const userPayload = JSON.stringify(items.map((it) => ({
     guid: it.guid,
@@ -253,24 +286,40 @@ Don't invent companies. Omit items where there's no clear company subject. Don't
 
   const llm = await chatComplete({
     model,
-    max_tokens: 2000,
+    max_tokens: 2500,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: sysPrompt },
       { role: 'user', content: `Identify the company per item and return JSON:\n\n${userPayload}` },
     ],
   });
-  const parsed = JSON.parse(llm.text) as { companies: Array<{ guid: string; company_name: string; company_domain?: string }> };
+  const parsed = JSON.parse(llm.text) as {
+    companies?: Array<{ guid: string; company_name: string; company_domain?: string }>;
+    rejected?: Array<{ guid: string; reason: string }>;
+  };
   const byGuid = new Map<string, { company_name: string; company_domain: string | null }>();
   for (const c of parsed.companies ?? []) {
     if (!c.guid || !c.company_name) continue;
     byGuid.set(c.guid, { company_name: c.company_name.trim(), company_domain: c.company_domain?.trim() || null });
   }
-  return items.map((it) => {
+  const notes = new Map<string, string>();
+  for (const r of parsed.rejected ?? []) {
+    if (r.guid && r.reason) notes.set(r.guid, r.reason);
+  }
+  const out = items.map((it) => {
     const c = byGuid.get(it.guid);
-    if (!c) return { ...it, company_name: undefined };  // explicitly drop items with no company match
+    if (!c) {
+      if (!notes.has(it.guid)) notes.set(it.guid, 'no company subject in LLM extraction');
+      return { ...it, company_name: undefined };
+    }
+    // Defensive filter: even if LLM said it was a company, reject handle-shape names.
+    if (looksLikeHandle(c.company_name)) {
+      notes.set(it.guid, `rejected handle-shape name: "${c.company_name}"`);
+      return { ...it, company_name: undefined };
+    }
     return { ...it, company_name: c.company_name, company_domain: c.company_domain ?? undefined };
   });
+  return { items: out, notes };
 }
 
 const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> => {
@@ -309,6 +358,7 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   const isFeed = fetchMode === 'rss' ? true : fetchMode === 'html' ? false : looksLikeXmlFeed(headers, body);
 
   let items: ExtractedItem[] = [];
+  let extractionNotes = new Map<string, string>();
   try {
     const extractModel = ((ctx.config.model as string) ?? EXTRACT_MODEL);
     items = isFeed
@@ -320,7 +370,9 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     // there's no entity to attach to. One model call covers the whole batch.
     if (isFeed && intent === 'discover' && items.length > 0) {
       try {
-        items = await enrichItemsWithCompanyName(items, { hint: extraction_hint, roles, keywords }, extractModel);
+        const enriched = await enrichItemsWithCompanyName(items, { hint: extraction_hint, roles, keywords }, extractModel);
+        items = enriched.items;
+        extractionNotes = enriched.notes;
       } catch (e) {
         result.errors.push(`rss company-name extraction failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -388,6 +440,13 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       // discover: dedup-or-create entity per company_name
       const companyName = it.company_name?.trim();
       if (!companyName) { result.skipped++; continue; }
+      // Defensive: reject any company name that slipped through to discover phase
+      // looking like a user handle (shouldn't happen post-enrichItemsWithCompanyName,
+      // but extracted-with-LLM HTML mode doesn't go through that filter).
+      if (looksLikeHandle(companyName)) {
+        extractionNotes.set(it.guid, `rejected handle-shape name: "${companyName}"`);
+        result.skipped++; continue;
+      }
       const companyDomain = normalizeDomain(it.company_domain) ?? normalizeDomain(it.url);
 
       let existing = companyDomain ? entitiesByDomain.get(companyDomain) : undefined;
@@ -415,6 +474,7 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       }
     }
 
+    const note = extractionNotes.get(it.guid);
     const r = await callTool(ctx.supabase, sourceActor, 'create_signal', {
       entity_id,
       type: 'web_mention',
@@ -431,6 +491,7 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
         matched_alias,
         roles: roles.length ? roles : undefined,
         keywords: keywords.length ? keywords : undefined,
+        extraction_note: note,
       },
     });
     if (r.ok) result.signals_created++;
