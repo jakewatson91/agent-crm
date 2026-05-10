@@ -12,6 +12,29 @@ Humans show up to: (a) join calls (which are recorded and transcribed anyway), (
 
 Wedge is **interface-as-category**, not algorithm. The substrate is commodity (Postgres + pgvector + S3); the abstraction layer above it is what makes the system agent-native — provenance-bearing reads, tool-call writes, event-sourced consistency, content-addressed facts, pub/sub on predicates, semantic subscriptions, memory hierarchy.
 
+## Hard rule: agent-first or it doesn't ship
+
+**Every feature must answer: does this make the agent more efficient, or does it just make a dashboard?** If it's the second, do not build it. We lose the wedge the moment we copy Day/Rox/HubSpot patterns.
+
+**Allowed human surfaces, by purpose only:**
+- **Gates** — approval inbox for irreversible actions. Empty when healthy.
+- **Audit / debug** — thin views to verify what the agent saw and decided. Provenance walks, replay, raw event log. Explicitly framed as audit, not as a "view" of the CRM.
+- **Configuration** — set constitution, KB, sources, agents. One-time-ish setup, not daily use.
+
+**Banned patterns:**
+- Pipeline / kanban / stage-tracking views ("here's everything in Outreach Sent stage")
+- Drag-to-reorder, batch operations, multi-select, "select all and..."
+- Sortable / filterable tables of entities for human triage
+- Any UI where the human is the loop instead of the auditor
+- "Notification feed for the user" — notifications go to gates or external channels (Slack, email), not in-app feeds for browsing
+
+**The agent-first version of every feature:**
+- Before building a UI, ask: what's the MCP tool / API endpoint that lets an agent do this same thing programmatically? Build that first. The UI is a thin debugging shell over the agent surface.
+- Reads are token-efficient projections, not full row dumps.
+- Writes are tool calls with validation + audit, never raw SQL from the UI.
+
+When in doubt: build the agent capability first, audit surface second, never a "human dashboard."
+
 ## Competition (snapshot, May 2026)
 
 - **Rox** ($1.2B valuation) — Agent Swarm on top of Salesforce/HubSpot. Reactive monitoring, not proactive.

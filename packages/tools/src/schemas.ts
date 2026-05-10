@@ -91,6 +91,27 @@ export const DecideGateSchema = z.object({
   decision: z.enum(['approve', 'reject', 'modify']),
 });
 
+// ─── Read-side tools ──────────────────────────────────────────────────────────
+// These don't write events; they project current state for agent consumption.
+// Returns are token-efficient summaries, not raw row dumps.
+
+export const ListEntitiesSchema = z.object({
+  status: z.enum(['draft_ready', 'gated', 'active', 'stale', 'no_signals']).optional(),
+  signal_source: z.string().optional(),
+  limit: z.number().int().min(1).max(500).default(100),
+  since_hours: z.number().int().positive().optional(),
+});
+
+export const GetEntitySchema = z.object({
+  entity_id: UuidSchema,
+});
+
+export const OutreachStateSchema = z.object({
+  entity_id: UuidSchema,
+});
+
+export const HealthCheckSchema = z.object({});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -105,6 +126,10 @@ export const TOOL_SCHEMAS = {
   cite: CiteSchema,
   request_gate: RequestGateSchema,
   decide_gate: DecideGateSchema,
+  list_entities: ListEntitiesSchema,
+  get_entity: GetEntitySchema,
+  outreach_state: OutreachStateSchema,
+  health_check: HealthCheckSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;
