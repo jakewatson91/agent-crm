@@ -118,6 +118,12 @@ export const FindSimilarEntitiesSchema = z.object({
   perspective: z.string().optional(),
 });
 
+export const LookupEntitySchema = z.object({
+  name: z.string().min(1),
+  fuzzy: z.boolean().default(true),
+  limit: z.number().int().min(1).max(20).default(5),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -137,6 +143,7 @@ export const TOOL_SCHEMAS = {
   outreach_state: OutreachStateSchema,
   health_check: HealthCheckSchema,
   find_similar_entities: FindSimilarEntitiesSchema,
+  lookup_entity: LookupEntitySchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

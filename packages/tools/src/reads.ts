@@ -262,6 +262,38 @@ export async function outreachState(
   };
 }
 
+export interface EntityMatch {
+  entity_id: string;
+  name: string;
+  kind: string;
+  score: number;
+}
+
+export async function lookupEntity(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  args: { name: string; fuzzy: boolean; limit: number },
+): Promise<EntityMatch[]> {
+  const q = args.name.trim();
+  if (!q) return [];
+  // gin_trgm index on entities.name supports both exact and ILIKE; use ILIKE
+  // with leading/trailing wildcards for fuzzy matching.
+  const pattern = args.fuzzy ? `%${q}%` : q;
+  const { data, error } = args.fuzzy
+    ? await supabase.from('entities').select('id, name, kind')
+        .eq('workspace_id', workspace_id).ilike('name', pattern).limit(args.limit)
+    : await supabase.from('entities').select('id, name, kind')
+        .eq('workspace_id', workspace_id).eq('name', q).limit(args.limit);
+  if (error) throw error;
+  const lc = q.toLowerCase();
+  return ((data ?? []) as Array<{ id: string; name: string; kind: string }>).map((r) => ({
+    entity_id: r.id,
+    name: r.name,
+    kind: r.kind,
+    score: r.name.toLowerCase() === lc ? 1.0 : 1.0 - Math.abs(r.name.length - q.length) / Math.max(r.name.length, q.length, 1),
+  })).sort((a, b) => b.score - a.score);
+}
+
 export interface SimilarEntity {
   entity_id: string;
   name: string;
