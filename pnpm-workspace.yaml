@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "inngest"
+allowBuilds:
+  esbuild: true
+  protobufjs: true
+  sharp: true

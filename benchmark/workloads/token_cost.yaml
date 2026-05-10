@@ -1,0 +1,53 @@
+id: token_cost
+claim: 1
+title: Tokens per autonomous decision
+plan_target: 10x fewer input tokens vs HubSpot baseline
+
+scenario: |
+  A new signal has arrived for an account (e.g. careers-page diff: hiring senior engineers).
+  The agent must decide: should we send an outbound touch to this account this week?
+  Output a structured decision with reasoning citing the facts/signals it relied on.
+
+  This is the load-bearing workload of the system: a signal lands, an agent reads context,
+  produces a decision. We measure the input tokens it costs to read enough context to decide.
+
+task: |
+  Given account_name, decide whether to send an outbound touch this week.
+  Return JSON: {decide: boolean, reasoning: string, citations: string[]}.
+  Reasoning must reference at least one specific fact about the account (stack, signals, etc.).
+
+inputs:
+  accounts:
+    - Resona Labs
+    - Forge Robotics
+    - Plaintext.so
+    - Halo Health
+    - Brightvine
+    - Strand Compute
+
+systems:
+  agent_crm:
+    data_access: query() primitive returns projection with facts + signals + cites
+    model: claude-haiku-4-5
+  hubspot:
+    data_access: |
+      HubSpot REST. Agent must fetch company by name, then notes/engagements
+      to discover stack, signals, prior context. No native projection or cite chain.
+    model: claude-haiku-4-5
+
+metrics:
+  - input_tokens
+  - output_tokens
+  - wall_clock_ms
+  - api_calls_to_data_store
+  - usd_cost
+
+runs_per_account: 3   # average over 3 runs to smooth variance
+total_runs: 18        # 6 accounts x 3 runs per system
+
+success_criteria:
+  primary: input_tokens(agent_crm) <= input_tokens(hubspot) / 10
+  secondary:
+    - output decisions are coherent on both sides (manual sanity check)
+    - hubspot baseline is not a strawman (uses Search API, associations,
+      not naive list-all)

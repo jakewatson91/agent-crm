@@ -1,0 +1,47 @@
+id: concurrency
+claim: 3
+title: Concurrency without conflict
+plan_target: zero conflicts on agent-crm vs measurable data loss on HubSpot
+
+scenario: |
+  N agents each try to assert a unique fact about the same account at the same time.
+  This is the realistic pattern for outbound automation: multiple specialized
+  agents (intent scorer, enricher, hiring-signal watcher, github-watcher, etc.)
+  each writing to the same account's profile during a signal burst.
+
+  We measure: of N attempted writes, how many distinct facts persist after the
+  burst settles?
+
+task: |
+  For account "Resona Labs", launch N parallel writers, each asserting a unique
+  fact (predicate + object_text differ per writer). Then read back and count the
+  distinct facts/text fragments that survived.
+
+systems:
+  agent_crm:
+    write_pattern: |
+      act("assert_fact", { subject_entity, predicate, object_text }) -> event
+      Content-hashed; idempotent on hash; append-only events; no read-modify-write.
+  hubspot:
+    write_pattern: |
+      Read company.agent_facts (current text blob)
+      Append the new fact line
+      PATCH company { agent_facts: merged }
+      Realistic pattern; HubSpot has no native append-only fact store.
+
+parameters:
+  concurrency: 50
+  account: "Resona Labs"
+  jitter_ms: 0   # all writers fire simultaneously
+
+metrics:
+  - facts_attempted        # always = concurrency
+  - facts_persisted        # how many distinct facts survived
+  - data_loss_count        # facts_attempted - facts_persisted
+  - data_loss_pct
+  - wall_clock_ms
+
+success_criteria:
+  primary: data_loss_count(agent_crm) == 0
+  secondary:
+    - data_loss_pct(hubspot) > 50%   # most parallel writes will be lost

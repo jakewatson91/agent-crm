@@ -1,0 +1,32 @@
+{
+  "name": "agent-crm",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.0.9",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "supabase db push",
+    "db:reset": "supabase db reset",
+    "db:types": "supabase gen types typescript --local > packages/db/src/generated.ts",
+    "benchmark:run": "tsx benchmark/runners/agent-crm/run.ts && tsx benchmark/runners/hubspot/run.ts && tsx benchmark/report/generate.ts",
+    "smoke": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/smoke_test.ts",
+    "seed": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/seed_demo.ts",
+    "inject": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/inject_claim.ts",
+    "agent:smoke": "tsx scripts/agent_smoke.ts",
+    "agent:new": "tsx scripts/create_agent.ts",
+    "agent:list": "tsx scripts/list_agents.ts",
+    "loop": "tsx scripts/run_loop.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "dotenv": "^17.4.2",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=11"
+  }
+}

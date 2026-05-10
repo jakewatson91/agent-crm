@@ -1,0 +1,170 @@
+# Pre-registered experiments running across the pipeline.
+#
+# Every constant in this system is provisional. Each experiment below is a
+# multi-arm Beta-Bernoulli posterior tracking the empirical outcome rate
+# of each arm. The system runs Thompson sampling for allocation and shuts
+# arms that fail their kill criterion.
+#
+# This file is the SOURCE OF TRUTH for what we're testing. Pipeline code reads
+# here when making any of the listed decisions; outcomes flow back via the
+# experiments table in the CRM.
+
+experiments:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # LEVEL 1 — TARGETING (who do we contact?)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: alignment_cutoff
+    layer: targeting
+    hypothesis: |
+      The alignment threshold above which a prospect is worth contacting is
+      below the median observed alignment in our seed set (0.72). We expect
+      0.65 to over-fire (low precision), 0.75 to under-fire (low recall),
+      0.70 to be the sweet spot for reply-rate-per-touch.
+    arms: [0.65, 0.70, 0.75]
+    reward_signal: reply_rate
+    kill_criterion: |
+      Any arm with reply rate < baseline + 1σ at 200 contacted samples auto-shuts.
+    convergence_target: 600 contacts (200/arm)
+    status: planned
+
+  - id: cumulative_cutoff
+    layer: targeting
+    hypothesis: |
+      Cumulative-intent threshold for trigger condition B. Higher threshold
+      → fewer triggers, higher per-trigger conversion. Lower → more volume,
+      lower per-trigger conversion. We expect total revenue to peak at 18.
+    arms: [12, 18, 24]
+    reward_signal: closed_won_per_1k_contacts
+    kill_criterion: |
+      Any arm with revenue/1K < 50% of best arm at 1K contacts auto-shuts.
+    convergence_target: 3K contacts (1K/arm)
+    status: planned
+    current_default: 18
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # LEVEL 2 — ACTION SELECTION (what do we send?)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: action_shape_per_urgency
+    layer: action_selection
+    hypothesis: |
+      For ACTIVE_BUILD prospects, the workflow-artifact (Mothership prompt)
+      converts at 3-5× the rate of a substantive note. For PHILOSOPHICAL
+      prospects, the discovery question converts at 2× the rate of a
+      workflow (workflow feels presumptuous when they haven't built yet).
+    arms_per_segment:
+      active_build: [workflow_artifact, substantive_note]
+      philosophical: [discovery_question, workflow_artifact]
+      building_soon: [workflow_artifact, substantive_note, discovery_question]
+    reward_signal: reply_rate_then_fork_click
+    kill_criterion: |
+      Per-segment kill: any arm < 50% of best arm at 100 sends in that segment.
+    convergence_target: 300 sends per segment
+    status: planned
+
+  - id: prompt_composition
+    layer: action_selection
+    hypothesis: |
+      Mothership prompts composed with anchor + breadth (drawing from 3+
+      posts) outperform anchor-only prompts on fork-click rate by 2×, because
+      they feel more tailored.
+    arms: [anchor_only, anchor_plus_breadth]
+    reward_signal: fork_click_rate
+    kill_criterion: |
+      Anchor-only auto-shuts if anchor+breadth shows 1.5× lift at 100 sends.
+    convergence_target: 200 sends
+    status: planned
+    current_default: anchor_plus_breadth
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # LEVEL 3 — OUTREACH (how do we deliver?)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: touch_dimensions
+    layer: outreach
+    hypothesis: |
+      Joint touch posterior across 5 dimensions converges per ICP segment
+      within 1-2K touches. Marginal posteriors converge faster (~500 touches).
+    arms:
+      pitch_angle: [workflow_artifact, substantive_note, discovery_question]
+      opener_style: [quoted_post, pattern_observation, specific_primitive]
+      touch_timing: [day_0, day_3, day_7, day_14]
+      channel: [linkedin, x, email]
+      recipient_role: [top_lead_at_account, mentioned_employee, founder_only]
+    reward_cascade: |
+      delivered: 0
+      opened: +0.1
+      replied: +1.0
+      fork_clicked: +2.0
+      activated: +5.0
+      paid: +20.0
+    kill_criterion: |
+      Per-cell: arm below baseline + 1σ at 200 samples auto-shuts.
+      Per-segment: segment dropped if close rate < 0.1% at 1K touches.
+    convergence_target: 10K touches
+    status: planned
+
+  - id: multi_touch_cadence
+    layer: outreach
+    hypothesis: |
+      Three-touch sequence (day 0 / 7 / 14) outperforms single-touch by 2×
+      on reply rate. Fourth touch (day 21) provides marginal lift < 10%.
+    arms: [single, three_touch, four_touch]
+    reward_signal: reply_rate
+    kill_criterion: |
+      Single-touch auto-shuts if three_touch shows 1.5× lift at 300 sequences.
+    convergence_target: 600 sequences
+    status: planned
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # LEVEL 4 — CALIBRATION (how do we score?)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: post_score_formula
+    layer: calibration
+    hypothesis: |
+      Mean of top-5 cosines outperforms max-cosine and weighted-by-rank for
+      predicting which posts precede high-conversion windows. The current
+      default (mean top-5) is the right choice but we should measure.
+    arms: [mean_top5, max_cosine, weighted_rank, mean_top10]
+    reward_signal: predictive_validity_for_30d_conversion
+    kill_criterion: |
+      Any formula with R² < 0.3 against ex-post conversion auto-shuts.
+    convergence_target: 5K scored posts with downstream outcomes
+    status: planned
+    current_default: mean_top5
+
+  - id: decay_half_life
+    layer: calibration
+    hypothesis: |
+      Cumulative decay half-life of 7 days correctly weights recency for
+      a 14-day attention window. Shorter (3d) over-weights latest noise;
+      longer (14d) misses urgency.
+    arms: [3, 7, 14]
+    reward_signal: trigger_precision_at_14d
+    kill_criterion: |
+      Auto-shut any half-life with > 30% lower precision than best arm at 1K triggers.
+    convergence_target: 3K triggers
+    status: planned
+    current_default: 7
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # LEVEL 5 — CORPUS (what do we match against?)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: corpus_filter_strategy
+    layer: corpus
+    hypothesis: |
+      Filtering tool docs (Stripe, Snowflake, etc.) unless the entity
+      explicitly mentions the tool prevents tool-doc dominance and improves
+      primitive-match precision. We expect 1.5× lift on workflow-fork-click
+      when the matched primitive is an architectural block vs a tool doc.
+    arms: [no_filter, mention_filter, mention_filter_plus_arch_boost]
+    reward_signal: workflow_fork_click_rate
+    kill_criterion: |
+      no_filter auto-shuts if mention_filter shows 1.3× lift at 200 sends.
+    convergence_target: 600 sends
+    status: planned
+    current_default: mention_filter_plus_arch_boost

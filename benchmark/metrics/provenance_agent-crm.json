@@ -1,0 +1,59 @@
+{
+  "system": "agent-crm",
+  "starting_fact_id": "e856db03-2c8c-4aac-a59a-709bf02e26ce",
+  "chain_length": 2,
+  "chain": [
+    {
+      "fact": {
+        "id": "e856db03-2c8c-4aac-a59a-709bf02e26ce",
+        "predicate": "uses_stack",
+        "object_text": "bun",
+        "content_hash": "155f6b8f72feeff618f19dad5a7235885b012ba477b1fd61effd29899733fe02",
+        "supersedes": "9d327441-b54c-4db9-af39-9b4c554c6b51",
+        "observed_at": "2026-05-09T12:25:01.316058+00:00"
+      },
+      "source_event": {
+        "id": 159,
+        "actor_kind": "agent",
+        "actor_id": "claims_account_facts",
+        "action": "supersede_fact",
+        "payload": {
+          "predicate": "uses_stack",
+          "confidence": 0.85,
+          "supersedes": "9d327441-b54c-4db9-af39-9b4c554c6b51",
+          "object_text": "bun",
+          "subject_entity": "a5a22104-7548-4e0e-abcf-80decbb3a256"
+        },
+        "prompt_hash": null,
+        "parent_event_id": null,
+        "created_at": "2026-05-09T12:25:01.316058+00:00"
+      }
+    },
+    {
+      "fact": {
+        "id": "9d327441-b54c-4db9-af39-9b4c554c6b51",
+        "predicate": "uses_stack",
+        "object_text": "python",
+        "content_hash": "06084257d701f9e10bd8b4cfd9c6768dbad618d831a4aadb2303897adf8db6f0",
+        "supersedes": null,
+        "observed_at": "2026-05-09T12:24:59.36011+00:00"
+      },
+      "source_event": {
+        "id": 138,
+        "actor_kind": "agent",
+        "actor_id": "claims_account_facts",
+        "action": "assert_fact",
+        "payload": {
+          "predicate": "uses_stack",
+          "confidence": 0.9,
+          "object_text": "python",
+          "subject_entity": "a5a22104-7548-4e0e-abcf-80decbb3a256"
+        },
+        "prompt_hash": null,
+        "parent_event_id": null,
+        "created_at": "2026-05-09T12:24:59.36011+00:00"
+      }
+    }
+  ],
+  "summary": "Walked 2-hop supersede chain. Every fact resolves to source event, actor, action, payload, prompt_hash. One SQL query per hop."
+}

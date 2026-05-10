@@ -1,0 +1,12 @@
+{
+  "system": "hubspot",
+  "concurrency": 50,
+  "facts_attempted": 50,
+  "facts_persisted": 2,
+  "data_loss_count": 48,
+  "data_loss_pct": 96,
+  "wall_clock_ms": 1628,
+  "fulfilled": 50,
+  "rejected": 0,
+  "run_tag": "concur_moydngee"
+}

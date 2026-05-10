@@ -1,0 +1,92 @@
+# Golden lead config — the curated set we replay through the pipeline.
+# Posts come from two sources:
+#   1. manual JSON drop (golden/_manual_posts.json) — author_handle resolves to lead_id
+#   2. curate.py scraping for company-level news + jobs (Exa + HN)
+
+leads:
+  - lead_id: keith_rabkin
+    name: "Keith Rabkin"
+    handle: krabkin           # actual LinkedIn slug
+    parent_account_name: "PandaDoc"
+    parent_account_domain: "pandadoc.com"
+    channels: [linkedin, podcast, news]
+    notes: |
+      President at PandaDoc. Posts about: 13-agent finance fleet at PandaDoc,
+      customer-agent feedback loop, Jira-driven roadmap automation, AI BDR
+      experiment, ChatGPT App marketplace launch for PandaDoc.
+
+  - lead_id: tito_bohrt
+    name: "Tito Bohrt"
+    handle: titobohrt
+    parent_account_name: "AltiSales"
+    parent_account_domain: "altisales.com"
+    channels: [linkedin, x, podcast, news]
+    notes: |
+      Founder & CEO at AltiSales. Posts about: AI-enabled SDR thesis,
+      reducing SDR ramp from 10 to 4 weeks, intent-data debate, AI AEs vs
+      AI SDRs.
+
+  - lead_id: rihab_l
+    name: "Rihab L"
+    handle: rihabl
+    parent_account_name: "Asendia AI"
+    parent_account_domain: "asendia.ai"
+    channels: [linkedin, news]
+    notes: |
+      Co-founder of Asendia AI (YC). Asendia clones top recruiters into AI
+      agents that screen, match, submit candidates 10x faster. Multi-channel
+      candidate engagement. Posts about staffing-industry AI adoption,
+      product launch, hiring the next teammate.
+
+  - lead_id: ben_shafi
+    name: "Ben Shafi"
+    handle: benshafi
+    parent_account_name: "OpenWork"
+    parent_account_domain: "openwork.ai"
+    channels: [linkedin, news]
+    notes: |
+      Founder of OpenWork (YC P26). Open-source self-hostable alternative to
+      Claude Cowork. Desktop app + cloud management layer for enterprises.
+      Connects any LLM provider. Posts about MCP support, LiteLLM/Azure
+      integration, YC P26 announcement, hiring engineers.
+
+  - lead_id: emir_atli
+    name: "Emir Atli"
+    handle: emir-atli
+    parent_account_name: "HockeyStack"
+    parent_account_domain: "hockeystack.com"
+    channels: [linkedin, x, podcast, news]
+    notes: |
+      CRO at HockeyStack. Hosts "AI for GTM" podcast.
+      Recently led HockeyStack's pivot from marketing attribution into AI
+      platform for GTM teams (vertical agents). On-record about automated
+      stakeholder mapping and account planning being unsolved pains.
+
+  # Contrast entities — should classify as LOW ICP / QUIET. Demonstrates the
+  # classifier discriminating, not just rubber-stamping everyone HIGH.
+  - lead_id: maria_indie_dev
+    name: "Maria Lin"
+    handle: marialin-games
+    parent_account_name: "Pixelforge Studios"
+    parent_account_domain: "pixelforge.games"
+    channels: [linkedin]
+    notes: |
+      Solo indie game developer. Posts about her cozy farming game launch,
+      Steam wishlists, hiring a pixel artist. NOT in Sim's ICP — should
+      classify LOW.
+
+  - lead_id: doug_realestate
+    name: "Doug Halverson"
+    handle: doug-halverson-realtor
+    parent_account_name: "Halverson Realty"
+    parent_account_domain: "halversonrealty.com"
+    channels: [linkedin]
+    notes: |
+      Residential real-estate agent in suburban Minneapolis. Posts listing
+      photos, weekend open houses, market commentary. NOT in Sim's ICP —
+      should classify LOW.
+
+defaults:
+  lookback_days: 30
+  exa_max_per_query: 15
+  hn_max_per_query: 10

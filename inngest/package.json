@@ -1,0 +1,26 @@
+{
+  "name": "@agent-crm/inngest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./client.ts",
+  "types": "./client.ts",
+  "exports": {
+    ".": "./client.ts",
+    "./functions": "./functions/index.ts",
+    "./functions/sources/registry": "./functions/sources/registry.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agent-crm/db": "workspace:*",
+    "@agent-crm/primitives": "workspace:*",
+    "@agent-crm/tools": "workspace:*",
+    "@supabase/supabase-js": "^2.46.0",
+    "inngest": "^3.27.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

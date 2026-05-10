@@ -1,0 +1,28 @@
+{
+  "system": "agent-crm",
+  "supersede_event_id": 159,
+  "t_before": "2026-05-09T12:25:01.315Z",
+  "t_after": "2026-05-09T13:33:47.232Z",
+  "state_at_t_before": {
+    "uses_stack": [
+      "typescript",
+      "postgres",
+      "python"
+    ]
+  },
+  "state_at_t_after": {
+    "uses_stack": [
+      "typescript",
+      "postgres",
+      "bun"
+    ]
+  },
+  "diff_only_in_t_before": [
+    "python"
+  ],
+  "diff_only_in_t_after": [
+    "bun"
+  ],
+  "deterministic": true,
+  "summary": "replay_to(workspace_id, ts) reconstructs full projection state at any past timestamp from the events log. Output is deterministic across calls."
+}

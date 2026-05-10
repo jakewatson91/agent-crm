@@ -1,0 +1,33 @@
+{
+  "system": "hubspot",
+  "target_timestamp": "2026-05-09T13:33:36.248Z",
+  "attempted_endpoints": [
+    {
+      "path": "GET /crm/v3/objects/companies/{id}/snapshot?at=<ts>",
+      "exists": false,
+      "note": "no equivalent in HubSpot API"
+    },
+    {
+      "path": "GET ...?propertiesWithHistory=<all>",
+      "exists": true,
+      "note": "per-property version list, no time filter"
+    }
+  ],
+  "fields_available_per_version": [
+    "value",
+    "timestamp",
+    "sourceType",
+    "sourceId",
+    "sourceLabel",
+    "updatedByUserId"
+  ],
+  "fields_missing_per_version": [
+    "actor identity (agent name)",
+    "prompt_hash",
+    "action verb",
+    "causal parent_event_id"
+  ],
+  "can_reconstruct_full_state_at_t": false,
+  "can_rerun_agent_against_past_state": false,
+  "summary": "HubSpot has property-level change history but no replay primitive. No event log, no prompt_hash, no actor identity per write. Cannot rerun agent reasoning against past state."
+}

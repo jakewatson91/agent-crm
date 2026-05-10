@@ -1,0 +1,12 @@
+{
+  "system": "agent-crm",
+  "concurrency": 50,
+  "facts_attempted": 50,
+  "facts_persisted": 50,
+  "data_loss_count": 0,
+  "data_loss_pct": 0,
+  "wall_clock_ms": 1306,
+  "fulfilled": 50,
+  "rejected": 0,
+  "run_tag": "concur_moydmpg5"
+}

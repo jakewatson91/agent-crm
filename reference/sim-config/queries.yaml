@@ -1,0 +1,120 @@
+# Listener query bank — edit and re-run scrape to apply changes.
+#
+# Two query types:
+# 1. exa_broad: neural search across all surfaces (X, LinkedIn, Substack,
+#    blogs, news, HN). Fans out, returns text-rich results.
+# 2. exa_targeted: same as above but with a strict include_domains filter.
+#    Used to force coverage of channels Exa otherwise under-indexes (X, LinkedIn).
+# 3. hn: Algolia direct, free.
+#
+# Tag is for traceability — appears in posts.raw_json so you can see which
+# query surfaced each post.
+
+exa_broad:
+  - tag: hire_first_ops
+    query: "excited to share I joined as head of operations startup"
+  - tag: hire_first_ops
+    query: "excited to announce I'm joining as VP of operations early-stage"
+  - tag: hire_first_gtm
+    query: "excited to announce I'm joining as VP marketing GTM startup"
+  - tag: hire_first_gtm
+    query: "first sales hire at seed-stage startup"
+  - tag: hire_automation
+    query: "we're hiring an automation engineer GTM engineer founder post"
+  - tag: hire_automation
+    query: "hiring our first AI engineer to help build internal workflows"
+
+  - tag: scale_milestone
+    query: "we just hit our first 100 customers what now thread"
+  - tag: scale_milestone
+    query: "passed 1000 users now thinking about scaling ops"
+  - tag: scale_milestone
+    query: "professionalize our ops stack startup founder"
+  - tag: scale_milestone
+    query: "scaling beyond founder-led sales hiring playbook"
+  - tag: scale_milestone
+    query: "first 50 enterprise customers stack overhaul"
+
+  - tag: tool_consolidation
+    query: "consolidating our internal tools startup founder post"
+  - tag: tool_consolidation
+    query: "every tool we use right now stack post"
+  - tag: tool_consolidation
+    query: "we have too many SaaS tools time to clean up"
+  - tag: tool_consolidation
+    query: "stitching together Zapier Make Retool spreadsheets"
+  - tag: tool_consolidation
+    query: "our internal tooling is a mess thread"
+  - tag: tool_migration
+    query: "migrating off HubSpot to something simpler"
+  - tag: tool_migration
+    query: "switching from Zapier to a real workflow engine"
+
+  - tag: compliance_push
+    query: "starting our SOC2 process founder thread"
+  - tag: compliance_push
+    query: "first compliance review at seed stage"
+  - tag: hiring_intl
+    query: "first international hire ops process"
+
+  - tag: ops_pain
+    query: "onboarding chaos at our startup founder post"
+  - tag: ops_pain
+    query: "support tickets piling up no system in place"
+  - tag: ops_pain
+    query: "data trapped in spreadsheets startup operator"
+  - tag: ops_pain
+    query: "founder-led customer success scaling problem"
+
+  - tag: outbound_build
+    query: "building outbound from scratch founder post"
+  - tag: outbound_build
+    query: "first cold outbound campaign with Clay HeyReach"
+  - tag: outbound_build
+    query: "AI-driven cold outreach experiment founder thread"
+
+  - tag: stack_query
+    query: "what's your GTM stack at seed stage founder thread"
+  - tag: stack_query
+    query: "ops stack recommendation early stage startup"
+
+# X-targeted: forces Exa to surface X.com posts (which it under-indexes
+# without an explicit include_domains).
+exa_x_targeted:
+  - "founder thread first ops hire"
+  - "founder posts every tool we use stack"
+  - "first GTM hire excited to share"
+  - "consolidating our internal tools"
+  - "outbound from scratch experiment"
+  - "first 100 customers thread"
+  - "scaling founder-led sales next phase"
+  - "first compliance review startup"
+  - "rebuilding our process founder"
+
+# LinkedIn-targeted
+exa_linkedin_targeted:
+  - "excited to share I joined as Head of Operations"
+  - "thrilled to announce I joined as VP Marketing"
+  - "joined as Head of Revenue Operations early stage"
+  - "first GTM hire announcement startup"
+  - "starting our SOC2 process"
+  - "rebuilding our outbound motion"
+  - "professionalize ops at scale"
+  - "first international hire announcement"
+
+# HN Algolia direct (free, no key needed)
+hn:
+  - "first ops hire"
+  - "first GTM hire"
+  - "consolidating tools"
+  - "professionalizing ops"
+  - "outbound from scratch"
+  - "Show HN founder"
+  - "stack we use"
+
+# Defaults
+defaults:
+  since: 30d
+  exa_max_per_query: 12
+  exa_targeted_max: 10
+  hn_max_per_query: 15

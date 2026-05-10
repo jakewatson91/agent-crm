@@ -1,0 +1,25 @@
+{
+  "system": "hubspot",
+  "starting_fact_text": "[uses_stack] bun (confidence=0.85, fact_id=e856db03-2c8c-4aac-a59a-709bf02e26ce)",
+  "parsed_fact_id": "e856db03-2c8c-4aac-a59a-709bf02e26ce",
+  "chain_length": 0,
+  "dead_ends": [
+    {
+      "attempt": "GET /crm/v3/objects/fact/e856db03-2c8c-4aac-a59a-709bf02e26ce",
+      "result": "400: {\"status\":\"error\",\"message\":\"Unable to infer object type from: fact\",\"correlationId\":\"019e0cf1-069b-77a4-ad6c-330ca7ec3d"
+    },
+    {
+      "attempt": "propertiesWithHistory=agent_facts",
+      "result": "returned 1 versions, but each is just a property value blob — no actor identity, no action verb, no prompt_hash, no causal parent_event_id"
+    },
+    {
+      "attempt": "GET /crm/v3/objects/notes (search for fact provenance)",
+      "result": "service-key scope catalog excludes notes/engagements; no API surface to attempt"
+    },
+    {
+      "attempt": "treat fact_id e856db03-2c8c-4aac-a59a-709bf02e26ce as an opaque HubSpot identifier",
+      "result": "no HubSpot table maps this UUID to anything (it lives in the agent-crm Supabase)"
+    }
+  ],
+  "summary": "HubSpot has no event log, no actor identity per write, no prompt_hash, no fact table. Chain depth recoverable: 0 hops past the property text."
+}

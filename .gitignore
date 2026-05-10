@@ -1,0 +1,37 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env*.local
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# os
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+
+# supabase local
+supabase/.branches/
+supabase/.temp/
+
+# benchmark output
+benchmark/metrics/runs/
+benchmark/report/output/
+
+# packages/db generated types
+packages/db/src/generated.ts
