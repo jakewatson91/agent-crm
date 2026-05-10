@@ -17,7 +17,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 
@@ -344,6 +344,20 @@ export async function runAgent(
         }, meta);
       }
     }
+    // Auto-score: ICP fit is workspace-wide and source-agnostic. Runs after each
+    // enrichment so the score reflects the latest fact set. supersede chain handles
+    // idempotency. Drafters read icp_fit when deciding to draft vs gate.
+    try {
+      const score = await scoreAndAssertFn(supabase, actor, ent.data.id);
+      if (score) {
+        const reasoning = `ICP fit ${score.icp_fit.toFixed(2)} — ${score.reasoning}`;
+        await callTool(supabase, actor, 'post_to_channel', {
+          channel_id, kind: 'decision', body: reasoning, cites: assertedIds,
+        }, meta);
+      }
+    } catch {
+      // Non-fatal: enrichment is still useful without the score.
+    }
     return {
       ok: true, action: 'enrich',
       channel_post_id: post.ok ? post.target_id : undefined,
@@ -432,10 +446,11 @@ Total: subject is one word; body covers parts 2-5 in order. Single paragraph or 
 Voice and hard rules come from the workspace constitution above. Constitution wins over this formula on tone — if the constitution says "no em dashes" or "no jargon," follow that strictly even if the formula's example uses them.
 
 GATE vs DRAFT decision — use these rules in order:
-1. Check PAST OUTCOMES if present. If 3+ similar entities were rejected with the same policy in the last 30d, gate with that same policy — don't repeat the mistake.
-2. Are there ≥3 specific facts in the ACTIVE FACTS list (customer references, partnerships, funding events, product details, market positioning, hiring activity, technology stack)? If yes, draft — even if the saved filter rule's keyword intent isn't perfectly met.
-3. Is the signal genuinely off-ICP (clearly not the kind of company the workspace ABOUT describes targeting)? If yes, gate with policy="off_icp".
-4. Are the facts so thin you'd be writing generic copy with nothing concrete to reference? If yes, gate with policy="thin_facts".
+1. Check the icp_fit fact in ACTIVE FACTS. If icp_fit is present and < 0.30, gate with policy="off_icp" — the system already concluded this is not a fit.
+2. Check PAST OUTCOMES if present. If 3+ similar entities were rejected with the same policy in the last 30d, gate with that same policy — don't repeat the mistake.
+3. Are there ≥3 specific facts in the ACTIVE FACTS list (customer references, partnerships, funding events, product details, market positioning, hiring activity, technology stack)? If yes, draft — even if the saved filter rule's keyword intent isn't perfectly met.
+4. Is the signal genuinely off-ICP (clearly not the kind of company the workspace ABOUT describes targeting)? If yes, gate with policy="off_icp".
+5. Are the facts so thin you'd be writing generic copy with nothing concrete to reference? If yes, gate with policy="thin_facts".
 
 CRITICAL: do NOT gate just because a single attribute (like is_hiring=false) doesn't match a literal word in your filter rule. The filter is a PRIORITIZATION SIGNAL for which signals to react to, not a hard constraint on which prospects deserve a draft. If a healthcare company has 4 named hospital customers and a partnership and the workspace sells to AI-forward operators, that's a draft, not a gate — even if the company isn't currently hiring.
 

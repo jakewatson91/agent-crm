@@ -145,6 +145,11 @@ export const LinkContactToAccountSchema = z.object({
   role: z.string().optional(),
 });
 
+export const ScoreEntitySchema = z.object({
+  entity_id: UuidSchema,
+  assert: z.boolean().default(true),  // assert as fact, or just compute
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -168,6 +173,7 @@ export const TOOL_SCHEMAS = {
   past_outcomes: PastOutcomesSchema,
   find_contacts: FindContactsSchema,
   link_contact_to_account: LinkContactToAccountSchema,
+  score_entity: ScoreEntitySchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

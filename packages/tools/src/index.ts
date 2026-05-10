@@ -13,10 +13,12 @@ import {
 import { TOOL_SCHEMAS, type ToolName } from './schemas.js';
 import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, type EntityStatus } from './reads.js';
 import { findContacts, linkContactToAccount } from './contacts.js';
+import { scoreEntity, scoreAndAssert } from './scoring.js';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes };
 export { findContacts, linkContactToAccount };
+export { scoreEntity, scoreAndAssert };
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -186,6 +188,14 @@ export async function callTool(
         return { ok: true, event_id: '', target_id: data.contact_entity_id, data };
       }
 
+      case 'score_entity': {
+        const a = args as { entity_id: string; assert: boolean };
+        const data = a.assert
+          ? await scoreAndAssert(supabase, actor, a.entity_id)
+          : await scoreEntity(supabase, actor.workspace_id, a.entity_id);
+        return { ok: true, event_id: '', target_id: a.entity_id, data };
+      }
+
       default: {
         const _exhaustive: never = tool;
         return { ok: false, error: `Unknown tool: ${String(_exhaustive)}` };
@@ -225,6 +235,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     past_outcomes: 'Recent gate decisions (approved / rejected / modified) for the given entity, semantically similar entities, or signals of the same type. Use to learn what happened last time we drafted to companies like this.',
     find_contacts: 'Find contacts (name, email, role, seniority) at a domain via Hunter.io. Token-efficient projection. Quota: 25/mo free, 500/mo paid.',
     link_contact_to_account: 'Create a contact entity and link it to an account via works_at + email + role facts. Idempotent on email: if a contact with the same email already exists, returns its id.',
+    score_entity: 'Score an entity for ICP fit using workspace.icp + workspace.about + entity facts. Returns icp_fit in [0,1] + breakdown + reasoning. With assert=true, also asserts icp_fit + icp_fit_breakdown facts (idempotent via supersede).',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({
