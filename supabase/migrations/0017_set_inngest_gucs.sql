@@ -1,0 +1,11 @@
+-- agent-crm v0: set the Postgres GUCs the pg_net signal/gate triggers depend on.
+-- Without these, notify_inngest_signal() and notify_inngest_gate() silently skip,
+-- leaving signals queued but never delivered to Inngest cloud.
+--
+-- DO NOT commit real secrets here. Apply via:
+--   pnpm exec tsx scripts/set_inngest_gucs.ts
+-- which reads INNGEST_EVENT_KEY from .env.local at runtime.
+--
+-- For reference, the resulting commands are:
+--   alter database postgres set app.inngest_endpoint = 'https://inn.gs/e/<EVENT_KEY>';
+--   alter database postgres set app.inngest_event_key = '<EVENT_KEY>';
