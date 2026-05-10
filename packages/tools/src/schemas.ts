@@ -100,6 +100,7 @@ export const ListEntitiesSchema = z.object({
   signal_source: z.string().optional(),
   limit: z.number().int().min(1).max(500).default(100),
   since_hours: z.number().int().positive().optional(),
+  sort_by: z.enum(['activity', 'icp_fit']).default('activity'),
 });
 
 export const GetEntitySchema = z.object({
@@ -150,6 +151,10 @@ export const ScoreEntitySchema = z.object({
   assert: z.boolean().default(true),  // assert as fact, or just compute
 });
 
+export const TokenSummarySchema = z.object({
+  since_hours: z.number().int().min(1).max(720).default(24),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -174,6 +179,7 @@ export const TOOL_SCHEMAS = {
   find_contacts: FindContactsSchema,
   link_contact_to_account: LinkContactToAccountSchema,
   score_entity: ScoreEntitySchema,
+  token_summary: TokenSummarySchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

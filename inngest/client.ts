@@ -13,12 +13,23 @@ export type Events = {
   'subscription.matched': {
     data: {
       subscription_id: string;
-      signal_id: string;
+      signal_id?: string;       // present for signal-triggered matches
+      fact_id?: string;         // present for fact-triggered matches
       workspace_id: string;
       owner_kind: 'agent' | 'user';
       owner_id: string;
       action_on_match: string;
-      similarity: number;
+      similarity?: number;      // signal-triggered only
+    };
+  };
+  'fact.created': {
+    data: {
+      fact_id: string;
+      workspace_id: string;
+      subject_entity: string;
+      predicate: string;
+      object_text: string | null;
+      confidence: number;
     };
   };
   'gate.created': {
@@ -36,6 +47,7 @@ export type Events = {
       trigger_event: 'subscription.matched' | 'manual';
       subscription_id?: string;
       signal_id?: string;
+      fact_id?: string;
       parent_event_id?: string;
     };
   };

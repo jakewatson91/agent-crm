@@ -1,6 +1,6 @@
 import { createServerClient } from '@agent-crm/db';
 import { gate } from '@agent-crm/primitives';
-import { healthCheck } from '@agent-crm/tools';
+import { healthCheck, scoreAndAssert } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 const RECOVERY_LOOKBACK_MIN = 30;
@@ -118,5 +118,64 @@ export const systemHealthMonitor = inngest.createFunction(
     });
 
     return { workspaces_checked: results.length, gated: results.length };
+  },
+);
+
+const RESCORE_LIMIT_PER_RUN = 50;
+
+/**
+ * rescore-on-icp-change: every 30 min, find entities whose icp_fit fact is older
+ * than the workspace's last icp/about/constitution update, and re-run scoreAndAssert.
+ * Caps at 50 entities/run to bound LLM cost. Uses supersede chain so unchanged scores
+ * are no-ops.
+ *
+ * Why: when you tune ICP/about, every entity's score should refresh. Without this,
+ * scores only update on the next enricher run for that entity (could be never).
+ */
+export const rescoreOnIcpChange = inngest.createFunction(
+  { id: 'rescore-on-icp-change' },
+  { cron: '*/30 * * * *' },
+  async ({ step }) => {
+    const candidates = await step.run('scan-stale-scores', async () => {
+      const supabase = createServerClient();
+      const { data: workspaces } = await supabase.from('workspaces').select('id, updated_at');
+      const wsRows = (workspaces ?? []) as Array<{ id: string; updated_at: string }>;
+      const out: Array<{ workspace_id: string; entity_id: string }> = [];
+
+      for (const ws of wsRows) {
+        // Find entities whose most-recent icp_fit fact is older than the workspace update.
+        const stale = await supabase.from('facts')
+          .select('subject_entity, observed_at')
+          .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
+          .is('supersedes', null)
+          .lt('observed_at', ws.updated_at)
+          .order('observed_at', { ascending: true })
+          .limit(RESCORE_LIMIT_PER_RUN);
+        for (const r of (stale.data ?? []) as Array<{ subject_entity: string }>) {
+          out.push({ workspace_id: ws.id, entity_id: r.subject_entity });
+        }
+        if (out.length >= RESCORE_LIMIT_PER_RUN) break;
+      }
+      return out;
+    });
+
+    if (!candidates.length) return { rescored: 0 };
+
+    await step.run('rescore-batch', async () => {
+      const supabase = createServerClient();
+      const actor = (workspace_id: string) => ({ workspace_id, actor_kind: 'system' as const, actor_id: 'icp_rescorer' });
+      let rescored = 0;
+      for (const c of candidates) {
+        try {
+          await scoreAndAssert(supabase, actor(c.workspace_id), c.entity_id);
+          rescored++;
+        } catch {
+          // skip; next cron tick retries
+        }
+      }
+      return rescored;
+    });
+
+    return { rescored: candidates.length };
   },
 );

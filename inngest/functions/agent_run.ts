@@ -21,6 +21,7 @@ export const onSubscriptionMatched = inngest.createFunction(
         trigger_event: 'subscription.matched',
         subscription_id: event.data.subscription_id,
         signal_id: event.data.signal_id,
+        fact_id: event.data.fact_id,
       },
     });
 
@@ -43,6 +44,7 @@ export const agentRun = inngest.createFunction(
         agent: event.data.agent,
         subscription_id: event.data.subscription_id,
         signal_id: event.data.signal_id,
+        fact_id: event.data.fact_id,
         parent_event_id: event.data.parent_event_id,
       });
     });

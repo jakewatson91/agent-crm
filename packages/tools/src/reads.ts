@@ -24,6 +24,7 @@ export interface EntitySummary {
   channel_id: string | null;
   has_draft: boolean;
   top_contact: { name: string; email: string; role: string | null } | null;
+  icp_fit: number | null;
 }
 
 function statusFor(latestDraftAt: string | null, latestGateAt: string | null, latestPostAt: string | null, hasSignals: boolean): EntityStatus {
@@ -41,7 +42,7 @@ function statusFor(latestDraftAt: string | null, latestGateAt: string | null, la
 export async function listEntities(
   supabase: SupabaseClient,
   workspace_id: string,
-  args: { status?: EntityStatus; signal_source?: string; limit: number; since_hours?: number },
+  args: { status?: EntityStatus; signal_source?: string; limit: number; since_hours?: number; sort_by?: 'activity' | 'icp_fit' },
 ): Promise<EntitySummary[]> {
   const sinceCutoff = args.since_hours
     ? new Date(Date.now() - args.since_hours * 3600 * 1000).toISOString()
@@ -144,6 +145,16 @@ export async function listEntities(
     }
   }
 
+  // Pull current icp_fit fact per entity
+  const icpFacts = await supabase.from('facts').select('subject_entity, object_text')
+    .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
+    .in('subject_entity', entityIds).is('supersedes', null);
+  const icpByEntity = new Map<string, number>();
+  for (const f of (icpFacts.data ?? []) as Array<{ subject_entity: string; object_text: string }>) {
+    const v = parseFloat(f.object_text);
+    if (!Number.isNaN(v)) icpByEntity.set(f.subject_entity, v);
+  }
+
   const summaries: EntitySummary[] = channels.map((c) => {
     const ent = entityById.get(c.account_entity_id);
     const draftAt = latestDraft.get(c.id) ?? null;
@@ -162,6 +173,7 @@ export async function listEntities(
       channel_id: c.id,
       has_draft: !!draftAt,
       top_contact,
+      icp_fit: icpByEntity.get(c.account_entity_id) ?? null,
     };
   });
 
@@ -170,11 +182,15 @@ export async function listEntities(
   if (args.signal_source) filtered = filtered.filter((s) => s.signal_types.includes(args.signal_source!));
   if (sinceCutoff) filtered = filtered.filter((s) => !s.latest_activity || s.latest_activity > sinceCutoff);
 
-  filtered.sort((a, b) => {
-    const at = a.latest_activity ?? '0';
-    const bt = b.latest_activity ?? '0';
-    return bt.localeCompare(at);
-  });
+  if (args.sort_by === 'icp_fit') {
+    filtered.sort((a, b) => (b.icp_fit ?? -1) - (a.icp_fit ?? -1));
+  } else {
+    filtered.sort((a, b) => {
+      const at = a.latest_activity ?? '0';
+      const bt = b.latest_activity ?? '0';
+      return bt.localeCompare(at);
+    });
+  }
 
   return filtered.slice(0, args.limit);
 }
@@ -359,6 +375,60 @@ export async function findSimilarEntities(
     throw error;
   }
   return ((data ?? []) as Array<{ entity_id: string; name: string; kind: string; similarity: number }>);
+}
+
+export interface TokenSummary {
+  since_hours: number;
+  runs: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  by_model: Array<{ model: string; runs: number; input: number; output: number; cached: number }>;
+  by_behavior: Array<{ behavior: string; runs: number; input: number; output: number }>;
+}
+
+/**
+ * Aggregate token usage across recent agent runs. Reads from the
+ * agent_run_metrics events emitted by agent_logic.ts after every LLM call.
+ * No pricing — raw token counts only. Convert to cost externally if needed.
+ */
+export async function tokenSummary(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  args: { since_hours: number },
+): Promise<TokenSummary> {
+  const since = new Date(Date.now() - args.since_hours * 3600 * 1000).toISOString();
+  const { data, error } = await supabase.from('events').select('payload')
+    .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
+    .gte('ts', since).limit(5000);
+  if (error) throw error;
+
+  let runs = 0; let input = 0; let output = 0; let cached = 0;
+  const byModel = new Map<string, { runs: number; input: number; output: number; cached: number }>();
+  const byBehavior = new Map<string, { runs: number; input: number; output: number }>();
+
+  for (const e of (data ?? []) as Array<{ payload: { model?: string; behavior?: string; input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } | null }>) {
+    const p = e.payload ?? {};
+    runs++;
+    input += p.input_tokens ?? 0;
+    output += p.output_tokens ?? 0;
+    cached += p.cached_input_tokens ?? 0;
+    const m = p.model ?? 'unknown';
+    const mAgg = byModel.get(m) ?? { runs: 0, input: 0, output: 0, cached: 0 };
+    mAgg.runs++; mAgg.input += p.input_tokens ?? 0; mAgg.output += p.output_tokens ?? 0; mAgg.cached += p.cached_input_tokens ?? 0;
+    byModel.set(m, mAgg);
+    const b = p.behavior ?? 'unknown';
+    const bAgg = byBehavior.get(b) ?? { runs: 0, input: 0, output: 0 };
+    bAgg.runs++; bAgg.input += p.input_tokens ?? 0; bAgg.output += p.output_tokens ?? 0;
+    byBehavior.set(b, bAgg);
+  }
+
+  return {
+    since_hours: args.since_hours,
+    runs, input_tokens: input, output_tokens: output, cached_input_tokens: cached,
+    by_model: [...byModel.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => b.runs - a.runs),
+    by_behavior: [...byBehavior.entries()].map(([behavior, v]) => ({ behavior, ...v })).sort((a, b) => b.runs - a.runs),
+  };
 }
 
 export interface PastOutcome {

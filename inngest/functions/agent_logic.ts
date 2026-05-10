@@ -30,6 +30,7 @@ export interface AgentRunPayload {
   agent: string;
   subscription_id?: string;
   signal_id?: string;
+  fact_id?: string;     // present for fact-triggered runs (parallel to signal_id)
   parent_event_id?: string;
 }
 
@@ -58,19 +59,42 @@ export async function runAgent(
   supabase: SupabaseClient,
   payload: AgentRunPayload,
 ): Promise<AgentRunResult> {
-  if (!payload.signal_id) return { ok: false, action: 'skip', reason: 'no signal_id (v0 only handles signal-triggered runs)' };
+  if (!payload.signal_id && !payload.fact_id) return { ok: false, action: 'skip', reason: 'need signal_id or fact_id to run' };
 
-  // 1. Signal + entity.
-  const sig = await supabase
-    .from('signals')
-    .select('id, entity_id, type, magnitude, body_for_embedding, observed_at, structured_tags')
-    .eq('id', payload.signal_id).single();
-  if (sig.error || !sig.data) return { ok: false, action: 'skip', reason: `signal ${payload.signal_id} not found` };
+  // 1. Trigger context: signal OR fact. The downstream prompt builder treats them
+  // similarly — both describe "what changed about this entity that prompted the run."
+  let triggerEntity: string;
+  let sigData: { id: string; entity_id: string; type: string; magnitude: number; body_for_embedding: string; observed_at: string; structured_tags: any } | null = null;
+  if (payload.signal_id) {
+    const sig = await supabase
+      .from('signals')
+      .select('id, entity_id, type, magnitude, body_for_embedding, observed_at, structured_tags')
+      .eq('id', payload.signal_id).single();
+    if (sig.error || !sig.data) return { ok: false, action: 'skip', reason: `signal ${payload.signal_id} not found` };
+    sigData = sig.data as unknown as typeof sigData;
+    triggerEntity = sig.data.entity_id;
+  } else {
+    // Fact-triggered: synthesize a signal-shaped payload describing the fact change.
+    const fact = await supabase.from('facts')
+      .select('id, subject_entity, predicate, object_text, confidence, observed_at')
+      .eq('id', payload.fact_id!).single();
+    if (fact.error || !fact.data) return { ok: false, action: 'skip', reason: `fact ${payload.fact_id} not found` };
+    triggerEntity = fact.data.subject_entity as string;
+    sigData = {
+      id: fact.data.id as string,
+      entity_id: triggerEntity,
+      type: `fact_change:${fact.data.predicate}`,
+      magnitude: 0.7,
+      body_for_embedding: `Fact change: ${fact.data.predicate}=${fact.data.object_text}`,
+      observed_at: fact.data.observed_at as string,
+      structured_tags: { signal_source: 'fact_trigger', predicate: fact.data.predicate, object_text: fact.data.object_text, confidence: fact.data.confidence },
+    };
+  }
 
   const ent = await supabase
     .from('entities').select('id, name, attributes')
-    .eq('id', sig.data.entity_id).single();
-  if (ent.error || !ent.data) return { ok: false, action: 'skip', reason: `entity ${sig.data.entity_id} not found` };
+    .eq('id', triggerEntity).single();
+  if (ent.error || !ent.data) return { ok: false, action: 'skip', reason: `entity ${triggerEntity} not found` };
 
   // 2. Active facts.
   const allFacts = await supabase
@@ -232,7 +256,7 @@ export async function runAgent(
   }
 
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp);
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sig.data, ent.data, activeFacts, pastOutcomesList, contacts);
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts);
 
   let llm;
   try {
@@ -264,6 +288,32 @@ export async function runAgent(
     llm_provider: llm.provider,
     llm_model: llm.model,
   };
+
+  // Persist run metrics so we can aggregate token usage across workspace + time.
+  // No projection needed; just an event row keyed to the workspace.
+  try {
+    await supabase.from('events').insert({
+      workspace_id: payload.workspace_id,
+      actor_kind: actor.actor_kind,
+      actor_id: actor.actor_id,
+      action: 'agent_run_metrics',
+      target_kind: 'workspace',
+      target_id: payload.workspace_id,
+      payload: {
+        behavior, agent: payload.agent,
+        signal_id: payload.signal_id ?? null,
+        entity_id: ent.data.id,
+        model: llm.model, provider: llm.provider,
+        input_tokens: llm.input_tokens,
+        output_tokens: llm.output_tokens,
+        cached_input_tokens: llm.cached_input_tokens,
+      },
+      prompt_hash: promptHash,
+      parent_event_id: payload.parent_event_id ?? null,
+    });
+  } catch {
+    // Non-fatal: agent run still succeeded.
+  }
 
   // ============================================================
   // Dispatch

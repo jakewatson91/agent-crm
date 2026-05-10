@@ -15,12 +15,20 @@ const STATUS_COLORS: Record<EntityStatus, string> = {
   no_signals: '#444',
 };
 
-export default async function OutreachAuditPage({ params }: { params: Promise<{ ws: string }> }) {
+export default async function OutreachAuditPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ ws: string }>;
+  searchParams: Promise<{ sort?: string }>;
+}) {
   const { ws } = await params;
+  const { sort } = await searchParams;
   const supabase = createServerClient();
 
   // Same code path the agent uses via the list_entities MCP tool.
-  const entries = await listEntities(supabase, ws, { limit: 200 });
+  const sortBy: 'activity' | 'icp_fit' = sort === 'icp_fit' ? 'icp_fit' : 'activity';
+  const entries = await listEntities(supabase, ws, { limit: 200, sort_by: sortBy });
 
   // Pull most-recent draft body for each entity for the audit preview only.
   // (Agents calling list_entities don't need this; they'd call get_entity for full text.)
@@ -42,10 +50,15 @@ export default async function OutreachAuditPage({ params }: { params: Promise<{ 
   return (
     <section>
       <h2 style={{ marginTop: 0 }}>Feed</h2>
-      <p style={{ color: '#666', fontSize: '.85rem', marginBottom: '1.25rem' }}>
+      <p style={{ color: '#666', fontSize: '.85rem', marginBottom: '.75rem' }}>
         What the agent has been doing. Same data the agent sees via the <code>list_entities</code> MCP tool.
         Click a row to walk provenance.
       </p>
+      <div style={{ marginBottom: '1rem', fontSize: '.8rem', color: '#666' }}>
+        sort:{' '}
+        <Link href={`/workspace/${ws}/channels`} style={{ color: sortBy === 'activity' ? '#e5e5e5' : '#666', marginRight: '.75rem' }}>recent activity</Link>
+        <Link href={`/workspace/${ws}/channels?sort=icp_fit`} style={{ color: sortBy === 'icp_fit' ? '#e5e5e5' : '#666' }}>icp fit</Link>
+      </div>
 
       {entries.length === 0 ? (
         <div style={{ marginTop: '2rem', padding: '2rem', border: '1px dashed #1f1f1f', textAlign: 'center', color: '#444' }}>
@@ -112,6 +125,11 @@ export default async function OutreachAuditPage({ params }: { params: Promise<{ 
                   )}
                 </div>
                 <div style={{ textAlign: 'right', fontSize: '.7rem', color: '#666', whiteSpace: 'nowrap' }}>
+                  {e.icp_fit !== null && (
+                    <div style={{ marginBottom: '.2rem', color: e.icp_fit >= 0.7 ? '#9ece6a' : e.icp_fit < 0.3 ? '#f7768e' : '#e0af68' }}>
+                      icp {e.icp_fit.toFixed(2)}
+                    </div>
+                  )}
                   <div>{e.fact_count} fact{e.fact_count === 1 ? '' : 's'}</div>
                   {e.latest_activity && (
                     <div style={{ marginTop: '.2rem' }}>
