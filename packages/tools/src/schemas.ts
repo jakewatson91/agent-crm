@@ -112,6 +112,12 @@ export const OutreachStateSchema = z.object({
 
 export const HealthCheckSchema = z.object({});
 
+export const FindSimilarEntitiesSchema = z.object({
+  entity_id: UuidSchema,
+  top_k: z.number().int().min(1).max(50).default(8),
+  perspective: z.string().optional(),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -130,6 +136,7 @@ export const TOOL_SCHEMAS = {
   get_entity: GetEntitySchema,
   outreach_state: OutreachStateSchema,
   health_check: HealthCheckSchema,
+  find_similar_entities: FindSimilarEntitiesSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

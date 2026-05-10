@@ -262,6 +262,33 @@ export async function outreachState(
   };
 }
 
+export interface SimilarEntity {
+  entity_id: string;
+  name: string;
+  kind: string;
+  similarity: number;
+}
+
+export async function findSimilarEntities(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  args: { entity_id: string; top_k: number; perspective?: string },
+): Promise<SimilarEntity[]> {
+  const { data, error } = await supabase.rpc('find_similar_entities', {
+    p_workspace_id: workspace_id,
+    p_entity_id: args.entity_id,
+    p_top_k: args.top_k,
+    p_perspective: args.perspective ?? null,
+  });
+  if (error) {
+    if (error.code === 'PGRST202' || error.code === '42883') {
+      throw new Error('find_similar_entities RPC not found. Apply migration 0016_find_similar_entities.sql.');
+    }
+    throw error;
+  }
+  return ((data ?? []) as Array<{ entity_id: string; name: string; kind: string; similarity: number }>);
+}
+
 export interface HealthCheckResult {
   unmatched_signals: number;
   errored_sources: number;

@@ -237,6 +237,14 @@ export async function runAgent(
       channel_id, kind: 'touch_draft', body: composed, cites: validCites,
     }, meta);
     if (!r.ok) return { ok: false, action: 'skip', reason: r.error, behavior, ...tokens };
+    // Auditable decision post explaining why we drafted. Cites the same facts so the
+    // provenance walk works from either the draft or the decision.
+    const reasoning = sanitizeText(((decision as { reasoning?: string }).reasoning ?? '').toString());
+    if (reasoning) {
+      await callTool(supabase, actor, 'post_to_channel', {
+        channel_id, kind: 'decision', body: reasoning, cites: validCites, parent_post_id: r.target_id,
+      }, meta);
+    }
     return { ok: true, action: 'post_touch_draft', channel_post_id: r.target_id, behavior, ...tokens };
   }
 
@@ -355,8 +363,10 @@ GATE vs DRAFT decision — use these rules in order:
 
 CRITICAL: do NOT gate just because a single attribute (like is_hiring=false) doesn't match a literal word in your filter rule. The filter is a PRIORITIZATION SIGNAL for which signals to react to, not a hard constraint on which prospects deserve a draft. If a healthcare company has 4 named hospital customers and a partnership and the workspace sells to AI-forward operators, that's a draft, not a gate — even if the company isn't currently hiring.
 
+REASONING — every post_touch_draft output MUST include a "reasoning" field: 1-2 sentences explaining why you drafted (which 2-3 facts you anchored to, what made this account a fit). This becomes a separate "decision" post in the channel so the human auditor (and future you) can see why each draft happened.
+
 Output strictly valid JSON, no preamble:
-{"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...]}
+{"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<why I drafted, 1-2 sentences>"}
 OR
 {"action":"request_gate","body":"<reason draft was not generated>","cites":[],"policy":"<short policy id>","condition":{<context>}}`;
 

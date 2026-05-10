@@ -11,10 +11,10 @@ import {
   type Actor,
 } from '@agent-crm/primitives';
 import { TOOL_SCHEMAS, type ToolName } from './schemas.js';
-import { listEntities, getEntity, outreachState, healthCheck, type EntityStatus } from './reads.js';
+import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, type EntityStatus } from './reads.js';
 
 export { TOOL_SCHEMAS, type ToolName };
-export { listEntities, getEntity, outreachState, healthCheck };
+export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities };
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -154,6 +154,12 @@ export async function callTool(
         return { ok: true, event_id: '', target_id: '', data };
       }
 
+      case 'find_similar_entities': {
+        const a = args as { entity_id: string; top_k: number; perspective?: string };
+        const data = await findSimilarEntities(supabase, actor.workspace_id, a);
+        return { ok: true, event_id: '', target_id: a.entity_id, data };
+      }
+
       default: {
         const _exhaustive: never = tool;
         return { ok: false, error: `Unknown tool: ${String(_exhaustive)}` };
@@ -188,6 +194,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     get_entity: 'Get the full projection for one entity: facts, recent signals, recent posts, channel id. Use this when you need ground truth before drafting or scoring.',
     outreach_state: 'Check the current outreach state for one entity: has a draft? gated? last activity? fact count? Use this to avoid duplicate work or to pick up where you left off.',
     health_check: 'Self-diagnostic for the agent runtime. Returns counts of unmatched signals, errored sources, stale gates, and stale drafts. Use to detect when the system is wedged.',
+    find_similar_entities: 'Vector search across entity embeddings. Given a source entity_id, returns the top_k most similar entities by cosine similarity. Use to find prospects that look like an existing customer or pattern.',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({
