@@ -17,7 +17,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 
@@ -184,8 +184,27 @@ export async function runAgent(
   //   System message = stable across runs in this (workspace, behavior). Caches.
   //   User message   = per-run variable content (agent identity, signal, facts).
   // ============================================================
+  // Drafters get past gate decisions for similar entities in their context. The
+  // claim_poster doesn't need this (it just records observations); the enricher
+  // doesn't need it (it extracts atomic facts, not high-judgment outputs). So
+  // only the drafter pays the lookup cost.
+  let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [];
+  if (behavior === 'drafter') {
+    try {
+      const outs = await pastOutcomesFn(supabase, payload.workspace_id, {
+        entity_id: ent.data.id, semantic_neighbors: true, limit: 5, since_days: 30,
+      });
+      pastOutcomesList = outs.map((o) => ({
+        entity_name: o.entity_name, gate_policy: o.gate_policy, decision: o.decision,
+        decided_at: o.decided_at, similarity: o.similarity,
+      }));
+    } catch {
+      // Non-fatal: drafter still runs, just without past-outcome context.
+    }
+  }
+
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp);
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sig.data, ent.data, activeFacts);
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sig.data, ent.data, activeFacts, pastOutcomesList);
 
   let llm;
   try {
@@ -370,9 +389,10 @@ Total: subject is one word; body covers parts 2-5 in order. Single paragraph or 
 Voice and hard rules come from the workspace constitution above. Constitution wins over this formula on tone — if the constitution says "no em dashes" or "no jargon," follow that strictly even if the formula's example uses them.
 
 GATE vs DRAFT decision — use these rules in order:
-1. Are there ≥3 specific facts in the ACTIVE FACTS list (customer references, partnerships, funding events, product details, market positioning, hiring activity, technology stack)? If yes, draft — even if the saved filter rule's keyword intent isn't perfectly met.
-2. Is the signal genuinely off-ICP (clearly not the kind of company the workspace ABOUT describes targeting)? If yes, gate with policy="off_icp".
-3. Are the facts so thin you'd be writing generic copy with nothing concrete to reference? If yes, gate with policy="thin_facts".
+1. Check PAST OUTCOMES if present. If 3+ similar entities were rejected with the same policy in the last 30d, gate with that same policy — don't repeat the mistake.
+2. Are there ≥3 specific facts in the ACTIVE FACTS list (customer references, partnerships, funding events, product details, market positioning, hiring activity, technology stack)? If yes, draft — even if the saved filter rule's keyword intent isn't perfectly met.
+3. Is the signal genuinely off-ICP (clearly not the kind of company the workspace ABOUT describes targeting)? If yes, gate with policy="off_icp".
+4. Are the facts so thin you'd be writing generic copy with nothing concrete to reference? If yes, gate with policy="thin_facts".
 
 CRITICAL: do NOT gate just because a single attribute (like is_hiring=false) doesn't match a literal word in your filter rule. The filter is a PRIORITIZATION SIGNAL for which signals to react to, not a hard constraint on which prospects deserve a draft. If a healthcare company has 4 named hospital customers and a partnership and the workspace sells to AI-forward operators, that's a draft, not a gate — even if the company isn't currently hiring.
 
@@ -419,9 +439,18 @@ function buildUserPrompt(
   signal: any,
   entity: { id: string; name: string; attributes: unknown },
   activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number }>,
+  pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [],
 ): string {
   // Strip embedding from signal (massive vector adds nothing for the LLM and burns tokens).
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
+
+  const pastOutcomesBlock = pastOutcomesList.length
+    ? `\nPAST OUTCOMES (recent gate decisions on this entity or semantically similar ones — pay attention to repeated patterns):\n${pastOutcomesList.map((o) => {
+        const sim = o.similarity != null ? ` sim=${o.similarity.toFixed(2)}` : '';
+        return `  ${o.decided_at.slice(0, 10)} ${o.entity_name}${sim}: ${o.decision} (policy=${o.gate_policy})`;
+      }).join('\n')}\n`
+    : '';
+
   return `AGENT: ${agentId}
 FILTER RULE: "${subName}" — semantic intent: "${subSemantic}"
 
@@ -434,7 +463,7 @@ ${JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}
-
+${pastOutcomesBlock}
 Decide.`;
 }
 

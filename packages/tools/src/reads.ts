@@ -321,6 +321,117 @@ export async function findSimilarEntities(
   return ((data ?? []) as Array<{ entity_id: string; name: string; kind: string; similarity: number }>);
 }
 
+export interface PastOutcome {
+  entity_id: string;
+  entity_name: string;
+  gate_id: string;
+  gate_policy: string;
+  decision: 'approve' | 'reject' | 'modify';
+  decided_at: string;
+  draft_excerpt: string | null;
+  similarity: number | null;  // null when looked up by entity_id, set when via semantic neighbor
+}
+
+/**
+ * Returns recent gate outcomes (decisions) for entities related to the given query.
+ * Three lookup modes (combine via OR):
+ *   1. Same entity (entity_id)
+ *   2. Semantically similar entities (entity_id + semantic_neighbors=true)
+ *   3. Same signal_type (signal_type filter)
+ * Used by the drafter user-prompt builder to give agents memory of "what happened
+ * last time we drafted to companies like this."
+ */
+export async function pastOutcomes(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  args: { entity_id?: string; signal_type?: string; semantic_neighbors: boolean; limit: number; since_days: number },
+): Promise<PastOutcome[]> {
+  const cutoff = new Date(Date.now() - args.since_days * 86400000).toISOString();
+
+  // Build candidate entity set
+  const candidateIds = new Set<string>();
+  const similarityById = new Map<string, number>();
+
+  if (args.entity_id) {
+    candidateIds.add(args.entity_id);
+    if (args.semantic_neighbors) {
+      const { data, error } = await supabase.rpc('find_similar_entities', {
+        p_workspace_id: workspace_id,
+        p_entity_id: args.entity_id,
+        p_top_k: 12,
+        p_perspective: null,
+      });
+      if (!error) {
+        for (const r of (data ?? []) as Array<{ entity_id: string; similarity: number }>) {
+          candidateIds.add(r.entity_id);
+          similarityById.set(r.entity_id, r.similarity);
+        }
+      }
+    }
+  }
+
+  if (args.signal_type) {
+    const sigs = await supabase.from('signals').select('entity_id')
+      .eq('workspace_id', workspace_id).eq('type', args.signal_type)
+      .gte('created_at', cutoff).limit(200);
+    for (const s of (sigs.data ?? []) as Array<{ entity_id: string }>) candidateIds.add(s.entity_id);
+  }
+
+  if (!candidateIds.size) return [];
+
+  // Find channels for those entities
+  const channels = await supabase.from('channels').select('id, account_entity_id')
+    .eq('workspace_id', workspace_id).in('account_entity_id', [...candidateIds]);
+  const channelToEntity = new Map<string, string>();
+  for (const c of (channels.data ?? []) as Array<{ id: string; account_entity_id: string }>) {
+    channelToEntity.set(c.id, c.account_entity_id);
+  }
+  if (!channelToEntity.size) return [];
+
+  // Pull gates joined to channel_posts + entities, decided in window
+  const gatePosts = await supabase.from('channel_posts').select('id, channel_id, body')
+    .in('channel_id', [...channelToEntity.keys()]).eq('kind', 'gate_request');
+  const postIdToChannel = new Map<string, { channel_id: string; body: string }>();
+  for (const p of (gatePosts.data ?? []) as Array<{ id: string; channel_id: string; body: string }>) {
+    postIdToChannel.set(p.id, { channel_id: p.channel_id, body: p.body });
+  }
+  if (!postIdToChannel.size) return [];
+
+  const gates = await supabase.from('gates')
+    .select('id, channel_post_id, policy, decision, decided_at')
+    .eq('workspace_id', workspace_id)
+    .in('channel_post_id', [...postIdToChannel.keys()])
+    .not('decided_at', 'is', null)
+    .gte('decided_at', cutoff)
+    .order('decided_at', { ascending: false })
+    .limit(args.limit * 2);
+
+  const entitiesById = new Map<string, string>();
+  const ents = await supabase.from('entities').select('id, name').in('id', [...candidateIds]);
+  for (const e of (ents.data ?? []) as Array<{ id: string; name: string }>) entitiesById.set(e.id, e.name);
+
+  const outcomes: PastOutcome[] = [];
+  for (const g of (gates.data ?? []) as Array<{ id: string; channel_post_id: string; policy: string; decision: 'approve' | 'reject' | 'modify'; decided_at: string }>) {
+    const post = postIdToChannel.get(g.channel_post_id);
+    if (!post) continue;
+    const entityId = channelToEntity.get(post.channel_id);
+    if (!entityId) continue;
+    const entityName = entitiesById.get(entityId) ?? '(unknown)';
+    outcomes.push({
+      entity_id: entityId,
+      entity_name: entityName,
+      gate_id: g.id,
+      gate_policy: g.policy,
+      decision: g.decision,
+      decided_at: g.decided_at,
+      draft_excerpt: post.body.slice(0, 120),
+      similarity: similarityById.get(entityId) ?? null,
+    });
+  }
+
+  return outcomes.slice(0, args.limit);
+}
+
 export interface HealthCheckResult {
   unmatched_signals: number;
   errored_sources: number;

@@ -124,6 +124,14 @@ export const LookupEntitySchema = z.object({
   limit: z.number().int().min(1).max(20).default(5),
 });
 
+export const PastOutcomesSchema = z.object({
+  entity_id: UuidSchema.optional(),
+  signal_type: z.string().optional(),
+  semantic_neighbors: z.boolean().default(true),
+  limit: z.number().int().min(1).max(20).default(5),
+  since_days: z.number().int().min(1).max(365).default(30),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -144,6 +152,7 @@ export const TOOL_SCHEMAS = {
   health_check: HealthCheckSchema,
   find_similar_entities: FindSimilarEntitiesSchema,
   lookup_entity: LookupEntitySchema,
+  past_outcomes: PastOutcomesSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

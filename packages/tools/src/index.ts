@@ -11,10 +11,10 @@ import {
   type Actor,
 } from '@agent-crm/primitives';
 import { TOOL_SCHEMAS, type ToolName } from './schemas.js';
-import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, type EntityStatus } from './reads.js';
+import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, type EntityStatus } from './reads.js';
 
 export { TOOL_SCHEMAS, type ToolName };
-export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity };
+export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes };
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -166,6 +166,12 @@ export async function callTool(
         return { ok: true, event_id: '', target_id: '', data };
       }
 
+      case 'past_outcomes': {
+        const a = args as { entity_id?: string; signal_type?: string; semantic_neighbors: boolean; limit: number; since_days: number };
+        const data = await pastOutcomes(supabase, actor.workspace_id, a);
+        return { ok: true, event_id: '', target_id: a.entity_id ?? '', data };
+      }
+
       default: {
         const _exhaustive: never = tool;
         return { ok: false, error: `Unknown tool: ${String(_exhaustive)}` };
@@ -202,6 +208,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     health_check: 'Self-diagnostic for the agent runtime. Returns counts of unmatched signals, errored sources, stale gates, and stale drafts. Use to detect when the system is wedged.',
     find_similar_entities: 'Vector search across entity embeddings. Given a source entity_id, returns the top_k most similar entities by cosine similarity. Use to find prospects that look like an existing customer or pattern.',
     lookup_entity: 'Find entities by name. Supports fuzzy ILIKE matching against entities.name. Use when you have a company name from a signal or external source and need its entity_id to call other tools.',
+    past_outcomes: 'Recent gate decisions (approved / rejected / modified) for the given entity, semantically similar entities, or signals of the same type. Use to learn what happened last time we drafted to companies like this.',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({
