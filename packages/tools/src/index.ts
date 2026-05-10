@@ -56,9 +56,33 @@ export async function callTool(
       case 'create_account':
       case 'create_contact':
       case 'assert_fact':
-      case 'supersede_fact':
+      case 'supersede_fact': {
+        const r = await act(supabase, actor, { tool, args, ...meta });
+        return { ok: true, event_id: r.event_id, target_id: r.target_id };
+      }
+
       case 'request_gate': {
         const r = await act(supabase, actor, { tool, args, ...meta });
+        // Fire gate.created to Inngest (replaces pg_net trigger that's blocked
+        // by Supabase's GUC restrictions). Triggers notify_on_gate downstream.
+        const eventKey = process.env.INNGEST_EVENT_KEY;
+        if (eventKey && r.target_id) {
+          try {
+            await fetch(`https://inn.gs/e/${eventKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: 'gate.created',
+                data: {
+                  gate_id: r.target_id,
+                  workspace_id: actor.workspace_id,
+                  requested_by_agent: actor.actor_id,
+                  policy: (args as { policy?: string }).policy ?? 'unknown',
+                },
+              }),
+            });
+          } catch { /* non-fatal */ }
+        }
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
       }
 
@@ -78,6 +102,31 @@ export async function callTool(
           },
           ...meta,
         });
+        // Fire signal.created to Inngest directly. We used to rely on a pg_net
+        // trigger but Supabase's hosted Postgres blocks the GUCs that trigger
+        // depends on, so we publish from app-side instead. Recover-unmatched-signals
+        // cron is the safety net for any path that misses this.
+        const eventKey = process.env.INNGEST_EVENT_KEY;
+        if (eventKey && r.target_id) {
+          try {
+            await fetch(`https://inn.gs/e/${eventKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: 'signal.created',
+                data: {
+                  signal_id: r.target_id,
+                  workspace_id: actor.workspace_id,
+                  entity_id: a.entity_id,
+                  type: a.type,
+                  observed_at: new Date().toISOString(),
+                },
+              }),
+            });
+          } catch {
+            // Non-fatal: signal is in DB; recovery cron will pick it up.
+          }
+        }
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
       }
 
