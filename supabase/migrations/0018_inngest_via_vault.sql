@@ -2,18 +2,17 @@
 -- instead of Postgres GUCs. Hosted Supabase blocks ALTER DATABASE SET app.* for
 -- the postgres user, so the GUC approach is dead. Vault is the supported path.
 --
--- ONE-TIME SETUP (run once in Supabase dashboard SQL editor before this migration
--- is effective). The vault secret name is `inngest_event_url` and stores the
--- full Inngest event ingestion URL with the event key embedded:
+-- pg_net signature note: net.http_post takes body as jsonb (not text). The
+-- original migration 0002 cast body to ::text which would have failed at fire
+-- time if the function ever actually ran; it never did because the GUC was
+-- unset and the trigger early-returned. Now that vault is populated, body
+-- must be passed as jsonb.
 --
+-- ONE-TIME SETUP (run once via SQL editor or scripts/setup_inngest_publishing.ts):
 --   select vault.create_secret(
 --     'https://inn.gs/e/REPLACE_WITH_INNGEST_EVENT_KEY',
 --     'inngest_event_url'
 --   );
---
--- To rotate, update with:
---   select vault.update_secret(id, 'https://inn.gs/e/<NEW_KEY>')
---   from vault.secrets where name = 'inngest_event_url';
 
 create or replace function notify_inngest_signal() returns trigger as $$
 declare
@@ -31,7 +30,6 @@ begin
 
   perform net.http_post(
     url := v_endpoint,
-    headers := jsonb_build_object('Content-Type', 'application/json'),
     body := jsonb_build_object(
       'name', 'signal.created',
       'data', jsonb_build_object(
@@ -41,7 +39,8 @@ begin
         'type', new.type,
         'observed_at', new.observed_at
       )
-    )::text
+    ),
+    headers := jsonb_build_object('Content-Type', 'application/json')
   );
   return new;
 end;
@@ -63,7 +62,6 @@ begin
 
   perform net.http_post(
     url := v_endpoint,
-    headers := jsonb_build_object('Content-Type', 'application/json'),
     body := jsonb_build_object(
       'name', 'gate.created',
       'data', jsonb_build_object(
@@ -72,11 +70,9 @@ begin
         'requested_by_agent', new.requested_by_agent,
         'policy', new.policy
       )
-    )::text
+    ),
+    headers := jsonb_build_object('Content-Type', 'application/json')
   );
   return new;
 end;
 $$ language plpgsql security definer;
-
--- Triggers themselves are unchanged from migration 0002; the function bodies
--- are what was broken. CREATE OR REPLACE FUNCTION above is enough.
