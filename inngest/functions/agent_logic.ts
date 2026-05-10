@@ -17,7 +17,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 
@@ -184,11 +184,11 @@ export async function runAgent(
   //   System message = stable across runs in this (workspace, behavior). Caches.
   //   User message   = per-run variable content (agent identity, signal, facts).
   // ============================================================
-  // Drafters get past gate decisions for similar entities in their context. The
-  // claim_poster doesn't need this (it just records observations); the enricher
-  // doesn't need it (it extracts atomic facts, not high-judgment outputs). So
-  // only the drafter pays the lookup cost.
+  // Drafters get past gate decisions + linked contacts in their context. Other
+  // behaviors (claim_poster, enricher) don't need either — they're not making
+  // judgment calls about who to send to.
   let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [];
+  let contacts: Array<{ name: string; email: string; role: string }> = [];
   if (behavior === 'drafter') {
     try {
       const outs = await pastOutcomesFn(supabase, payload.workspace_id, {
@@ -198,13 +198,41 @@ export async function runAgent(
         entity_name: o.entity_name, gate_policy: o.gate_policy, decision: o.decision,
         decided_at: o.decided_at, similarity: o.similarity,
       }));
-    } catch {
-      // Non-fatal: drafter still runs, just without past-outcome context.
-    }
+    } catch { /* non-fatal */ }
+
+    // Contacts: read facts where works_at = entity_id, then their email + role facts
+    try {
+      const contactRows = await supabase.from('facts').select('subject_entity')
+        .eq('workspace_id', payload.workspace_id)
+        .eq('predicate', 'works_at').eq('object_entity', ent.data.id)
+        .is('supersedes', null).limit(5);
+      const contactIds = ((contactRows.data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity);
+      if (contactIds.length) {
+        const [emailFacts, roleFacts, contactEnts] = await Promise.all([
+          supabase.from('facts').select('subject_entity, object_text')
+            .eq('workspace_id', payload.workspace_id).in('subject_entity', contactIds)
+            .eq('predicate', 'email').is('supersedes', null),
+          supabase.from('facts').select('subject_entity, object_text')
+            .eq('workspace_id', payload.workspace_id).in('subject_entity', contactIds)
+            .eq('predicate', 'role').is('supersedes', null),
+          supabase.from('entities').select('id, name').in('id', contactIds),
+        ]);
+        const emailById = new Map<string, string>();
+        const roleById = new Map<string, string>();
+        const nameById = new Map<string, string>();
+        for (const r of (emailFacts.data ?? []) as Array<{ subject_entity: string; object_text: string }>) emailById.set(r.subject_entity, r.object_text);
+        for (const r of (roleFacts.data ?? []) as Array<{ subject_entity: string; object_text: string }>) roleById.set(r.subject_entity, r.object_text);
+        for (const r of (contactEnts.data ?? []) as Array<{ id: string; name: string }>) nameById.set(r.id, r.name);
+        contacts = contactIds
+          .filter((id) => emailById.has(id))
+          .map((id) => ({ name: nameById.get(id) ?? '(unknown)', email: emailById.get(id)!, role: roleById.get(id) ?? '' }))
+          .slice(0, 3);
+      }
+    } catch { /* non-fatal */ }
   }
 
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp);
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sig.data, ent.data, activeFacts, pastOutcomesList);
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sig.data, ent.data, activeFacts, pastOutcomesList, contacts);
 
   let llm;
   try {
@@ -251,7 +279,9 @@ export async function runAgent(
   if (decision.action === 'post_touch_draft' && behavior === 'drafter') {
     const subject = sanitizeText((decision.subject as string) ?? '');
     const body = sanitizeText((decision.body as string) ?? '');
-    const composed = subject ? `Subject: ${subject}\n\n${body}` : body;
+    const toEmail = ((decision as { to_email?: string | null }).to_email ?? '').toString().trim();
+    const toLine = toEmail ? `To: ${toEmail}\n` : '';
+    const composed = subject ? `${toLine}Subject: ${subject}\n\n${body}` : `${toLine}${body}`;
     const r = await callTool(supabase, actor, 'post_to_channel', {
       channel_id, kind: 'touch_draft', body: composed, cites: validCites,
     }, meta);
@@ -302,6 +332,17 @@ export async function runAgent(
       await callTool(supabase, actor, 'post_to_channel', {
         channel_id, kind: 'decision', body: reasoning, cites: assertedIds, parent_post_id: post.target_id,
       }, meta);
+    }
+    // Auto-fetch contacts if the entity has a domain and no contacts yet.
+    // Runs once per entity (idempotent on email). Skips silently if HUNTER_API_KEY
+    // is not set or the entity has no domain.
+    if (process.env.HUNTER_API_KEY) {
+      const linked = await maybeLinkContactsForEntity(supabase, actor, ent.data.id, channel_id, meta);
+      if (linked > 0) {
+        await callTool(supabase, actor, 'post_to_channel', {
+          channel_id, kind: 'system', body: `Linked ${linked} contact${linked === 1 ? '' : 's'} via Hunter.io.`,
+        }, meta);
+      }
     }
     return {
       ok: true, action: 'enrich',
@@ -384,6 +425,8 @@ EMAIL FORMULA — 4 parts, in this order, each separated by a blank line:
 
 5. ASK — short. "Worth exploring?" or "Open to a 15-min chat?" or "Want to see it run?". One sentence.
 
+RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle (founder/CEO for cold outreach to early-stage; RevOps lead or VP Sales for ops-tool pitch; CTO for technical depth). Echo the chosen email in your output's "to_email" field so the audit trail records who this draft is addressed to. If no CONTACTS, set "to_email" to null.
+
 Total: subject is one word; body covers parts 2-5 in order. Single paragraph or split into a few — your call based on what reads naturally. No transitional fluff between parts.
 
 Voice and hard rules come from the workspace constitution above. Constitution wins over this formula on tone — if the constitution says "no em dashes" or "no jargon," follow that strictly even if the formula's example uses them.
@@ -399,7 +442,7 @@ CRITICAL: do NOT gate just because a single attribute (like is_hiring=false) doe
 REASONING — every post_touch_draft output MUST include a "reasoning" field: 1-2 sentences explaining why you drafted (which 2-3 facts you anchored to, what made this account a fit). This becomes a separate "decision" post in the channel so the human auditor (and future you) can see why each draft happened.
 
 Output strictly valid JSON, no preamble:
-{"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<why I drafted, 1-2 sentences>"}
+{"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<why I drafted, 1-2 sentences>","to_email":"<picked contact email or null>"}
 OR
 {"action":"request_gate","body":"<reason draft was not generated>","cites":[],"policy":"<short policy id>","condition":{<context>}}`;
 
@@ -440,6 +483,7 @@ function buildUserPrompt(
   entity: { id: string; name: string; attributes: unknown },
   activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number }>,
   pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [],
+  contacts: Array<{ name: string; email: string; role: string }> = [],
 ): string {
   // Strip embedding from signal (massive vector adds nothing for the LLM and burns tokens).
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
@@ -449,6 +493,10 @@ function buildUserPrompt(
         const sim = o.similarity != null ? ` sim=${o.similarity.toFixed(2)}` : '';
         return `  ${o.decided_at.slice(0, 10)} ${o.entity_name}${sim}: ${o.decision} (policy=${o.gate_policy})`;
       }).join('\n')}\n`
+    : '';
+
+  const contactsBlock = contacts.length
+    ? `\nCONTACTS (linked to this account — pick the best fit for the role you're targeting):\n${contacts.map((c) => `  ${c.name} <${c.email}>${c.role ? ` — ${c.role}` : ''}`).join('\n')}\n`
     : '';
 
   return `AGENT: ${agentId}
@@ -463,7 +511,7 @@ ${JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}
-${pastOutcomesBlock}
+${pastOutcomesBlock}${contactsBlock}
 Decide.`;
 }
 
@@ -545,4 +593,70 @@ async function gateAndPost(
   }, { parent_event_id });
   if (!gate.ok) return { ok: false, error: gate.error, channel_post_id: post.target_id };
   return { ok: true, channel_post_id: post.target_id, gate_id: gate.target_id };
+}
+
+/**
+ * If the entity has a domain (in attributes or as a fact) AND no contact
+ * entities link to it via works_at, fetch top contacts from Hunter and create
+ * contact entities. Idempotent on email. Returns count linked.
+ *
+ * Caps at 3 contacts per entity to avoid burning Hunter quota. The drafter
+ * picks the best one based on role.
+ */
+async function maybeLinkContactsForEntity(
+  supabase: SupabaseClient,
+  actor: { workspace_id: string; actor_kind: 'agent' | 'user' | 'system'; actor_id: string },
+  entity_id: string,
+  channel_id: string,
+  _meta: { prompt_hash?: string; parent_event_id?: string } | undefined,
+): Promise<number> {
+  // 1. Already has contacts? Look for any fact predicate=works_at object_entity=entity_id.
+  const existing = await supabase.from('facts')
+    .select('id')
+    .eq('workspace_id', actor.workspace_id)
+    .eq('predicate', 'works_at')
+    .eq('object_entity', entity_id)
+    .is('supersedes', null)
+    .limit(1);
+  if ((existing.data ?? []).length > 0) return 0;
+
+  // 2. Find domain. Prefer attributes.domain, fall back to a fact predicate=domain.
+  const ent = await supabase.from('entities').select('attributes')
+    .eq('id', entity_id).maybeSingle();
+  let domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+  if (!domain) {
+    const f = await supabase.from('facts').select('object_text')
+      .eq('workspace_id', actor.workspace_id).eq('subject_entity', entity_id)
+      .eq('predicate', 'domain').is('supersedes', null).limit(1).maybeSingle();
+    domain = ((f.data?.object_text as string) ?? '').trim().toLowerCase();
+  }
+  if (!domain || domain.endsWith('.example')) return 0;  // skip placeholder domains
+
+  // 3. Hunter lookup
+  let contacts;
+  try {
+    contacts = await findContactsFn({ domain, limit: 3 });
+  } catch (e) {
+    // Non-fatal: log to channel as system note. Don't kill the enricher run.
+    await callTool(supabase, actor, 'post_to_channel', {
+      channel_id, kind: 'system',
+      body: `Contact lookup failed for ${domain}: ${e instanceof Error ? e.message : String(e)}`,
+    });
+    return 0;
+  }
+  if (!contacts.length) return 0;
+
+  // 4. Link top 3
+  let linked = 0;
+  for (const c of contacts.slice(0, 3)) {
+    try {
+      const r = await linkContactFn(supabase, actor, {
+        account_entity_id: entity_id, name: c.name, email: c.email, role: c.role || undefined,
+      });
+      if (r.created) linked++;
+    } catch {
+      // skip; idempotent so retry next cycle is safe
+    }
+  }
+  return linked;
 }

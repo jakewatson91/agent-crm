@@ -94,6 +94,12 @@ export default async function OutreachAuditPage({ params }: { params: Promise<{ 
                       </span>
                     )}
                   </div>
+                  {e.top_contact && (
+                    <div style={{ marginTop: '.25rem', fontSize: '.75rem', color: '#7aa2f7' }}>
+                      → {e.top_contact.name} <span style={{ color: '#666' }}>&lt;{e.top_contact.email}&gt;</span>
+                      {e.top_contact.role && <span style={{ color: '#555' }}> · {e.top_contact.role}</span>}
+                    </div>
+                  )}
                   {draftBody && (
                     <div style={{ marginTop: '.4rem', fontSize: '.8rem', color: '#9aa0a6', whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>
                       {draftBody.length > DRAFT_PREVIEW_LEN ? draftBody.slice(0, DRAFT_PREVIEW_LEN) + '…' : draftBody}

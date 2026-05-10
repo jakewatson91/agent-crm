@@ -12,9 +12,11 @@ import {
 } from '@agent-crm/primitives';
 import { TOOL_SCHEMAS, type ToolName } from './schemas.js';
 import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, type EntityStatus } from './reads.js';
+import { findContacts, linkContactToAccount } from './contacts.js';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes };
+export { findContacts, linkContactToAccount };
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -172,6 +174,18 @@ export async function callTool(
         return { ok: true, event_id: '', target_id: a.entity_id ?? '', data };
       }
 
+      case 'find_contacts': {
+        const a = args as { domain: string; limit: number; role_filter?: string };
+        const data = await findContacts(a);
+        return { ok: true, event_id: '', target_id: '', data };
+      }
+
+      case 'link_contact_to_account': {
+        const a = args as { account_entity_id: string; name: string; email: string; role?: string };
+        const data = await linkContactToAccount(supabase, actor, a);
+        return { ok: true, event_id: '', target_id: data.contact_entity_id, data };
+      }
+
       default: {
         const _exhaustive: never = tool;
         return { ok: false, error: `Unknown tool: ${String(_exhaustive)}` };
@@ -209,6 +223,8 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     find_similar_entities: 'Vector search across entity embeddings. Given a source entity_id, returns the top_k most similar entities by cosine similarity. Use to find prospects that look like an existing customer or pattern.',
     lookup_entity: 'Find entities by name. Supports fuzzy ILIKE matching against entities.name. Use when you have a company name from a signal or external source and need its entity_id to call other tools.',
     past_outcomes: 'Recent gate decisions (approved / rejected / modified) for the given entity, semantically similar entities, or signals of the same type. Use to learn what happened last time we drafted to companies like this.',
+    find_contacts: 'Find contacts (name, email, role, seniority) at a domain via Hunter.io. Token-efficient projection. Quota: 25/mo free, 500/mo paid.',
+    link_contact_to_account: 'Create a contact entity and link it to an account via works_at + email + role facts. Idempotent on email: if a contact with the same email already exists, returns its id.',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({

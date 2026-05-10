@@ -23,6 +23,7 @@ export interface EntitySummary {
   latest_activity: string | null;
   channel_id: string | null;
   has_draft: boolean;
+  top_contact: { name: string; email: string; role: string | null } | null;
 }
 
 function statusFor(latestDraftAt: string | null, latestGateAt: string | null, latestPostAt: string | null, hasSignals: boolean): EntityStatus {
@@ -60,7 +61,7 @@ export async function listEntities(
   const entityIds = channels.map((c) => c.account_entity_id);
   const channelIds = channels.map((c) => c.id);
 
-  const [entRes, draftsRes, gatesRes, postsRes, factsRes, signalsRes] = await Promise.all([
+  const [entRes, draftsRes, gatesRes, postsRes, factsRes, signalsRes, contactLinksRes] = await Promise.all([
     supabase.from('entities').select('id, name, kind').in('id', entityIds),
     supabase.from('channel_posts').select('channel_id, body, created_at')
       .in('channel_id', channelIds).eq('kind', 'touch_draft')
@@ -74,6 +75,11 @@ export async function listEntities(
     supabase.from('facts').select('subject_entity').in('subject_entity', entityIds).is('supersedes', null),
     supabase.from('signals').select('entity_id, type, created_at').in('entity_id', entityIds)
       .order('created_at', { ascending: false }).limit(entityIds.length * 5),
+    // Contacts linked to each account via works_at
+    supabase.from('facts').select('subject_entity, object_entity, created_at')
+      .eq('workspace_id', workspace_id).eq('predicate', 'works_at')
+      .in('object_entity', entityIds).is('supersedes', null)
+      .order('created_at', { ascending: false }),
   ]);
 
   const entityById = new Map<string, { id: string; name: string; kind: string }>();
@@ -107,11 +113,44 @@ export async function listEntities(
     signalCount.set(r.entity_id, (signalCount.get(r.entity_id) ?? 0) + 1);
   }
 
+  // Resolve top contact per account: for each account with at least one works_at link,
+  // pull the contact entity's name + email + role facts. Use the most recent link.
+  const accountToContactId = new Map<string, string>();
+  for (const r of (contactLinksRes.data ?? []) as Array<{ subject_entity: string; object_entity: string }>) {
+    if (!accountToContactId.has(r.object_entity)) accountToContactId.set(r.object_entity, r.subject_entity);
+  }
+  const contactIds = [...new Set(accountToContactId.values())];
+  const contactById = new Map<string, { name: string; email: string; role: string | null }>();
+  if (contactIds.length) {
+    const [cEnts, cEmails, cRoles] = await Promise.all([
+      supabase.from('entities').select('id, name').in('id', contactIds),
+      supabase.from('facts').select('subject_entity, object_text')
+        .eq('workspace_id', workspace_id).eq('predicate', 'email')
+        .in('subject_entity', contactIds).is('supersedes', null),
+      supabase.from('facts').select('subject_entity, object_text')
+        .eq('workspace_id', workspace_id).eq('predicate', 'role')
+        .in('subject_entity', contactIds).is('supersedes', null),
+    ]);
+    const nameById = new Map<string, string>();
+    const emailById = new Map<string, string>();
+    const roleById = new Map<string, string>();
+    for (const r of (cEnts.data ?? []) as Array<{ id: string; name: string }>) nameById.set(r.id, r.name);
+    for (const r of (cEmails.data ?? []) as Array<{ subject_entity: string; object_text: string }>) emailById.set(r.subject_entity, r.object_text);
+    for (const r of (cRoles.data ?? []) as Array<{ subject_entity: string; object_text: string }>) roleById.set(r.subject_entity, r.object_text);
+    for (const id of contactIds) {
+      const email = emailById.get(id);
+      if (!email) continue;
+      contactById.set(id, { name: nameById.get(id) ?? (email.split('@')[0] || 'unknown'), email, role: roleById.get(id) ?? null });
+    }
+  }
+
   const summaries: EntitySummary[] = channels.map((c) => {
     const ent = entityById.get(c.account_entity_id);
     const draftAt = latestDraft.get(c.id) ?? null;
     const gateAt = latestGate.get(c.id) ?? null;
     const postAt = latestPost.get(c.id) ?? null;
+    const contactId = accountToContactId.get(c.account_entity_id);
+    const top_contact = contactId ? (contactById.get(contactId) ?? null) : null;
     return {
       entity_id: c.account_entity_id,
       name: ent?.name ?? '(unknown)',
@@ -122,6 +161,7 @@ export async function listEntities(
       latest_activity: postAt,
       channel_id: c.id,
       has_draft: !!draftAt,
+      top_contact,
     };
   });
 

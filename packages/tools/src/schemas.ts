@@ -132,6 +132,19 @@ export const PastOutcomesSchema = z.object({
   since_days: z.number().int().min(1).max(365).default(30),
 });
 
+export const FindContactsSchema = z.object({
+  domain: z.string().min(1),
+  limit: z.number().int().min(1).max(20).default(5),
+  role_filter: z.string().optional(),
+});
+
+export const LinkContactToAccountSchema = z.object({
+  account_entity_id: UuidSchema,
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.string().optional(),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -153,6 +166,8 @@ export const TOOL_SCHEMAS = {
   find_similar_entities: FindSimilarEntitiesSchema,
   lookup_entity: LookupEntitySchema,
   past_outcomes: PastOutcomesSchema,
+  find_contacts: FindContactsSchema,
+  link_contact_to_account: LinkContactToAccountSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;
