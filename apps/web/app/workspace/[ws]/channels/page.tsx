@@ -41,10 +41,10 @@ export default async function OutreachAuditPage({ params }: { params: Promise<{ 
 
   return (
     <section>
-      <h2 style={{ marginTop: 0 }}>Outreach audit</h2>
+      <h2 style={{ marginTop: 0 }}>Inbox</h2>
       <p style={{ color: '#666', fontSize: '.85rem', marginBottom: '1.25rem' }}>
-        What the agent sees right now. This view calls the <code>list_entities</code> MCP tool that any agent can use too.
-        Click any row to walk provenance.
+        What the agent has surfaced. Same data the agent sees via the <code>list_entities</code> MCP tool.
+        Click a row to walk provenance.
       </p>
 
       {entries.length === 0 ? (
