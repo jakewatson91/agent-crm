@@ -19,9 +19,17 @@ interface Gate {
   channel_id: string | null;
 }
 
+interface Health {
+  unmatched_signals: number;
+  errored_sources: number;
+  stale_gates: number;
+  stale_drafts: number;
+}
+
 export default function GatesPage() {
   const params = useParams<{ ws: string }>();
   const [gates, setGates] = useState<Gate[]>([]);
+  const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -29,9 +37,12 @@ export default function GatesPage() {
   async function load() {
     setLoading(true);
     try {
-      const res = await fetch(`/api/gates/list?workspace_id=${params.ws}`);
-      const j = await res.json();
-      setGates(j.gates ?? []);
+      const [gRes, hRes] = await Promise.all([
+        fetch(`/api/gates/list?workspace_id=${params.ws}`).then((r) => r.json()),
+        fetch(`/api/admin/health?workspace_id=${params.ws}`).then((r) => r.json()).catch(() => null),
+      ]);
+      setGates(gRes.gates ?? []);
+      if (hRes && !hRes.error) setHealth(hRes);
     } finally {
       setLoading(false);
     }
@@ -74,6 +85,14 @@ export default function GatesPage() {
 
   if (loading) return <section><h2 style={{ marginTop: 0 }}>Gates</h2><p style={{ color: '#666' }}>loading…</p></section>;
 
+  const healthBadges = health ? [
+    { label: 'unmatched signals', value: health.unmatched_signals, hint: '>30m old, no match' },
+    { label: 'errored sources', value: health.errored_sources, hint: 'last run failed' },
+    { label: 'stale gates', value: health.stale_gates, hint: '>7d undecided' },
+    { label: 'stale drafts', value: health.stale_drafts, hint: '>7d, no follow-up' },
+  ] : [];
+  const allHealthy = health && healthBadges.every((b) => b.value === 0);
+
   return (
     <section>
       <h2 style={{ marginTop: 0 }}>Gates</h2>
@@ -81,6 +100,26 @@ export default function GatesPage() {
         Empty inbox is the success state. Items here are exception cases the system flagged for you.
         For draft posts: copy → paste into your email tool → approve once sent.
       </p>
+
+      {health && (
+        <div style={{
+          display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '1rem',
+          padding: '.5rem .75rem', background: '#0a0a0a', border: '1px solid #1f1f1f', fontSize: '.8rem',
+        }}>
+          <span style={{ color: '#666' }}>system:</span>
+          {allHealthy && <span style={{ color: '#9ece6a' }}>✓ all clear</span>}
+          {!allHealthy && healthBadges.filter((b) => b.value > 0).map((b) => (
+            <span key={b.label} title={b.hint} style={{
+              padding: '.1rem .4rem', borderRadius: 3,
+              background: '#1f1f1f',
+              color: b.value > 5 ? '#f7768e' : '#e0af68',
+              border: `1px solid ${b.value > 5 ? '#f7768e33' : '#e0af6833'}`,
+            }}>
+              {b.label}: {b.value}
+            </span>
+          ))}
+        </div>
+      )}
       {gates.length === 0 ? (
         <div style={{ marginTop: '2rem', padding: '2rem', border: '1px dashed #1f1f1f', textAlign: 'center', color: '#444' }}>
           No pending gates.
