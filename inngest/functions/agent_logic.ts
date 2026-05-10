@@ -349,13 +349,19 @@ EMAIL FORMULA — 4 parts, in this order, each separated by a blank line:
    Don't apologize twice. Don't qualify it. One sentence, then move on.
 
 3. PROBLEM STATEMENT — 1-2 sentences naming the specific pain orgs EXACTLY LIKE THIS ACCOUNT hit. Use the entity's facts/attributes to specialize. The pain space we speak to (pick what fits the prospect, don't list all):
-   - Running GTM with 1-2 people + agents on top of HubSpot/Salesforce — bolt-on systems built for humans, retrofitted for AI
+   - Running GTM with 1-2 people plus agents on top of HubSpot/Salesforce, bolt-on systems built for humans
    - Token bloat: agents reading raw row dumps from legacy CRMs eat 5-10x the tokens they need to
    - Last-write-wins on shared accounts: when multiple agents update the same row, data silently disappears
-   - No provenance: agents make claims your customer can't verify because there's no source-event chain
+   - No provenance: agents make claims your customer can't verify
    Tie the problem to a specific fact about THIS account if you can (small team, recent fundraise, AI-forward stack).
 
-4. ONE-LINER on what we do + why we're different — exactly 1 sentence. Pull the angle from the workspace ABOUT. Pick one of: agent-native architecture (events + facts, not rows), cost (sized for agents, not humans), event-mediated agent collaboration (no shared mutable state), surfacing info only when needed (gates, not dashboards). Pick the angle that connects to the problem statement above.
+4. ONE-LINER on the concrete thing we do — exactly 1 sentence. State a CONCRETE FACT about how the system behaves. Pick one that connects to the problem statement above:
+   - "When 3 of your agents update the same account at once, all 3 writes land. We benchmarked HubSpot losing 96%."
+   - "Every line in this email cites a fact you can trace back to the signal it came from."
+   - "Agents read 1.28x fewer tokens because the system projects rows for agents, not for humans clicking through tabs."
+   - "You see things only when policy says you should. The default home screen is empty when nothing needs you."
+
+   BANNED PHRASES (do NOT use any variant): "AI-native CRM", "agent-native CRM", "agent-native architecture", "agent-native approach", "optimizes workflows", "optimizes agent workflows", "built for agents", "purpose-built for X", "redefining the way", "reimagining". These are filler. The reader has heard them 100 times this week. Use a concrete behavior or a number instead.
 
 5. ASK — short. "Worth exploring?" or "Open to a 15-min chat?" or "Want to see it run?". One sentence.
 
@@ -462,6 +468,14 @@ const BANNED_PHRASES: Array<{ re: RegExp; replace: string }> = [
   { re: /\bworld[- ]class\b/gi, replace: '' },
   { re: /\bnext[- ]gen(eration)?\b/gi, replace: '' },
   { re: /\b(quickly|easily|effortlessly)\b/gi, replace: '' },
+  // Anti-pitch filler. Drafts that lean on these say nothing concrete and read like a templated AI tells.
+  { re: /\bAI[- ]native CRM\b/gi, replace: '' },
+  { re: /\bagent[- ]native (CRM|architecture|approach|platform|system)\b/gi, replace: '' },
+  { re: /\boptimizes? (agent )?(workflows?|operations|processes?)\b/gi, replace: '' },
+  { re: /\bbuilt (specifically )?for agents\b/gi, replace: '' },
+  { re: /\bpurpose[- ]built (for|to)\b/gi, replace: '' },
+  { re: /\bredefin(e|ing) the way\b/gi, replace: '' },
+  { re: /\breimagin(e|ing)\b/gi, replace: '' },
 ];
 
 /** Strip em/en dashes, tidy spacing, and excise corporate-template phrases the
