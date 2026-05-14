@@ -99,10 +99,10 @@ export async function runAgent(
   // 2. Active facts.
   const allFacts = await supabase
     .from('facts')
-    .select('id, predicate, object_text, confidence, supersedes')
+    .select('id, predicate, object_text, confidence, supersedes, created_at')
     .eq('subject_entity', ent.data.id);
   if (allFacts.error) return { ok: false, action: 'skip', reason: `facts query failed: ${allFacts.error.message}` };
-  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null }>;
+  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string }>;
   const supersededIds = new Set(factRows.map((f) => f.supersedes).filter((x): x is string => !!x));
   const activeFacts = factRows.filter((f) => !supersededIds.has(f.id));
 
@@ -144,8 +144,38 @@ export async function runAgent(
   const actor = { workspace_id: payload.workspace_id, actor_kind: 'agent' as const, actor_id: payload.agent };
 
   // ============================================================
-  // Drafter pre-LLM deterministic checks
+  // Pre-LLM deterministic checks. Each one that fires emits a `decision` post
+  // (no gate) and returns. Gates are only for irreversible actions a human
+  // must approve — see CLAUDE.md. Operational rejections by the agent itself
+  // are audit-trail entries, not human work.
   // ============================================================
+
+  // Enricher: skip re-enrichment when the same signal body was processed for
+  // this entity in the last 7d. Catches YC-directory daily re-emit pattern.
+  // Cheap O(1) hash lookup via agent_run_metrics payload.
+  let signalBodyHash: string | null = null;
+  if (behavior === 'enricher' && sigData?.body_for_embedding) {
+    const normalized = sigData.body_for_embedding.trim().toLowerCase().replace(/\s+/g, ' ');
+    signalBodyHash = createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+    const since7d = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
+    const prior = await supabase.from('events')
+      .select('id')
+      .eq('workspace_id', payload.workspace_id)
+      .eq('action', 'agent_run_metrics')
+      .gte('created_at', since7d)
+      .eq('payload->>signal_body_hash', signalBodyHash)
+      .eq('payload->>entity_id', ent.data.id)
+      .limit(1);
+    if ((prior.data?.length ?? 0) > 0) {
+      await callTool(supabase, actor, 'post_to_channel', {
+        channel_id, kind: 'decision',
+        body: `Skipped enrichment: identical signal body already processed for ${ent.data.name} in the last 7d. No new content to extract.`,
+        cites: [],
+      }, { parent_event_id: payload.parent_event_id });
+      return { ok: true, action: 'skip', reason: 'duplicate_signal_body', behavior };
+    }
+  }
+
   if (behavior === 'drafter') {
     const suppression = policy.suppression_list ?? [];
     const entityDomain = ((ent.data.attributes as { domain?: string } | null)?.domain ?? '').toLowerCase();
@@ -155,15 +185,12 @@ export async function runAgent(
       return entityDomain.includes(t) || entityName.includes(t) || ent.data.id === s;
     });
     if (suppressed) {
-      const r = await gateAndPost(supabase, actor, channel_id, payload.parent_event_id,
-        `Drafter blocked: ${ent.data.name} matches the suppression list. No outbound generated.`,
-        [], 'suppression_match', { entity: ent.data.name, domain: entityDomain });
-      return { ok: r.ok, action: 'request_gate', channel_post_id: r.channel_post_id, gate_id: r.gate_id, reason: r.error, behavior };
+      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+        `Drafter skipped: ${ent.data.name} matches the suppression list. No outbound generated.`, []);
+      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'suppression_match', behavior };
     }
 
-    // Draft suppression: if a touch_draft already exists in this channel within the
-    // suppression window, skip drafting. Re-drafting on every signal pile-ups multiple
-    // drafts on one account (audit found 4 drafts on Ventura). Default 7d window.
+    // Already drafted recently for this account — don't pile up duplicates.
     const draftSuppressionDays = (policy as { draft_suppression_days?: number }).draft_suppression_days ?? 7;
     if (draftSuppressionDays > 0) {
       const since = new Date(Date.now() - draftSuppressionDays * 86400 * 1000).toISOString();
@@ -178,13 +205,14 @@ export async function runAgent(
       if ((existing.data?.length ?? 0) > 0) {
         const last = existing.data![0]!;
         const ageDays = Math.round((Date.now() - Date.parse(last.created_at as string)) / 86400000 * 10) / 10;
-        const r = await gateAndPost(supabase, actor, channel_id, payload.parent_event_id,
-          `Drafter skipped: ${ent.data.name} already has a touch_draft from ${ageDays}d ago by ${last.author_id}. Approve or reject that one before drafting again.`,
-          [], 'draft_already_exists', { entity: ent.data.name, existing_post_id: last.id, existing_author: last.author_id, age_days: ageDays });
-        return { ok: r.ok, action: 'request_gate', channel_post_id: r.channel_post_id, gate_id: r.gate_id, reason: r.error, behavior };
+        const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+          `Drafter skipped: ${ent.data.name} already has a touch_draft from ${ageDays}d ago by ${last.author_id}.`,
+          []);
+        return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'draft_already_exists', behavior };
       }
     }
 
+    // Daily-cap rate limit.
     const cap = policy.daily_send_cap;
     if (typeof cap === 'number' && cap >= 0) {
       const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
@@ -195,11 +223,31 @@ export async function runAgent(
         .gte('created_at', startOfDay.toISOString());
       const usedToday = today.count ?? 0;
       if (usedToday >= cap) {
-        const r = await gateAndPost(supabase, actor, channel_id, payload.parent_event_id,
-          `Drafter blocked: daily send cap reached (${usedToday}/${cap}). Try again tomorrow.`,
-          [], 'rate_limit_exceeded', { used_today: usedToday, cap });
-        return { ok: r.ok, action: 'request_gate', channel_post_id: r.channel_post_id, gate_id: r.gate_id, reason: r.error, behavior };
+        const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+          `Drafter skipped: daily send cap reached (${usedToday}/${cap}). Resumes tomorrow.`, []);
+        return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'rate_limit_exceeded', behavior };
       }
+    }
+
+    // ICP gate at the agent level (saves the drafter LLM call when the answer
+    // is already known). drafter prompt also has this rule for defense in depth.
+    const icpFact = activeFacts.find((f) => f.predicate === 'icp_fit');
+    const icpVal = icpFact ? parseFloat(icpFact.object_text ?? '') : NaN;
+    if (!isNaN(icpVal) && icpVal < 0.5) {
+      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+        `Drafter skipped: icp_fit=${icpVal.toFixed(2)} below 0.5 threshold. ${ent.data.name} is not a strong fit. (No LLM call.)`,
+        icpFact ? [icpFact.id] : []);
+      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'off_icp_pre_llm', behavior };
+    }
+
+    // Thin-facts gate. Drafts written off <3 substantive facts are generic and
+    // bounce. Save the LLM call.
+    const substantiveFacts = activeFacts.filter((f) => f.predicate !== 'icp_fit' && f.predicate !== 'icp_fit_breakdown');
+    if (substantiveFacts.length < 3) {
+      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+        `Drafter skipped: only ${substantiveFacts.length} substantive fact${substantiveFacts.length === 1 ? '' : 's'} on ${ent.data.name}. Need ≥3 before a draft is worth writing. (No LLM call.)`,
+        substantiveFacts.map((f) => f.id));
+      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'thin_facts_pre_llm', behavior };
     }
   }
 
@@ -303,6 +351,7 @@ export async function runAgent(
         behavior, agent: payload.agent,
         signal_id: payload.signal_id ?? null,
         entity_id: ent.data.id,
+        signal_body_hash: signalBodyHash,
         model: llm.model, provider: llm.provider,
         input_tokens: llm.input_tokens,
         output_tokens: llm.output_tokens,
@@ -348,10 +397,13 @@ export async function runAgent(
   }
 
   if (decision.action === 'request_gate') {
-    const r = await gateAndPost(supabase, actor, channel_id, payload.parent_event_id,
-      sanitizeText(decision.body ?? ''), validCites, decision.policy ?? 'low_confidence',
-      decision.condition ?? { reason: 'agent flagged for review' });
-    return { ok: r.ok, action: 'request_gate', channel_post_id: r.channel_post_id, gate_id: r.gate_id, reason: r.error, behavior, ...tokens };
+    // Agent decided not to act, but said so in writing. Audit-trail entry, not
+    // a human approval — no gate is created. (See CLAUDE.md: gates are for
+    // irreversible actions only.)
+    const policy = (decision.policy ?? 'low_confidence') as string;
+    const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+      `[${policy}] ${sanitizeText(decision.body ?? '')}`, validCites);
+    return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: policy, behavior, ...tokens };
   }
 
   // Enricher dispatch: assert each extracted fact, then post a one-line summary.
@@ -424,6 +476,26 @@ export async function runAgent(
 // prompts (system message stable per workspace+behavior; cacheable)
 // ----------------------------------------------------------------
 
+// Stable preamble shared by every behavior in this workspace. Lives at the top
+// of the system message so OpenAI's prompt cache (1024-token minimum, ~5-10 min
+// TTL) covers it across runs. The enricher path was previously coming in at
+// 1009 tokens — 15 short of the threshold — which is why the 24-h cache rate
+// was 0%. This block is genuine grounding context, not filler: it tells the
+// LLM how the broader system works so cite/skip/gate decisions land correctly.
+const SYSTEM_PREAMBLE = `You operate inside an agent-native CRM. Here is how the surrounding system works, so your output lands in the right place:
+
+DATA MODEL — accounts and contacts are "entities." Each entity has attributes (a small jsonb you can read but not directly modify) and any number of FACTS asserted against it. A fact is one atomic, citable claim: subject_entity + predicate + object_text + confidence + source_event_id. Facts are content-addressed — re-asserting an identical fact is a no-op. Facts that get refined later use a supersede chain; only non-superseded facts are "active."
+
+EVENTS — every action your peers and you take is appended to an event log. The event log is the source of truth, not the projection tables. This is why provenance and replay work — a downstream agent can reconstruct what any other agent saw at the moment it decided. When you cite a fact_id, the audit trail can walk back from your post to the exact signal that produced the fact.
+
+SUBSCRIPTIONS — you are running because a saved filter (the FILTER RULE in the user message) matched an incoming signal. The filter is a PRIORITIZATION SIGNAL, not a hard constraint. If the signal would benefit a different downstream consumer's filter rule, that's that agent's job — not yours.
+
+CITATION DISCIPLINE — every claim you make should be backed by a fact_id from the ACTIVE FACTS list in the user message. If you cite a fact_id that isn't in the list, it gets stripped silently. If you cannot cite anything, gate or skip — do not make unsupported claims.
+
+DUPLICATION — the system already runs deterministic checks before invoking you. If you see a familiar account, assume any obvious fact is already known. Re-asserting known facts is noise; the downstream sees it as low-signal output.
+
+Now to your specific task.`;
+
 function buildSystemPrompt(
   behavior: AgentBehavior,
   about: string,
@@ -449,7 +521,11 @@ function buildSystemPrompt(
     : behavior === 'enricher' ? ENRICHER_DECISION
     : POSTER_DECISION;
 
-  return `${identity}${aboutBlock}${constitutionBlock}\n\n${decisionBlock}`;
+  // Order matters: preamble (stable, cacheable) → identity (stable) → about
+  // (stable per workspace) → constitution (stable per workspace) → decision
+  // (stable per behavior). The longest stable prefix across runs is everything
+  // up to the decision block, which is what OpenAI's cache keys off.
+  return `${SYSTEM_PREAMBLE}\n\n${identity}${aboutBlock}${constitutionBlock}\n\n${decisionBlock}`;
 }
 
 const POSTER_DECISION = `A new signal matched your saved filter rule. Decide ONE action:
@@ -639,6 +715,27 @@ function sanitizeText(s: string): string {
     .trim();
 }
 
+/**
+ * Post a `decision` channel post without creating a gate. Used for operational
+ * rejections by the agent itself (off_icp, thin_facts, draft_already_exists,
+ * etc.). Per CLAUDE.md, gates are reserved for irreversible actions a human
+ * must approve — agent-internal skips are audit-trail entries, not human work.
+ */
+async function noteDecision(
+  supabase: SupabaseClient,
+  actor: { workspace_id: string; actor_kind: 'agent' | 'user' | 'system'; actor_id: string },
+  channel_id: string,
+  parent_event_id: string | undefined,
+  body: string,
+  cites: string[],
+): Promise<{ ok: boolean; channel_post_id?: string; error?: string }> {
+  const post = await callTool(supabase, actor, 'post_to_channel', {
+    channel_id, kind: 'decision', body, cites,
+  }, { parent_event_id });
+  if (!post.ok) return { ok: false, error: post.error };
+  return { ok: true, channel_post_id: post.target_id };
+}
+
 async function gateAndPost(
   supabase: SupabaseClient,
   actor: { workspace_id: string; actor_kind: 'agent' | 'user' | 'system'; actor_id: string },
@@ -668,6 +765,8 @@ async function gateAndPost(
  * Caps at 3 contacts per entity to avoid burning Hunter quota. The drafter
  * picks the best one based on role.
  */
+const HUNTER_NEGATIVE_CACHE_DAYS = 30;
+
 async function maybeLinkContactsForEntity(
   supabase: SupabaseClient,
   actor: { workspace_id: string; actor_kind: 'agent' | 'user' | 'system'; actor_id: string },
@@ -685,7 +784,22 @@ async function maybeLinkContactsForEntity(
     .limit(1);
   if ((existing.data ?? []).length > 0) return 0;
 
-  // 2. Find domain. Prefer attributes.domain, fall back to a fact predicate=domain.
+  // 2. Negative-result cache. If a prior Hunter call on this entity returned
+  // zero contacts (or hard-errored), we wrote a `contact_lookup_attempted`
+  // fact with a timestamp. Re-calling Hunter is pure waste: same domain →
+  // same empty response. Skip for HUNTER_NEGATIVE_CACHE_DAYS.
+  const sinceCache = new Date(Date.now() - HUNTER_NEGATIVE_CACHE_DAYS * 86400 * 1000).toISOString();
+  const cached = await supabase.from('facts')
+    .select('id, observed_at')
+    .eq('workspace_id', actor.workspace_id)
+    .eq('subject_entity', entity_id)
+    .eq('predicate', 'contact_lookup_attempted')
+    .is('supersedes', null)
+    .gte('observed_at', sinceCache)
+    .limit(1);
+  if ((cached.data ?? []).length > 0) return 0;
+
+  // 3. Find domain. Prefer attributes.domain, fall back to a fact predicate=domain.
   const ent = await supabase.from('entities').select('attributes')
     .eq('id', entity_id).maybeSingle();
   let domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
@@ -697,21 +811,38 @@ async function maybeLinkContactsForEntity(
   }
   if (!domain || domain.endsWith('.example')) return 0;  // skip placeholder domains
 
-  // 3. Hunter lookup
+  // 4. Hunter lookup
   let contacts;
   try {
     contacts = await findContactsFn({ domain, limit: 3 });
   } catch (e) {
-    // Non-fatal: log to channel as system note. Don't kill the enricher run.
+    // Hard error (rate limit, 5xx, etc.). Write the negative marker so we
+    // don't immediately retry on every signal. Non-fatal: log + return.
+    await callTool(supabase, actor, 'assert_fact', {
+      subject_entity: entity_id,
+      predicate: 'contact_lookup_attempted',
+      object_text: `error:${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`,
+      confidence: 1.0,
+    });
     await callTool(supabase, actor, 'post_to_channel', {
       channel_id, kind: 'system',
       body: `Contact lookup failed for ${domain}: ${e instanceof Error ? e.message : String(e)}`,
     });
     return 0;
   }
-  if (!contacts.length) return 0;
+  if (!contacts.length) {
+    // Zero-result: write the negative marker. Prevents re-billing Hunter on
+    // the same dead domain for HUNTER_NEGATIVE_CACHE_DAYS.
+    await callTool(supabase, actor, 'assert_fact', {
+      subject_entity: entity_id,
+      predicate: 'contact_lookup_attempted',
+      object_text: `no_contacts:${domain}`,
+      confidence: 1.0,
+    });
+    return 0;
+  }
 
-  // 4. Link top 3
+  // 5. Link top 3
   let linked = 0;
   for (const c of contacts.slice(0, 3)) {
     try {

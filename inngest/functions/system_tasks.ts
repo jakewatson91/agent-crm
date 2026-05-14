@@ -143,7 +143,8 @@ export const rescoreOnIcpChange = inngest.createFunction(
       const out: Array<{ workspace_id: string; entity_id: string }> = [];
 
       for (const ws of wsRows) {
-        // Find entities whose most-recent icp_fit fact is older than the workspace update.
+        // Case A: entities whose most-recent icp_fit fact is older than the
+        // workspace update. (User re-tuned ICP — refresh all scores.)
         const stale = await supabase.from('facts')
           .select('subject_entity, observed_at')
           .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
@@ -154,6 +155,29 @@ export const rescoreOnIcpChange = inngest.createFunction(
         for (const r of (stale.data ?? []) as Array<{ subject_entity: string }>) {
           out.push({ workspace_id: ws.id, entity_id: r.subject_entity });
         }
+        if (out.length >= RESCORE_LIMIT_PER_RUN) break;
+
+        // Case B: accounts that have NEVER been scored. Pre-existing accounts
+        // from before scoring shipped, or accounts whose enricher run failed
+        // to call scoreAndAssert for some reason. Without this branch, an
+        // account can sit unscored forever and the drafter treats it as low
+        // fit by default.
+        const scoredRes = await supabase.from('facts')
+          .select('subject_entity')
+          .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
+          .is('supersedes', null)
+          .limit(10000);
+        const scoredSet = new Set<string>(((scoredRes.data ?? []) as Array<{ subject_entity: string }>).map((f) => f.subject_entity));
+
+        const allAccts = await supabase.from('entities')
+          .select('id, created_at')
+          .eq('workspace_id', ws.id).eq('kind', 'account')
+          .order('created_at', { ascending: true })
+          .limit(10000);
+        const unscored = ((allAccts.data ?? []) as Array<{ id: string; created_at: string }>)
+          .filter((a) => !scoredSet.has(a.id))
+          .slice(0, RESCORE_LIMIT_PER_RUN - out.length);
+        for (const a of unscored) out.push({ workspace_id: ws.id, entity_id: a.id });
         if (out.length >= RESCORE_LIMIT_PER_RUN) break;
       }
       return out;

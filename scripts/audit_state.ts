@@ -68,19 +68,26 @@ async function main() {
   }
 
   console.log('\n=== RECENT SIGNAL VOLUME (last 7d) ===');
+  // signal_source lives in structured_tags jsonb, not as a column.
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const sigs = await sb.from('signals')
-    .select('signal_source', { count: 'exact', head: false })
+    .select('type, structured_tags')
     .eq('workspace_id', WS)
-    .gte('created_at', since);
-  if (!sigs.error && sigs.data) {
+    .gte('created_at', since)
+    .limit(10000);
+  if (sigs.error) {
+    console.log(`  error: ${sigs.error.message}`);
+  } else if (!sigs.data?.length) {
+    console.log('  (no signals in last 7d)');
+  } else {
     const byType = new Map<string, number>();
-    for (const s of sigs.data) {
-      const k = (s.signal_source as string) ?? '(null)';
+    for (const s of sigs.data as Array<{ type: string; structured_tags: { signal_source?: string } | null }>) {
+      const src = s.structured_tags?.signal_source ?? '(null)';
+      const k = `${src}/${s.type}`;
       byType.set(k, (byType.get(k) ?? 0) + 1);
     }
     for (const [k, v] of [...byType.entries()].sort((a, b) => b[1] - a[1])) {
-      console.log(`  ${k.padEnd(20)} ${v}`);
+      console.log(`  ${k.padEnd(40)} ${v}`);
     }
     console.log(`  total: ${sigs.data.length}`);
   }

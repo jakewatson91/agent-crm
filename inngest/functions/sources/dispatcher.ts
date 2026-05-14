@@ -3,33 +3,74 @@ import { inngest } from '../../client.js';
 import { getConnector } from './registry.js';
 
 /**
- * source-dispatcher: hourly cron that fans out a `source.run` event for each
- * active source whose `last_run_at` indicates it's due. For v0 we run every
- * active source on every tick (simple). Per-source schedule_cron is stored
- * but not yet enforced — that's a v1 refinement.
+ * Map the cron strings we use across connectors to a minimum-interval-in-minutes.
+ * Not a full cron parser — only the patterns the registry actually emits:
+ *
+ *   `*\/N * * * *`   → every N minutes
+ *   `0 *\/N * * *`   → every N hours
+ *   `0 * * * *`      → hourly (fixed minute, wildcard hour)
+ *   `0 H * * *`      → daily at hour H (both fixed)
+ *
+ * A 10% slack window is applied at the call site to avoid edge-timing skips
+ * when the dispatcher itself fires slightly off the minute boundary.
+ */
+function cronToMinIntervalMinutes(cron: string): number {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return 60;
+  const min = parts[0]!;
+  const hour = parts[1]!;
+  const everyNMin = min.match(/^\*\/(\d+)$/);
+  if (everyNMin && hour === '*') return Math.max(1, parseInt(everyNMin[1]!, 10));
+  const everyNHour = hour.match(/^\*\/(\d+)$/);
+  if (everyNHour) return Math.max(1, parseInt(everyNHour[1]!, 10)) * 60;
+  if (/^\d+$/.test(min) && hour === '*') return 60;
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour)) return 1440;
+  return 60;
+}
+
+/**
+ * source-dispatcher: hourly tick that fans out a `source.run` event for each
+ * active source whose own `schedule_cron` is due relative to its `last_run_at`.
+ * Honoring per-source schedule matters because before this enforcement, every
+ * 6-hour Exa source ran every hour — paying for 6× the queries the connector
+ * author specified. Same problem for daily YC + ProductHunt.
  */
 export const sourceDispatcher = inngest.createFunction(
   { id: 'source-dispatcher' },
   { cron: '0 * * * *' },
   async ({ step }) => {
-    const sources = await step.run('fetch-active-sources', async () => {
+    const due = await step.run('select-due-sources', async () => {
       const supabase = createServerClient();
       const { data, error } = await supabase
         .from('sources')
-        .select('id, workspace_id, connector_type')
+        .select('id, workspace_id, connector_type, last_run_at')
         .eq('active', true);
       if (error) throw error;
-      return data ?? [];
+      const now = Date.now();
+      const out: Array<{ id: string; workspace_id: string }> = [];
+      let skipped = 0;
+      for (const s of (data ?? []) as Array<{ id: string; workspace_id: string; connector_type: string; last_run_at: string | null }>) {
+        const conn = getConnector(s.connector_type);
+        if (!conn) continue;
+        const intervalMin = cronToMinIntervalMinutes(conn.meta.schedule_cron);
+        if (s.last_run_at) {
+          const ageMin = (now - Date.parse(s.last_run_at)) / 60000;
+          // 10% slack so we don't miss a tick when both crons fire close together.
+          if (ageMin < intervalMin * 0.9) { skipped++; continue; }
+        }
+        out.push({ id: s.id, workspace_id: s.workspace_id });
+      }
+      return { due: out, skipped };
     });
 
-    if (!sources.length) return { dispatched: 0 };
+    if (!due.due.length) return { dispatched: 0, skipped: due.skipped };
 
-    await step.sendEvent('fan-out-sources', sources.map((s: any) => ({
+    await step.sendEvent('fan-out-sources', due.due.map((s) => ({
       name: 'source.run' as const,
-      data: { source_id: s.id as string, workspace_id: s.workspace_id as string },
+      data: { source_id: s.id, workspace_id: s.workspace_id },
     })));
 
-    return { dispatched: sources.length };
+    return { dispatched: due.due.length, skipped: due.skipped };
   },
 );
 
@@ -64,21 +105,65 @@ export const sourceRun = inngest.createFunction(
       });
 
       const status = out.errors.length === 0 ? 'ok' : 'error';
-      await supabase
-        .from('sources')
-        .update({
-          last_run_at: new Date().toISOString(),
-          last_run_status: status,
-          last_run_summary: {
-            signals_created: out.signals_created,
-            entities_created: out.entities_created,
-            skipped: out.skipped,
-            errors: out.errors.slice(0, 5),  // cap to avoid jsonb bloat
-          },
-        })
-        .eq('id', source.id);
 
-      return { ok: status === 'ok', summary: out };
+      // Yield tracking: how many signals has this source produced over the
+      // last 7d? Used to detect dead queries and silently auto-deactivate so
+      // we stop burning Exa/Hunter/etc credits on sources that find nothing.
+      // Source attribution lives in event.actor_id (e.g. `source:exa:1a2b3c4d`).
+      const sourceActorPrefix = `source:${source.connector_type}:${(source.id as string).slice(0, 8)}`;
+      const since7d = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
+      const { count: signals7d } = await supabase
+        .from('events')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', source.workspace_id as string)
+        .eq('action', 'create_signal')
+        .eq('actor_id', sourceActorPrefix)
+        .gte('created_at', since7d);
+
+      const summary: Record<string, unknown> = {
+        signals_created: out.signals_created,
+        entities_created: out.entities_created,
+        skipped: out.skipped,
+        errors: out.errors.slice(0, 5),
+        signals_7d: signals7d ?? 0,
+      };
+
+      // Auto-deactivate dead sources: zero yield in 7d AND the source has
+      // existed long enough for that to be meaningful. The created_at check
+      // protects brand-new sources from getting killed before their first
+      // signal lands.
+      const { data: srcMeta } = await supabase
+        .from('sources').select('created_at').eq('id', source.id).single();
+      const createdAt = srcMeta?.created_at ? new Date(srcMeta.created_at as string) : null;
+      const olderThan7d = createdAt && (Date.now() - createdAt.getTime()) > 7 * 86400 * 1000;
+      const shouldDeactivate = (signals7d ?? 0) === 0 && olderThan7d;
+
+      const update: Record<string, unknown> = {
+        last_run_at: new Date().toISOString(),
+        last_run_status: status,
+        last_run_summary: summary,
+      };
+      if (shouldDeactivate) update.active = false;
+      await supabase.from('sources').update(update).eq('id', source.id);
+
+      if (shouldDeactivate) {
+        await supabase.from('events').insert({
+          workspace_id: source.workspace_id as string,
+          actor_kind: 'system',
+          actor_id: 'source_yield_monitor',
+          action: 'source_deactivated',
+          target_kind: 'workspace',
+          target_id: source.workspace_id as string,
+          payload: {
+            source_id: source.id,
+            connector_type: source.connector_type,
+            reason: 'zero_signals_7d',
+            signals_7d: 0,
+          },
+        });
+      }
+
+      return { ok: status === 'ok', summary: { ...out, signals_7d: signals7d, deactivated: shouldDeactivate } };
     });
 
     return result;

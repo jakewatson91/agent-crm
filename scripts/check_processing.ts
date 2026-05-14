@@ -18,13 +18,20 @@ async function main() {
   if (!ws.data) throw new Error('no workspace');
   const WS = ws.data.id as string;
 
+  // channel_posts has no workspace_id; join through channels.
+  const wsChannelsRes = await sb.from('channels').select('id').eq('workspace_id', WS);
+  const wsChannelIds = ((wsChannelsRes.data ?? []) as Array<{ id: string }>).map((c) => c.id);
+
   for (const mins of [10, 60]) {
     const since = new Date(Date.now() - mins * 60 * 1000).toISOString();
     const [posts, facts, events] = await Promise.all([
-      sb.from('channel_posts').select('kind').gte('created_at', since),
-      sb.from('facts').select('id').eq('workspace_id', WS).gte('created_at', since),
-      sb.from('events').select('action').eq('workspace_id', WS).gte('ts', since),
+      sb.from('channel_posts').select('kind').in('channel_id', wsChannelIds).gte('created_at', since).limit(10000),
+      sb.from('facts').select('id').eq('workspace_id', WS).gte('created_at', since).limit(10000),
+      sb.from('events').select('action').eq('workspace_id', WS).gte('created_at', since).limit(10000),
     ]);
+    if (posts.error) console.log(`  posts query err: ${posts.error.message}`);
+    if (facts.error) console.log(`  facts query err: ${facts.error.message}`);
+    if (events.error) console.log(`  events query err: ${events.error.message}`);
     const postsByKind = new Map<string, number>();
     for (const p of (posts.data ?? []) as Array<{ kind: string }>) {
       postsByKind.set(p.kind, (postsByKind.get(p.kind) ?? 0) + 1);

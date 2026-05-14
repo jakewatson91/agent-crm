@@ -29,7 +29,10 @@ async function main() {
   const WS = ws.data.id as string;
   console.log(`workspace: ${ws.data.name} (${WS.slice(0, 8)}…)\n`);
 
-  // 1. Stuck signals: created >30 min ago with no subscription.matched event for them
+  // 1. Stuck signals: created >30 min ago, no downstream agent_run_metrics or
+  //    channel post mentioning the signal. Note: subscription.matched is an
+  //    Inngest event, not persisted in the events table — we infer matching
+  //    from agent_run_metrics (the per-run audit record).
   console.log('=== UNMATCHED SIGNALS ===');
   const since = new Date(Date.now() - STALE_SIGNAL_MIN * 60 * 1000).toISOString();
   const sigsRes = await sb.from('signals')
@@ -46,7 +49,7 @@ async function main() {
     const matchedRes = await sb.from('events')
       .select('payload')
       .eq('workspace_id', WS)
-      .eq('action', 'subscription.matched')
+      .eq('action', 'agent_run_metrics')
       .in('payload->>signal_id' as any, sigIds);
     const matchedIds = new Set<string>();
     for (const e of matchedRes.data ?? []) {
@@ -80,44 +83,46 @@ async function main() {
     }
   }
 
-  // 3. Open gates older than STALE_GATE_DAYS
+  // 3. Open gates older than STALE_GATE_DAYS. Query the gates table directly;
+  //    pending = decided_at IS NULL.
   console.log('\n=== STALE GATES ===');
   const gateSince = new Date(Date.now() - STALE_GATE_DAYS * 86400000).toISOString();
-  const gatesRes = await sb.from('events')
-    .select('id, ts, payload')
+  const gatesRes = await sb.from('gates')
+    .select('id, policy, requested_at, decided_at')
     .eq('workspace_id', WS)
-    .eq('action', 'request_gate')
-    .lt('ts', gateSince)
-    .order('ts', { ascending: false })
+    .lt('requested_at', gateSince)
+    .is('decided_at', null)
+    .order('requested_at', { ascending: false })
     .limit(50);
-  const gates = gatesRes.data ?? [];
-  // a gate is "decided" if there's a matching gate_decision event
-  const decidedRes = await sb.from('events')
-    .select('parent_event_id')
-    .eq('workspace_id', WS)
-    .eq('action', 'gate_decision');
-  const decided = new Set<number>((decidedRes.data ?? []).map((d: any) => d.parent_event_id).filter(Boolean));
-  const openStale = gates.filter((g) => !decided.has(g.id as number));
-  if (openStale.length === 0) {
-    console.log('  (none)');
+  if (gatesRes.error) {
+    console.log(`  error: ${gatesRes.error.message}`);
   } else {
-    console.log(`  ${openStale.length} open gate(s) older than ${STALE_GATE_DAYS}d`);
-    for (const g of openStale.slice(0, 5)) {
-      const policy = (g.payload as any)?.policy ?? '?';
-      console.log(`    ${(g.ts as string).slice(5, 16)} policy=${policy}`);
+    const openStale = gatesRes.data ?? [];
+    if (openStale.length === 0) {
+      console.log('  (none)');
+    } else {
+      console.log(`  ${openStale.length} open gate(s) older than ${STALE_GATE_DAYS}d`);
+      for (const g of openStale.slice(0, 5) as Array<{ requested_at: string; policy: string }>) {
+        console.log(`    ${g.requested_at.slice(5, 16)} policy=${g.policy}`);
+      }
     }
   }
 
-  // 4. Drafts older than STALE_DRAFT_DAYS with no follow-up event in same channel
+  // 4. Drafts older than STALE_DRAFT_DAYS with no follow-up post in same
+  //    channel. channel_posts has no workspace_id column — join through
+  //    channels to filter to the demo workspace.
   console.log('\n=== STALE DRAFTS (no follow-up) ===');
   const draftSince = new Date(Date.now() - STALE_DRAFT_DAYS * 86400000).toISOString();
+  const wsChannelsRes = await sb.from('channels').select('id').eq('workspace_id', WS);
+  const wsChannelIds = new Set<string>(((wsChannelsRes.data ?? []) as Array<{ id: string }>).map((c) => c.id));
   const draftsRes = await sb.from('channel_posts')
     .select('id, channel_id, created_at, body')
     .eq('kind', 'touch_draft')
     .lt('created_at', draftSince)
     .order('created_at', { ascending: false })
-    .limit(50);
-  const drafts = draftsRes.data ?? [];
+    .limit(200);
+  const drafts = ((draftsRes.data ?? []) as Array<{ id: string; channel_id: string; created_at: string; body: string }>)
+    .filter((d) => wsChannelIds.has(d.channel_id));
   if (drafts.length === 0) {
     console.log('  (no drafts older than 7d)');
   } else {
@@ -127,14 +132,14 @@ async function main() {
       .in('channel_id', channelIds)
       .gt('created_at', draftSince);
     const channelsWithFollowup = new Set<string>((followRes.data ?? []).map((p: any) => p.channel_id));
-    const stale = drafts.filter((d) => !channelsWithFollowup.has(d.channel_id as string));
+    const stale = drafts.filter((d) => !channelsWithFollowup.has(d.channel_id));
     if (stale.length === 0) {
       console.log('  (none — every old draft has follow-up)');
     } else {
       console.log(`  ${stale.length} draft(s) sat for >${STALE_DRAFT_DAYS}d with no follow-up`);
       for (const d of stale.slice(0, 5)) {
-        const body = (d.body as string).slice(0, 80);
-        console.log(`    ${(d.created_at as string).slice(5, 16)} ${body}…`);
+        const body = d.body.slice(0, 80);
+        console.log(`    ${d.created_at.slice(5, 16)} ${body}…`);
       }
     }
   }
