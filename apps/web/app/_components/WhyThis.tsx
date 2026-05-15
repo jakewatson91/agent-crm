@@ -69,11 +69,13 @@ export function WhyThis({
         onClick={toggle}
         title="Show what the agent knew when it wrote this"
         style={{
-          padding: '.2rem .5rem',
-          background: open ? '#7aa2f7' : '#1f2330',
-          color: open ? '#000' : '#7aa2f7',
+          padding: '2px 10px',
+          background: open ? 'var(--accent-blue)' : 'var(--accent-blue-soft)',
+          color: open ? 'white' : '#4f6da3',
           border: 'none',
+          borderRadius: 999,
           fontSize: '.7rem',
+          fontWeight: 500,
           cursor: 'pointer',
         }}
       >
@@ -82,53 +84,53 @@ export function WhyThis({
       {open && (
         <div style={{
           marginTop: '.4rem',
-          padding: '.6rem .75rem',
-          background: '#0a0a0a',
-          border: '1px solid #1f2330',
-          borderLeft: '3px solid #7aa2f7',
+          padding: '.7rem .85rem',
+          background: 'var(--panel-2)',
+          border: '1px solid var(--border)',
+          borderLeft: '3px solid var(--accent-blue)',
+          borderRadius: 6,
           fontSize: '.78rem',
           maxWidth: 700,
         }}>
-          <div style={{ color: '#7aa2f7', fontSize: '.7rem', marginBottom: '.4rem' }}>
-            AGENT&apos;S VIEW AT TIME OF WRITING — reconstructed from event log
+          <div style={{ color: '#4f6da3', fontSize: '.68rem', marginBottom: '.5rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            agent&apos;s view at time of writing
           </div>
-          {loading && <div style={{ color: '#666' }}>replaying…</div>}
-          {error && <div style={{ color: '#f7768e' }}>✗ {error}</div>}
+          {loading && <div className="subtle">replaying…</div>}
+          {error && <div style={{ color: 'var(--accent-coral)' }}>✗ {error}</div>}
           {snap && !loading && (
             <>
-              <div style={{ fontSize: '.7rem', color: '#888', marginBottom: '.5rem' }}>
+              <div className="subtle" style={{ fontSize: '.72rem', marginBottom: '.5rem' }}>
                 {factsForEntity.length} active facts on this account · {signalsForEntity.length} signals it saw
               </div>
               {factsForEntity.length === 0 && signalsForEntity.length === 0 && (
-                <div style={{ color: '#666', fontStyle: 'italic' }}>
-                  No facts or signals existed for this entity at that moment. The agent wrote this from workspace context (About, Constitution, KB) only.
+                <div className="muted" style={{ fontStyle: 'italic' }}>
+                  No facts or signals existed for this entity at that moment. The agent wrote this from workspace context only.
                 </div>
               )}
               {factsForEntity.length > 0 && (
-                <div style={{ marginBottom: '.5rem' }}>
-                  <div style={{ fontSize: '.7rem', color: '#9ece6a', marginBottom: '.2rem' }}>FACTS</div>
+                <div style={{ marginBottom: '.55rem' }}>
+                  <div style={{ fontSize: '.68rem', color: '#5a7e5f', marginBottom: '.25rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>facts</div>
                   {factsForEntity.slice(0, 12).map((f) => (
-                    <div key={f.id} style={{
-                      fontFamily: 'monospace',
+                    <div key={f.id} className="mono" style={{
                       fontSize: '.72rem',
-                      color: citeSet.has(f.id) ? '#9ece6a' : '#888',
+                      color: citeSet.has(f.id) ? '#5a7e5f' : 'var(--text-2)',
                       fontWeight: citeSet.has(f.id) ? 600 : 400,
                     }}>
                       {citeSet.has(f.id) ? '✓ ' : '  '}{f.predicate} = {f.object_text}
-                      {citeSet.has(f.id) && <span style={{ color: '#666', fontWeight: 400 }}> (cited)</span>}
+                      {citeSet.has(f.id) && <span className="muted" style={{ fontWeight: 400 }}> (cited)</span>}
                     </div>
                   ))}
                   {factsForEntity.length > 12 && (
-                    <div style={{ color: '#666', fontSize: '.7rem' }}>… +{factsForEntity.length - 12} more</div>
+                    <div className="muted" style={{ fontSize: '.7rem' }}>… +{factsForEntity.length - 12} more</div>
                   )}
                 </div>
               )}
               {signalsForEntity.length > 0 && (
                 <div>
-                  <div style={{ fontSize: '.7rem', color: '#7aa2f7', marginBottom: '.2rem' }}>RECENT SIGNALS</div>
+                  <div style={{ fontSize: '.68rem', color: '#4f6da3', marginBottom: '.25rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>recent signals</div>
                   {signalsForEntity.slice(0, 5).map((s) => (
-                    <div key={s.id} style={{ fontSize: '.72rem', color: '#aaa', marginBottom: '.15rem' }}>
-                      <span style={{ fontFamily: 'monospace', color: '#888' }}>{s.type}</span>
+                    <div key={s.id} style={{ fontSize: '.72rem', color: 'var(--text-2)', marginBottom: '.15rem' }}>
+                      <span className="mono subtle">{s.type}</span>
                       {s.body_for_embedding && <> · {s.body_for_embedding.slice(0, 100)}…</>}
                     </div>
                   ))}

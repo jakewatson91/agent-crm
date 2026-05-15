@@ -17,9 +17,10 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, loadActionContext } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
+import { inngest } from '../client.js';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 
@@ -177,6 +178,8 @@ export async function runAgent(
   }
 
   if (behavior === 'drafter') {
+    // Workspace policy: hard suppression-list match. Orthogonal to scoring, so
+    // it still lives here, not in action_selector.
     const suppression = policy.suppression_list ?? [];
     const entityDomain = ((ent.data.attributes as { domain?: string } | null)?.domain ?? '').toLowerCase();
     const entityName = (ent.data.name as string).toLowerCase();
@@ -190,29 +193,7 @@ export async function runAgent(
       return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'suppression_match', behavior };
     }
 
-    // Already drafted recently for this account — don't pile up duplicates.
-    const draftSuppressionDays = (policy as { draft_suppression_days?: number }).draft_suppression_days ?? 7;
-    if (draftSuppressionDays > 0) {
-      const since = new Date(Date.now() - draftSuppressionDays * 86400 * 1000).toISOString();
-      const existing = await supabase
-        .from('channel_posts')
-        .select('id, author_id, created_at')
-        .eq('channel_id', channel_id)
-        .eq('kind', 'touch_draft')
-        .gte('created_at', since)
-        .order('created_at', { ascending: false })
-        .limit(1);
-      if ((existing.data?.length ?? 0) > 0) {
-        const last = existing.data![0]!;
-        const ageDays = Math.round((Date.now() - Date.parse(last.created_at as string)) / 86400000 * 10) / 10;
-        const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-          `Drafter skipped: ${ent.data.name} already has a touch_draft from ${ageDays}d ago by ${last.author_id}.`,
-          []);
-        return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'draft_already_exists', behavior };
-      }
-    }
-
-    // Daily-cap rate limit.
+    // Workspace policy: daily send cap. Same reasoning — not scoring-driven.
     const cap = policy.daily_send_cap;
     if (typeof cap === 'number' && cap >= 0) {
       const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
@@ -229,26 +210,83 @@ export async function runAgent(
       }
     }
 
-    // ICP gate at the agent level (saves the drafter LLM call when the answer
-    // is already known). drafter prompt also has this rule for defense in depth.
-    const icpFact = activeFacts.find((f) => f.predicate === 'icp_fit');
-    const icpVal = icpFact ? parseFloat(icpFact.object_text ?? '') : NaN;
-    if (!isNaN(icpVal) && icpVal < 0.5) {
-      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-        `Drafter skipped: icp_fit=${icpVal.toFixed(2)} below 0.5 threshold. ${ent.data.name} is not a strong fit. (No LLM call.)`,
-        icpFact ? [icpFact.id] : []);
-      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'off_icp_pre_llm', behavior };
+    // Scoring v2: rebuild the breakdown from the sub-score facts the scorer
+    // most recently asserted on this entity. If the scorer has never run for
+    // this entity (no `score_total` fact yet), we fall back to `icp_fit` as
+    // icp_total with empty rubric — action_selector treats that as low
+    // signal_strength and will route to deep_research or continue.
+    function readScoreFact(predicate: string, fallback: number = 0): number {
+      const f = activeFacts.find((x) => x.predicate === predicate);
+      if (!f) return fallback;
+      const v = parseFloat(f.object_text ?? '');
+      return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : fallback;
     }
+    const scoreBreakdown = {
+      industry_match: readScoreFact('score_industry_match'),
+      stage_match: readScoreFact('score_stage_match'),
+      signal_strength: readScoreFact('score_signal_strength'),
+      evidence_depth: readScoreFact('score_evidence_depth'),
+      recency: readScoreFact('score_recency'),
+      graph_proximity: readScoreFact('score_graph_proximity'),
+      rrf_prefilter: 0,
+    };
+    const icpTotal = readScoreFact('score_total', readScoreFact('icp_fit'));
 
-    // Thin-facts gate. Drafts written off <3 substantive facts are generic and
-    // bounce. Save the LLM call.
-    const substantiveFacts = activeFacts.filter((f) => f.predicate !== 'icp_fit' && f.predicate !== 'icp_fit_breakdown');
-    if (substantiveFacts.length < 3) {
-      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-        `Drafter skipped: only ${substantiveFacts.length} substantive fact${substantiveFacts.length === 1 ? '' : 's'} on ${ent.data.name}. Need ≥3 before a draft is worth writing. (No LLM call.)`,
-        substantiveFacts.map((f) => f.id));
-      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'thin_facts_pre_llm', behavior };
+    const ctx = await loadActionContext(supabase, payload.workspace_id, ent.data.id, channel_id);
+    const decision = selectAction({
+      workspace_id: payload.workspace_id,
+      entity_id: ent.data.id,
+      breakdown: scoreBreakdown,
+      icp_total: icpTotal,
+      recent_draft_at: ctx.recent_draft_at,
+      recent_research_at: ctx.recent_research_at,
+      dropped_until: ctx.dropped_until,
+    });
+
+    if (decision.action !== 'draft_outreach') {
+      // Non-draft actions all share the same shape: emit a decision post with
+      // the action_selector's reason, then perform any side effects.
+      const cites = activeFacts.filter((f) => f.predicate.startsWith('score_')).map((f) => f.id);
+      await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+        `[${decision.action}] ${decision.reason}`, cites);
+
+      if (decision.action === 'deep_research') {
+        // Mark that we triggered research so we don't re-trigger every cron
+        // tick. Action selector reads this via recent_research_at.
+        await callTool(supabase, actor, 'assert_fact', {
+          subject_entity: ent.data.id,
+          predicate: 'research_triggered',
+          object_text: new Date().toISOString(),
+          confidence: 1.0,
+        });
+        // Fire the inngest event the source-runner will consume to pull more
+        // facts via Exa scoped to this entity.
+        try {
+          await inngest.send({
+            name: 'research.requested',
+            data: {
+              workspace_id: payload.workspace_id,
+              entity_id: ent.data.id,
+              entity_name: ent.data.name,
+              reason: decision.reason,
+            },
+          });
+        } catch { /* non-fatal: next rescore tick can retry */ }
+      } else if (decision.action === 'drop') {
+        // Write a dropped_until fact 90d in the future. Action selector
+        // checks this and short-circuits subsequent scoring runs.
+        const until = new Date(Date.now() + 90 * 86400 * 1000).toISOString();
+        await callTool(supabase, actor, 'assert_fact', {
+          subject_entity: ent.data.id,
+          predicate: 'dropped_until',
+          object_text: until,
+          confidence: 1.0,
+        });
+      }
+
+      return { ok: true, action: 'skip', reason: decision.policy, behavior };
     }
+    // Else: fall through to LLM-drafter below. action === 'draft_outreach'.
   }
 
   // ============================================================
@@ -571,21 +609,14 @@ Total: subject is one word; body covers parts 2-5 in order. Single paragraph or 
 
 Voice and hard rules come from the workspace constitution above. Constitution wins over this formula on tone — if the constitution says "no em dashes" or "no jargon," follow that strictly even if the formula's example uses them.
 
-GATE vs DRAFT decision — use these rules in order:
-1. Check the icp_fit fact in ACTIVE FACTS. If icp_fit is present and < 0.30, gate with policy="off_icp" — the system already concluded this is not a fit.
-2. Check PAST OUTCOMES if present. If 3+ similar entities were rejected with the same policy in the last 30d, gate with that same policy — don't repeat the mistake.
-3. Are there ≥3 specific facts in the ACTIVE FACTS list (customer references, partnerships, funding events, product details, market positioning, hiring activity, technology stack)? If yes, draft — even if the saved filter rule's keyword intent isn't perfectly met.
-4. Is the signal genuinely off-ICP (clearly not the kind of company the workspace ABOUT describes targeting)? If yes, gate with policy="off_icp".
-5. Are the facts so thin you'd be writing generic copy with nothing concrete to reference? If yes, gate with policy="thin_facts".
+The decision to draft has already been made upstream — a deterministic action selector ran the rubric scores against thresholds before invoking you. You are here because the entity cleared all the bars: icp_total ≥ 0.65, signal_strength ≥ 0.7, evidence_depth ≥ 0.5, no draft in the past 14d. Your job is to WRITE the email, not to second-guess whether it should be written.
 
-CRITICAL: do NOT gate just because a single attribute (like is_hiring=false) doesn't match a literal word in your filter rule. The filter is a PRIORITIZATION SIGNAL for which signals to react to, not a hard constraint on which prospects deserve a draft. If a healthcare company has 4 named hospital customers and a partnership and the workspace sells to AI-forward operators, that's a draft, not a gate — even if the company isn't currently hiring.
+If the active facts genuinely don't give you enough to write something concrete (you'd be reaching for generic phrases), output {"action":"request_gate","body":"<one sentence: what specific fact you'd need>","policy":"facts_insufficient_for_draft"} — but that's a rare escape hatch, not the default path.
 
-REASONING — every post_touch_draft output MUST include a "reasoning" field: 1-2 sentences explaining why you drafted (which 2-3 facts you anchored to, what made this account a fit). This becomes a separate "decision" post in the channel so the human auditor (and future you) can see why each draft happened.
+REASONING — every post_touch_draft output MUST include a "reasoning" field: 1-2 sentences explaining which 2-3 facts you anchored to. This becomes a separate "decision" post in the channel so the human auditor can see why each draft happened.
 
 Output strictly valid JSON, no preamble:
-{"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<why I drafted, 1-2 sentences>","to_email":"<picked contact email or null>"}
-OR
-{"action":"request_gate","body":"<reason draft was not generated>","cites":[],"policy":"<short policy id>","condition":{<context>}}`;
+{"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<which facts you anchored to, 1-2 sentences>","to_email":"<picked contact email or null>"}`;
 
 const ENRICHER_DECISION = `A new signal arrived about the account in the user message. Extract atomic factual claims about THIS entity that are supported by the signal AND that the system doesn't already know.
 

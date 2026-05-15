@@ -58,12 +58,13 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
         onClick={() => setOpen(!open)}
         title={`Walk the provenance chain for fact ${fact_id.slice(0, 8)}`}
         style={{
-          padding: '.15rem .4rem',
-          background: open ? '#7aa2f7' : '#1f2330',
-          color: open ? '#000' : '#7aa2f7',
+          padding: '2px 8px',
+          background: open ? 'var(--accent-blue)' : 'var(--accent-blue-soft)',
+          color: open ? 'white' : '#4f6da3',
           border: 'none',
+          borderRadius: 999,
           fontSize: '.7rem',
-          fontFamily: 'monospace',
+          fontFamily: 'var(--font-mono)',
           cursor: 'pointer',
           marginRight: '.25rem',
         }}
@@ -74,29 +75,34 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
         <div style={{
           display: 'block',
           marginTop: '.4rem',
-          padding: '.6rem .75rem',
-          background: '#0a0a0a',
-          border: '1px solid #1f2330',
-          borderLeft: '3px solid #7aa2f7',
+          padding: '.7rem .85rem',
+          background: 'var(--panel-2)',
+          border: '1px solid var(--border)',
+          borderLeft: '3px solid var(--accent-blue)',
+          borderRadius: 6,
           fontSize: '.78rem',
           maxWidth: 700,
         }}>
-          {loading && <div style={{ color: '#666' }}>walking chain…</div>}
-          {error && <div style={{ color: '#f7768e' }}>✗ {error}</div>}
+          {loading && <div className="subtle">walking chain…</div>}
+          {error && <div style={{ color: 'var(--accent-coral)' }}>✗ {error}</div>}
           {chain && (
             <>
-              <div style={{ color: '#888', marginBottom: '.5rem', fontSize: '.7rem' }}>
+              <div className="subtle" style={{ marginBottom: '.55rem', fontSize: '.72rem' }}>
                 {chain.hop_count}-hop provenance chain
               </div>
               {chain.hops.map((h, i) => (
-                <div key={h.fact_id} style={{ marginBottom: i < chain.hops.length - 1 ? '.6rem' : 0, paddingBottom: i < chain.hops.length - 1 ? '.6rem' : 0, borderBottom: i < chain.hops.length - 1 ? '1px dashed #1f2330' : 'none' }}>
-                  <div style={{ fontFamily: 'monospace', color: '#9ece6a' }}>
-                    hop {i}: <span style={{ color: '#e5e5e5' }}>{h.fact?.predicate ?? '?'} = {h.fact?.object_text ?? '?'}</span>
-                    {h.fact && <span style={{ color: '#666' }}> (conf={h.fact.confidence})</span>}
+                <div key={h.fact_id} style={{
+                  marginBottom: i < chain.hops.length - 1 ? '.6rem' : 0,
+                  paddingBottom: i < chain.hops.length - 1 ? '.6rem' : 0,
+                  borderBottom: i < chain.hops.length - 1 ? '1px dashed var(--border)' : 'none'
+                }}>
+                  <div className="mono" style={{ color: '#5a7e5f' }}>
+                    hop {i}: <span style={{ color: 'var(--text)' }}>{h.fact?.predicate ?? '?'} = {h.fact?.object_text ?? '?'}</span>
+                    {h.fact && <span className="subtle"> (conf={h.fact.confidence})</span>}
                   </div>
                   {h.source_event && (
-                    <div style={{ marginTop: '.25rem', color: '#999', fontSize: '.72rem', fontFamily: 'monospace', lineHeight: 1.55 }}>
-                      ↳ event #{h.source_event.id} · <span style={{ color: '#7aa2f7' }}>{h.source_event.action}</span> by {h.source_event.actor_kind}/{h.source_event.actor_id}<br />
+                    <div className="mono subtle" style={{ marginTop: '.25rem', fontSize: '.72rem', lineHeight: 1.55 }}>
+                      ↳ event #{h.source_event.id} · <span style={{ color: 'var(--accent-blue)' }}>{h.source_event.action}</span> by {h.source_event.actor_kind}/{h.source_event.actor_id}<br />
                       <span suppressHydrationWarning>{new Date(h.source_event.created_at).toLocaleString()}</span>
                       {h.source_event.prompt_hash && (
                         <> · prompt {h.source_event.prompt_hash.slice(0, 12)}…</>
@@ -104,7 +110,7 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
                     </div>
                   )}
                   {h.fact?.content_hash && (
-                    <div style={{ marginTop: '.2rem', color: '#555', fontSize: '.68rem', fontFamily: 'monospace' }}>
+                    <div className="mono muted" style={{ marginTop: '.2rem', fontSize: '.68rem' }}>
                       content_hash: {h.fact.content_hash.slice(0, 24)}…
                     </div>
                   )}

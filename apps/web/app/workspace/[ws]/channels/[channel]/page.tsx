@@ -27,11 +27,11 @@ interface ReplayResponse {
   signals?: Array<{ id: string; type: string; entity_id: string }>;
 }
 
-const KIND_BADGE: Record<TimelineItem['kind'], { color: string; label: string }> = {
-  signal: { color: '#7aa2f7', label: 'SIGNAL' },
-  fact:   { color: '#9ece6a', label: 'FACT' },
-  post:   { color: '#e0c080', label: 'POST' },
-  gate:   { color: '#f7768e', label: 'GATE' },
+const KIND_BADGE: Record<TimelineItem['kind'], { color: string; cls: string; label: string }> = {
+  signal: { color: 'var(--accent-blue)',   cls: 'badge-blue',   label: 'signal' },
+  fact:   { color: 'var(--accent-green)',  cls: 'badge-green',  label: 'fact' },
+  post:   { color: 'var(--accent-amber)',  cls: 'badge-amber',  label: 'post' },
+  gate:   { color: 'var(--accent-coral)',  cls: 'badge-coral',  label: 'gate' },
 };
 
 export default function ChannelPage() {
@@ -84,24 +84,23 @@ export default function ChannelPage() {
 
   return (
     <section>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '.5rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '.5rem', marginBottom: '.5rem' }}>
         <h2 style={{ marginTop: 0, marginBottom: 0 }}>{data.entity?.name ?? data.channel.title}</h2>
-        <div style={{ fontSize: '.8rem', color: '#666' }}>
+        <div className="subtle mono" style={{ fontSize: '.75rem' }}>
           {data.counts.signals} signals · {data.counts.facts} facts · {data.counts.posts} posts · {data.counts.gates} gates
         </div>
       </div>
 
       {/* Audit slider — collapsed by default. The everyday surface is the "why this?"
-          button per post below; the slider is for power-user audit ("show me state at
-          March 15") and demos. */}
+          button per post below; the slider is for power-user audit. */}
       {minTs && maxTs && (
-        <details style={{ marginTop: '1rem' }}>
-          <summary style={{ cursor: 'pointer', fontSize: '.75rem', color: '#666', padding: '.4rem 0' }}>
-            audit · time-travel slider (compliance / debugging only)
+        <details style={{ marginTop: '.75rem' }}>
+          <summary className="subtle" style={{ cursor: 'pointer', fontSize: '.75rem', padding: '.4rem 0' }}>
+            audit · time-travel slider
           </summary>
-          <div style={{ marginTop: '.5rem', padding: '.6rem .75rem', background: '#0f0f12', border: '1px solid #1f2330' }}>
-            <div style={{ fontSize: '.7rem', color: '#888', marginBottom: '.5rem' }}>
-              Drag to reconstruct workspace state at any past point. Used for audit (&ldquo;what did the agent see on March 15?&rdquo;) and demoing event-sourcing. For per-post reasoning, use the &ldquo;why this?&rdquo; buttons below.
+          <div className="card" style={{ marginTop: '.5rem', padding: '.7rem .9rem' }}>
+            <div className="subtle" style={{ fontSize: '.72rem', marginBottom: '.55rem' }}>
+              Drag to reconstruct workspace state at any past point. For per-post reasoning, use the &ldquo;why this?&rdquo; buttons below.
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '.75rem' }}>
               <input
@@ -111,30 +110,30 @@ export default function ChannelPage() {
                 step={1000}
                 value={replayTs ? Date.parse(replayTs) : Date.parse(maxTs)}
                 onChange={(e) => setReplayTs(new Date(parseInt(e.target.value, 10)).toISOString())}
-                style={{ flex: 1, accentColor: '#7aa2f7' }}
+                style={{ flex: 1 }}
               />
-              <div style={{ fontSize: '.75rem', color: '#7aa2f7', whiteSpace: 'nowrap', fontFamily: 'monospace', minWidth: 180 }}>
+              <div className="mono" style={{ fontSize: '.75rem', color: 'var(--accent-blue)', whiteSpace: 'nowrap', minWidth: 180 }}>
                 {replayTs ? <Timestamp value={replayTs} /> : 'now'}
               </div>
               {replayTs && (
-                <button onClick={() => setReplayTs(null)} style={{ padding: '.25rem .5rem', background: '#1f2330', color: '#e5e5e5', border: 'none', cursor: 'pointer', fontSize: '.7rem' }}>
+                <button onClick={() => setReplayTs(null)} style={{ padding: '.25rem .6rem', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', fontSize: '.72rem' }}>
                   back to now
                 </button>
               )}
             </div>
             {replayTs && (
-              <div style={{ marginTop: '.6rem', padding: '.5rem .75rem', background: '#0a0a0a', borderLeft: '3px solid #7aa2f7', fontSize: '.78rem' }}>
-                {replayLoading ? <div style={{ color: '#666' }}>replaying…</div> : (
+              <div style={{ marginTop: '.6rem', padding: '.55rem .8rem', background: 'var(--panel-2)', borderLeft: '3px solid var(--accent-blue)', borderRadius: 4, fontSize: '.78rem' }}>
+                {replayLoading ? <div className="subtle">replaying…</div> : (
                   <>
-                    <div style={{ fontSize: '.72rem', color: '#888', marginBottom: '.4rem' }}>
+                    <div className="subtle" style={{ fontSize: '.72rem', marginBottom: '.4rem' }}>
                       {replayActiveFacts.length} active facts at this timestamp
                     </div>
                     {replayActiveFacts.slice(0, 10).map((f) => (
-                      <div key={f.id} style={{ fontFamily: 'monospace', fontSize: '.72rem', color: '#9ece6a' }}>
+                      <div key={f.id} className="mono" style={{ fontSize: '.72rem', color: '#5a7e5f' }}>
                         {f.predicate} = {f.object_text}
                       </div>
                     ))}
-                    {replayActiveFacts.length > 10 && <div style={{ color: '#666', fontSize: '.7rem', marginTop: '.25rem' }}>… +{replayActiveFacts.length - 10} more</div>}
+                    {replayActiveFacts.length > 10 && <div className="muted" style={{ fontSize: '.7rem', marginTop: '.25rem' }}>… +{replayActiveFacts.length - 10} more</div>}
                   </>
                 )}
               </div>
@@ -144,61 +143,60 @@ export default function ChannelPage() {
       )}
 
       {data.entity?.attributes && Object.keys(data.entity.attributes).length > 0 && (
-        <div style={{ marginTop: '1rem', padding: '.6rem .75rem', background: '#0a0a0a', border: '1px solid #1f1f1f' }}>
-          <div style={{ fontSize: '.7rem', color: '#888', marginBottom: '.25rem' }}>attributes</div>
-          <pre style={{ margin: 0, fontSize: '.72rem', color: '#aaa', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+        <div className="card" style={{ marginTop: '1rem', padding: '.7rem .9rem' }}>
+          <div className="subtle" style={{ fontSize: '.7rem', marginBottom: '.3rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>attributes</div>
+          <pre className="mono subtle" style={{ margin: 0, fontSize: '.72rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
             {JSON.stringify(data.entity.attributes, null, 2)}
           </pre>
         </div>
       )}
 
       <div style={{ marginTop: '1.5rem' }}>
-        <div style={{ fontSize: '.85rem', color: '#888', marginBottom: '.75rem' }}>activity timeline</div>
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <div className="subtle" style={{ fontSize: '.78rem', marginBottom: '.75rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>activity timeline</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
           {data.items.map((item) => {
             const dimmed = Date.parse(item.ts) > replayCutoff;
             const badge = KIND_BADGE[item.kind];
             return (
               <div
                 key={`${item.kind}-${item.id}`}
+                className="card"
                 style={{
-                  padding: '.55rem .75rem',
+                  padding: '.6rem .8rem',
                   borderLeft: `3px solid ${badge.color}`,
-                  borderBottom: '1px solid #14141a',
-                  background: dimmed ? '#0a0a0a' : 'transparent',
-                  opacity: dimmed ? 0.35 : 1,
-                  fontSize: '.82rem',
+                  opacity: dimmed ? 0.4 : 1,
+                  fontSize: '.85rem',
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '.75rem' }}>
-                  <div style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline' }}>
-                    <span style={{ fontFamily: 'monospace', fontSize: '.65rem', color: badge.color, fontWeight: 600 }}>{badge.label}</span>
-                    <span style={{ color: '#e5e5e5' }}>{item.summary}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '.75rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                    <span>{item.summary}</span>
                   </div>
-                  <span style={{ fontSize: '.7rem', color: '#666', fontFamily: 'monospace' }}>
+                  <span className="muted mono" style={{ fontSize: '.7rem' }}>
                     <Timestamp value={item.ts} />
                   </span>
                 </div>
 
                 {item.kind === 'post' && item.detail.body && (
-                  <div style={{ marginTop: '.4rem', whiteSpace: 'pre-wrap', color: '#ccc', fontSize: '.8rem' }}>
+                  <div style={{ marginTop: '.45rem', whiteSpace: 'pre-wrap', color: 'var(--text)', fontSize: '.85rem', lineHeight: 1.55 }}>
                     {item.detail.body}
                   </div>
                 )}
                 {item.kind === 'signal' && item.detail.body && (
-                  <div style={{ marginTop: '.3rem', color: '#999', fontSize: '.75rem' }}>
+                  <div className="subtle" style={{ marginTop: '.3rem', fontSize: '.78rem' }}>
                     {String(item.detail.body).slice(0, 220)}
                     {item.detail.item_url && (
-                      <> · <a href={String(item.detail.item_url)} target="_blank" rel="noreferrer" style={{ color: '#7aa2f7' }}>source ↗</a></>
+                      <> · <a href={String(item.detail.item_url)} target="_blank" rel="noreferrer">source ↗</a></>
                     )}
                   </div>
                 )}
                 {item.kind === 'fact' && item.detail.superseded && (
-                  <div style={{ marginTop: '.2rem', fontSize: '.7rem', color: '#666', fontStyle: 'italic' }}>(superseded by a later fact)</div>
+                  <div className="muted" style={{ marginTop: '.2rem', fontSize: '.72rem', fontStyle: 'italic' }}>(superseded by a later fact)</div>
                 )}
 
                 {item.kind === 'post' && (
-                  <div style={{ marginTop: '.4rem', display: 'flex', flexWrap: 'wrap', gap: '.4rem', alignItems: 'center' }}>
+                  <div style={{ marginTop: '.45rem', display: 'flex', flexWrap: 'wrap', gap: '.4rem', alignItems: 'center' }}>
                     <WhyThis
                       workspace_id={params.ws}
                       entity_id={data.channel.account_entity_id}
@@ -207,7 +205,7 @@ export default function ChannelPage() {
                     />
                     {Array.isArray(item.detail.cites) && (item.detail.cites as string[]).length > 0 && (
                       <>
-                        <span style={{ fontSize: '.7rem', color: '#888' }}>cites:</span>
+                        <span className="subtle" style={{ fontSize: '.7rem' }}>cites:</span>
                         {(item.detail.cites as string[]).map((c) => <CiteChain key={c} fact_id={c} />)}
                       </>
                     )}

@@ -13,12 +13,16 @@ import {
 import { TOOL_SCHEMAS, type ToolName } from './schemas.js';
 import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, type EntityStatus } from './reads.js';
 import { findContacts, linkContactToAccount } from './contacts.js';
-import { scoreEntity, scoreAndAssert } from './scoring.js';
+import { scoreEntity, scoreAndAssert, combineSubScores } from './scoring.js';
+import { selectAction, loadActionContext } from './action_selector.js';
+import { graphProximity } from './graph.js';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
-export { scoreEntity, scoreAndAssert };
+export { scoreEntity, scoreAndAssert, combineSubScores };
+export { selectAction, loadActionContext, type Action, type ActionDecision } from './action_selector.js';
+export { graphProximity, type GraphProximityResult } from './graph.js';
 export type { EntityStatus };
 
 export interface ToolResult {

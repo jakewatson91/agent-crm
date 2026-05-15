@@ -1,0 +1,116 @@
+/* Light pastel theme. Warm off-white background, muted accents, sans for
+   chrome and mono for IDs/timestamps. Variables expose the palette so pages
+   can reference --color-* without hardcoding values. */
+
+:root {
+  --bg: #fbfaf6;
+  --panel: #ffffff;
+  --panel-2: #f6f3ec;
+  --border: #e7e2d6;
+  --border-strong: #d5cebe;
+  --text: #2a2a28;
+  --text-2: #6b6760;
+  --text-3: #9a958a;
+
+  --accent-blue: #8fa8d1;
+  --accent-blue-soft: #e6ecf6;
+  --accent-green: #8fb893;
+  --accent-green-soft: #e6f0e6;
+  --accent-amber: #d5a76a;
+  --accent-amber-soft: #f6ecd9;
+  --accent-coral: #d68b80;
+  --accent-coral-soft: #f6dfd9;
+  --accent-purple: #b09bc8;
+  --accent-purple-soft: #ede6f4;
+
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: var(--accent-blue);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+a:hover {
+  color: #6e8ec0;
+}
+
+code, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+h1, h2, h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+h2 {
+  font-size: 1.35rem;
+  margin: 0 0 0.5rem;
+}
+h3 {
+  font-size: 1.05rem;
+  margin: 0 0 0.4rem;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+input[type="range"] {
+  accent-color: var(--accent-blue);
+}
+
+/* Cards / panels */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+}
+
+.subtle {
+  color: var(--text-2);
+}
+.muted {
+  color: var(--text-3);
+}
+
+/* Soft pill badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+.badge-blue   { background: var(--accent-blue-soft);   color: #4f6da3; }
+.badge-green  { background: var(--accent-green-soft);  color: #5a7e5f; }
+.badge-amber  { background: var(--accent-amber-soft);  color: #8d6429; }
+.badge-coral  { background: var(--accent-coral-soft);  color: #a14d44; }
+.badge-purple { background: var(--accent-purple-soft); color: #6f5c8a; }
+.badge-mute   { background: var(--panel-2);            color: var(--text-2); }

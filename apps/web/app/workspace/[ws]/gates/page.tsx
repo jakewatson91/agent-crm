@@ -83,7 +83,7 @@ export default function GatesPage() {
     }
   }
 
-  if (loading) return <section><h2 style={{ marginTop: 0 }}>Gates</h2><p style={{ color: '#666' }}>loading…</p></section>;
+  if (loading) return <section><h2 style={{ marginTop: 0 }}>Inbox</h2><p className="subtle">loading…</p></section>;
 
   const healthBadges = health ? [
     { label: 'unmatched signals', value: health.unmatched_signals, hint: '>30m old, no match' },
@@ -96,74 +96,76 @@ export default function GatesPage() {
   return (
     <section>
       <h2 style={{ marginTop: 0 }}>Inbox</h2>
-      <p style={{ color: '#666', fontSize: '.9rem' }}>
-        Approval queue. Empty is the success state. Items here are exceptions the agent flagged for you.
-        For draft posts: copy → paste into your email tool → approve once sent.
+      <p className="subtle" style={{ fontSize: '.88rem' }}>
+        Approval queue. Empty is the success state. For draft posts: copy → paste into your email tool → approve once sent.
       </p>
 
       {health && (
-        <div style={{
-          display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '1rem',
-          padding: '.5rem .75rem', background: '#0a0a0a', border: '1px solid #1f1f1f', fontSize: '.8rem',
+        <div className="card" style={{
+          display: 'flex', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center',
+          marginBottom: '1rem', padding: '.55rem .85rem', fontSize: '.78rem',
         }}>
-          <span style={{ color: '#666' }}>system:</span>
-          {allHealthy && <span style={{ color: '#9ece6a' }}>✓ all clear</span>}
+          <span className="subtle">system</span>
+          {allHealthy && <span className="badge badge-green">✓ all clear</span>}
           {!allHealthy && healthBadges.filter((b) => b.value > 0).map((b) => (
-            <span key={b.label} title={b.hint} style={{
-              padding: '.1rem .4rem', borderRadius: 3,
-              background: '#1f1f1f',
-              color: b.value > 5 ? '#f7768e' : '#e0af68',
-              border: `1px solid ${b.value > 5 ? '#f7768e33' : '#e0af6833'}`,
-            }}>
+            <span key={b.label} title={b.hint} className={`badge ${b.value > 5 ? 'badge-coral' : 'badge-amber'}`}>
               {b.label}: {b.value}
             </span>
           ))}
         </div>
       )}
       {gates.length === 0 ? (
-        <div style={{ marginTop: '2rem', padding: '2rem', border: '1px dashed #1f1f1f', textAlign: 'center', color: '#444' }}>
-          No pending gates.
+        <div className="card" style={{ textAlign: 'center', color: 'var(--text-3)', padding: '2rem', borderStyle: 'dashed' }}>
+          No pending gates. The agent is handling everything.
         </div>
       ) : (
-        <ul style={{ listStyle: 'none', padding: 0, marginTop: '1.5rem' }}>
+        <ul style={{ listStyle: 'none', padding: 0, marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '.75rem' }}>
           {gates.map((g) => {
             const isDraft = g.post_kind === 'touch_draft';
             return (
-              <li key={g.id} style={{ padding: '1rem', border: '1px solid #1f1f1f', marginBottom: '.75rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <li key={g.id} className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '.5rem' }}>
                   <div>
-                    <div style={{ fontSize: '.85rem' }}>
-                      {g.account_title && <span style={{ color: '#7aa2f7' }}>{g.account_title} · </span>}
-                      <span style={{ color: '#e5e5e5' }}>{g.policy}</span>
-                      {isDraft && <span style={{ marginLeft: '.5rem', padding: '.1rem .4rem', background: '#7aa2f7', color: '#000', fontSize: '.7rem' }}>DRAFT</span>}
+                    <div style={{ fontSize: '.92rem', display: 'flex', gap: '.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                      {g.account_title && <strong>{g.account_title}</strong>}
+                      <span className="mono subtle" style={{ fontSize: '.78rem' }}>{g.policy}</span>
+                      {isDraft && <span className="badge badge-green">draft</span>}
                     </div>
-                    <div style={{ fontSize: '.75rem', color: '#666', marginTop: '.15rem' }}>
+                    <div className="muted mono" style={{ fontSize: '.72rem', marginTop: '.15rem' }}>
                       {g.requested_by_agent} · <Timestamp value={g.requested_at} />
                     </div>
                   </div>
                 </div>
 
                 {g.post_body && (
-                  <div style={{
-                    marginTop: '.75rem', padding: '.75rem', background: '#0a0a0a',
-                    borderLeft: `3px solid ${isDraft ? '#9ece6a' : '#1f1f1f'}`,
-                    whiteSpace: 'pre-wrap', fontSize: '.85rem', color: '#ccc', fontFamily: isDraft ? 'inherit' : 'inherit',
-                  }}>
+                  <div
+                    style={{
+                      marginTop: '.75rem',
+                      padding: '.75rem .9rem',
+                      background: 'var(--panel-2)',
+                      borderLeft: `3px solid ${isDraft ? 'var(--accent-green)' : 'var(--border-strong)'}`,
+                      borderRadius: 4,
+                      whiteSpace: 'pre-wrap',
+                      fontSize: '.85rem',
+                      lineHeight: 1.55,
+                      fontFamily: isDraft ? 'var(--font-mono)' : 'var(--font-sans)',
+                    }}
+                  >
                     {g.post_body}
                   </div>
                 )}
 
                 {Object.keys(g.condition ?? {}).length > 0 && (
-                  <pre style={{ fontSize: '.7rem', color: '#666', marginTop: '.5rem', overflowX: 'auto' }}>
+                  <pre className="mono muted" style={{ fontSize: '.7rem', marginTop: '.5rem', overflowX: 'auto' }}>
                     {JSON.stringify(g.condition, null, 2)}
                   </pre>
                 )}
 
-                <div style={{ marginTop: '.75rem', display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+                <div style={{ marginTop: '.75rem', display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
                   {isDraft && g.post_body && (
                     <button
                       onClick={() => copyDraft(g.id, g.post_body!)}
-                      style={{ padding: '.4rem .75rem', background: '#1f1f1f', color: '#e5e5e5', border: 'none', cursor: 'pointer', fontSize: '.8rem' }}
+                      style={{ padding: '.4rem .85rem', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', fontSize: '.8rem' }}
                     >
                       {copied === g.id ? '✓ copied' : 'copy draft'}
                     </button>
@@ -171,25 +173,25 @@ export default function GatesPage() {
                   <button
                     onClick={() => decide(g.id, 'approve')}
                     disabled={busy === g.id}
-                    style={{ padding: '.4rem .75rem', background: '#9ece6a', color: '#000', border: 'none', cursor: 'pointer', fontSize: '.8rem', opacity: busy === g.id ? 0.4 : 1 }}
+                    style={{ padding: '.4rem .85rem', background: 'var(--accent-green)', color: 'white', border: 'none', fontSize: '.8rem', opacity: busy === g.id ? 0.4 : 1 }}
                   >
                     {busy === g.id ? '…' : isDraft ? 'sent ✓' : 'approve'}
                   </button>
                   <button
                     onClick={() => decide(g.id, 'reject')}
                     disabled={busy === g.id}
-                    style={{ padding: '.4rem .75rem', background: '#1f1f1f', color: '#f7768e', border: '1px solid #1f1f1f', cursor: 'pointer', fontSize: '.8rem', opacity: busy === g.id ? 0.4 : 1 }}
+                    style={{ padding: '.4rem .85rem', background: 'transparent', color: 'var(--accent-coral)', border: '1px solid var(--accent-coral)', fontSize: '.8rem', opacity: busy === g.id ? 0.4 : 1 }}
                   >
                     reject
                   </button>
                 </div>
 
                 {g.post_cites.length > 0 && (
-                  <div style={{ marginTop: '.6rem', paddingTop: '.5rem', borderTop: '1px dashed #1f1f1f' }}>
-                    <div style={{ fontSize: '.7rem', color: '#888', marginBottom: '.25rem' }}>
-                      {g.post_cites.length} cite{g.post_cites.length === 1 ? '' : 's'} — click to walk the source chain:
+                  <div style={{ marginTop: '.7rem', paddingTop: '.5rem', borderTop: '1px dashed var(--border)' }}>
+                    <div className="subtle" style={{ fontSize: '.72rem', marginBottom: '.3rem' }}>
+                      {g.post_cites.length} cite{g.post_cites.length === 1 ? '' : 's'} — click to walk the source chain
                     </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.25rem' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.3rem' }}>
                       {g.post_cites.map((fact_id) => <CiteChain key={fact_id} fact_id={fact_id} />)}
                     </div>
                   </div>

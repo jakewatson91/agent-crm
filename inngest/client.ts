@@ -57,6 +57,17 @@ export type Events = {
       workspace_id: string;
     };
   };
+  // Action-selector emits this when an entity looks like a fit but has too
+  // few facts to draft. Triggers a targeted Exa pull scoped to the entity
+  // name + workspace ICP context.
+  'research.requested': {
+    data: {
+      workspace_id: string;
+      entity_id: string;
+      entity_name: string;
+      reason: string;
+    };
+  };
 };
 
 export const inngest = new Inngest({

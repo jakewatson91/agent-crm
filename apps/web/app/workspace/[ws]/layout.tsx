@@ -9,31 +9,73 @@ export default async function WorkspaceLayout({
   params: Promise<{ ws: string }>;
 }) {
   const { ws } = await params;
-  const nav = [
-    { href: `/workspace/${ws}/gates`, label: 'Inbox', hint: 'approval queue · empty = healthy' },
-    { href: `/workspace/${ws}/channels`, label: 'Feed', hint: 'what the agent has been doing' },
-    { href: `/workspace/${ws}/activity`, label: 'Activity', hint: 'raw event log' },
-    { href: `/workspace/${ws}/sources`, label: 'Sources', hint: 'where signals come from' },
-    { href: `/workspace/${ws}/agents`, label: 'Agents', hint: 'saved filter rules' },
-    { href: `/workspace/${ws}/query`, label: 'Query', hint: 'ad-hoc pull' },
-    { href: `/workspace/${ws}/replay`, label: 'Replay', hint: 'time slider' },
-    { href: `/workspace/${ws}/settings`, label: 'Constitution', hint: 'workspace-wide rules' },
+
+  // Activity is folded into Feed — same data, one place. Settings absorbs
+  // Constitution (it was always config).
+  const primary = [
+    { href: `/workspace/${ws}/channels`, label: 'Feed',     hint: 'every action the agent took' },
+    { href: `/workspace/${ws}/gates`,    label: 'Inbox',    hint: 'approvals · empty = healthy' },
   ];
+  const tools = [
+    { href: `/workspace/${ws}/sources`,  label: 'Sources',  hint: 'where signals come from' },
+    { href: `/workspace/${ws}/agents`,   label: 'Agents',   hint: 'saved filter rules' },
+    { href: `/workspace/${ws}/query`,    label: 'Query',    hint: 'ad-hoc pull' },
+  ];
+  const debug = [
+    { href: `/workspace/${ws}/replay`,   label: 'Replay',   hint: 'time slider' },
+    { href: `/workspace/${ws}/settings`, label: 'Settings', hint: 'constitution + ICP + about' },
+  ];
+
+  const linkStyle: React.CSSProperties = {
+    color: 'var(--text)',
+    textDecoration: 'none',
+    display: 'block',
+    padding: '.5rem .65rem',
+    borderRadius: 6,
+    transition: 'background 120ms ease',
+  };
+
+  function Section({ title, items }: { title: string; items: typeof primary }) {
+    return (
+      <div style={{ marginBottom: '1.25rem' }}>
+        <div style={{ fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-3)', padding: '0 .65rem .35rem' }}>{title}</div>
+        {items.map((n) => (
+          <Link key={n.href} href={n.href} style={linkStyle} className="nav-link">
+            <div style={{ fontSize: '.92rem', fontWeight: 500 }}>{n.label}</div>
+            <div style={{ fontSize: '.72rem', color: 'var(--text-3)', marginTop: 1 }}>{n.hint}</div>
+          </Link>
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
-      <aside style={{ width: 260, borderRight: '1px solid #1f1f1f', padding: '1.5rem 1rem' }}>
-        <div style={{ fontSize: '.85rem', color: '#666', marginBottom: '1.5rem' }}>workspace</div>
-        <div style={{ fontSize: '.95rem', marginBottom: '2rem' }}>{ws.slice(0, 8)}…</div>
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: '.75rem' }}>
-          {nav.map((n) => (
-            <Link key={n.href} href={n.href} style={{ color: '#e5e5e5', textDecoration: 'none' }}>
-              <div style={{ fontSize: '.95rem' }}>{n.label}</div>
-              <div style={{ fontSize: '.75rem', color: '#666' }}>{n.hint}</div>
-            </Link>
-          ))}
-        </nav>
+    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
+      <aside
+        style={{
+          width: 240,
+          borderRight: '1px solid var(--border)',
+          padding: '1.5rem 1rem',
+          background: 'var(--panel)',
+          position: 'sticky',
+          top: 0,
+          alignSelf: 'flex-start',
+          height: '100vh',
+          overflowY: 'auto',
+        }}
+      >
+        <div style={{ padding: '0 .65rem', marginBottom: '1.25rem' }}>
+          <div style={{ fontSize: '.95rem', fontWeight: 600, letterSpacing: '-.01em' }}>agent-crm</div>
+          <div className="mono" style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: 2 }}>{ws.slice(0, 8)}…</div>
+        </div>
+        <Section title="Main" items={primary} />
+        <Section title="Configure" items={tools} />
+        <Section title="Audit" items={debug} />
       </aside>
-      <main style={{ flex: 1, padding: '1.5rem' }}>{children}</main>
+      <main style={{ flex: 1, padding: '1.75rem 2rem', maxWidth: 1100 }}>{children}</main>
+      <style>{`
+        .nav-link:hover { background: var(--panel-2); }
+      `}</style>
     </div>
   );
 }
