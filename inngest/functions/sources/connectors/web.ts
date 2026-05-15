@@ -26,7 +26,7 @@ import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from
 const EXTRACT_MODEL = 'gpt-4o-mini';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
-interface ExtractedItem {
+export interface ExtractedItem {
   title: string;
   url: string;
   body: string;
@@ -116,7 +116,7 @@ function unescape(s: string): string {
     .trim();
 }
 
-function parseRssOrAtom(xml: string, sourceUrl: string): ExtractedItem[] {
+export function parseRssOrAtom(xml: string, sourceUrl: string): ExtractedItem[] {
   const items: ExtractedItem[] = [];
   const isAtom = /<feed[\s>]/i.test(xml);
   const itemBlocks = isAtom
@@ -245,37 +245,40 @@ function looksLikeHandle(name: string): boolean {
  *  about. In discover mode we ask the LLM in one batched call. Returns the same
  *  items array with company_name and company_domain populated when extractable.
  *  Captures rejection reasons for the audit trail. */
-async function enrichItemsWithCompanyName(
+export async function enrichItemsWithCompanyName(
   items: ExtractedItem[],
   opts: { hint: string; roles: string[]; keywords: string[] },
   model: string,
-): Promise<{ items: ExtractedItem[]; notes: Map<string, string> }> {
+): Promise<{ items: ExtractedItem[]; notes: Map<string, string>; silently_dropped: number }> {
   const filterClauses: string[] = [];
   if (opts.roles.length) filterClauses.push(`Only include items whose role/title matches: ${opts.roles.join(' | ')}.`);
   if (opts.keywords.length) filterClauses.push(`Only include items matching: ${opts.keywords.join(' | ')}.`);
   const filterBlock = filterClauses.length ? `\nFilters: ${filterClauses.join(' ')}\n` : '';
 
-  const sysPrompt = `Each item below is an RSS entry: a title, url, and short body. Identify the COMPANY each item is about (the SUBJECT). For funding news, the company that raised. For product news, the company that shipped. For hiring posts, the hiring company. For blog posts, often there is no specific company subject — omit those.${filterBlock}
-
-When an article mentions multiple companies (partnerships, comparisons, customer references), pick the SUBJECT — the one the article is about, not just the first mentioned.
+  const sysPrompt = `Each item below is an RSS entry: a title, url, and short body. Identify the COMPANY most worth tracking:
+- Funding/news: the subject company (the one that raised, launched, or is featured).
+- Product/launch news: the company that shipped.
+- Hiring posts: the hiring company.
+- Comparisons or listicles ("best X", "top N tools"): pick the FIRST 1-2 companies recommended or featured. Do not bail with "multi-subject ambiguous" - pick the first plausible one.
+- Blog or op-ed: the publisher of the post if a real company; otherwise the company the post is about.
+- Podcast / community / event posts (no specific company subject): mark rejected.${filterBlock}
 
 NEVER return:
-- A user handle as a company name (single lowercase word like "manishbhusal" or "jakeawatson"). If the article was POSTED BY a user but doesn't have a clear company subject, omit the item.
+- A user handle as a company name (single lowercase word like "manishbhusal" or "jakeawatson"). Posts authored by a user with no company subject go in "rejected".
 - A generic noun ("the company", "the team", "the startup") as a company_name.
 - A person's name as a company. People are not companies.
-- An invented company. If unsure, omit the item.
+- An invented company.
+
+EVERY input guid MUST appear in exactly one of the two arrays. Do not omit any.
 
 Return JSON:
 {
-  "companies": [
-    {"guid": "<from input>", "company_name": "<name>", "company_domain": "<root domain or empty>"}
-  ],
-  "rejected": [
-    {"guid": "<from input>", "reason": "<short why omitted: e.g. 'no company subject', 'handle not company', 'multi-subject ambiguous'>"}
-  ]
+  "companies": [{"guid": "<from input>", "company_name": "<name>", "company_domain": "<root domain or empty>"}],
+  "rejected":  [{"guid": "<from input>", "reason": "<reason_code>"}]
 }
 
-Every input guid must appear in exactly one of the two arrays.`;
+reason_code is one of:
+"topic_only_no_subject" | "podcast_or_community" | "user_handle_not_company" | "person_not_company" | "generic_noun" | "doesnt_match_filter" | "non_english" | "ambiguous_multi_subject" | "paywalled_or_thin_content"`;
 
   const userPayload = JSON.stringify(items.map((it) => ({
     guid: it.guid,
@@ -306,10 +309,14 @@ Every input guid must appear in exactly one of the two arrays.`;
   for (const r of parsed.rejected ?? []) {
     if (r.guid && r.reason) notes.set(r.guid, r.reason);
   }
+  let silently_dropped = 0;
   const out = items.map((it) => {
     const c = byGuid.get(it.guid);
     if (!c) {
-      if (!notes.has(it.guid)) notes.set(it.guid, 'no company subject in LLM extraction');
+      if (!notes.has(it.guid)) {
+        notes.set(it.guid, 'silently_dropped_by_llm');
+        silently_dropped++;
+      }
       return { ...it, company_name: undefined };
     }
     // Defensive filter: even if LLM said it was a company, reject handle-shape names.
@@ -319,7 +326,7 @@ Every input guid must appear in exactly one of the two arrays.`;
     }
     return { ...it, company_name: c.company_name, company_domain: c.company_domain ?? undefined };
   });
-  return { items: out, notes };
+  return { items: out, notes, silently_dropped };
 }
 
 const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> => {
@@ -373,6 +380,9 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
         const enriched = await enrichItemsWithCompanyName(items, { hint: extraction_hint, roles, keywords }, extractModel);
         items = enriched.items;
         extractionNotes = enriched.notes;
+        if (enriched.silently_dropped > 0) {
+          result.errors.push(`LLM omitted ${enriched.silently_dropped} guids from response (spec violation)`);
+        }
       } catch (e) {
         result.errors.push(`rss company-name extraction failed: ${e instanceof Error ? e.message : String(e)}`);
       }

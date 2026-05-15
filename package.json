@@ -17,7 +17,8 @@
     "agent:smoke": "tsx scripts/agent_smoke.ts",
     "agent:new": "tsx scripts/create_agent.ts",
     "agent:list": "tsx scripts/list_agents.ts",
-    "loop": "tsx scripts/run_loop.ts"
+    "loop": "tsx scripts/run_loop.ts",
+    "sweep": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/sweep.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

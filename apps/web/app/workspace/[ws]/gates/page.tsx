@@ -83,7 +83,7 @@ export default function GatesPage() {
     }
   }
 
-  if (loading) return <section><h2 style={{ marginTop: 0 }}>Inbox</h2><p className="subtle">loading…</p></section>;
+  if (loading) return <section><h2 style={{ marginTop: 0 }}>Approvals</h2><p className="subtle">loading…</p></section>;
 
   const healthBadges = health ? [
     { label: 'unmatched signals', value: health.unmatched_signals, hint: '>30m old, no match' },
@@ -95,9 +95,9 @@ export default function GatesPage() {
 
   return (
     <section>
-      <h2 style={{ marginTop: 0 }}>Inbox</h2>
+      <h2 style={{ marginTop: 0 }}>Approvals</h2>
       <p className="subtle" style={{ fontSize: '.88rem' }}>
-        Approval queue. Empty is the success state. For draft posts: copy → paste into your email tool → approve once sent.
+        Things the agent needs your sign-off on before acting. Empty is the success state.
       </p>
 
       {health && (
@@ -116,7 +116,7 @@ export default function GatesPage() {
       )}
       {gates.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', color: 'var(--text-3)', padding: '2rem', borderStyle: 'dashed' }}>
-          No pending gates. The agent is handling everything.
+          No pending approvals. The agent is handling everything.
         </div>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '.75rem' }}>

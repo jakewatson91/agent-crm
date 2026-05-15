@@ -169,7 +169,11 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   let companyByExaId = new Map<string, { name: string; domain: string | null }>();
   if (intent === 'discover') {
     try {
-      companyByExaId = await batchExtractCompanies(fresh, { roles, keywords }, ((ctx.config.model as string) ?? EXTRACT_MODEL));
+      const detailed = await batchExtractCompaniesDetailed(fresh, { roles, keywords }, ((ctx.config.model as string) ?? EXTRACT_MODEL));
+      companyByExaId = detailed.companies;
+      if (detailed.silently_dropped.length) {
+        result.errors.push(`LLM omitted ${detailed.silently_dropped.length} ids from response (spec violation)`);
+      }
     } catch (e) {
       result.errors.push(`company extraction failed: ${e instanceof Error ? e.message : String(e)}`);
       return result;
@@ -262,22 +266,54 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   return result;
 };
 
-async function batchExtractCompanies(
+export async function batchExtractCompanies(
   results: ExaResult[],
   hints: { roles: string[]; keywords: string[] },
   model: string,
 ): Promise<Map<string, { name: string; domain: string | null }>> {
-  if (results.length === 0) return new Map();
+  const { companies } = await batchExtractCompaniesDetailed(results, hints, model);
+  return companies;
+}
+
+/** Detailed variant: returns the companies map plus the rejection notes and any
+ *  silently dropped ids (LLM violated the "every id must appear" rule). Used by
+ *  the connector to log spec violations and by debug scripts. */
+export async function batchExtractCompaniesDetailed(
+  results: ExaResult[],
+  hints: { roles: string[]; keywords: string[] },
+  model: string,
+): Promise<{
+  companies: Map<string, { name: string; domain: string | null }>;
+  rejected: Map<string, string>;
+  silently_dropped: string[];
+}> {
+  const empty = { companies: new Map<string, { name: string; domain: string | null }>(), rejected: new Map<string, string>(), silently_dropped: [] };
+  if (results.length === 0) return empty;
 
   const filterClauses: string[] = [];
-  if (hints.roles.length) filterClauses.push(`Only return items where the role/title matches one of: ${hints.roles.join(' | ')}.`);
-  if (hints.keywords.length) filterClauses.push(`Only return items matching one of: ${hints.keywords.join(' | ')}.`);
+  if (hints.roles.length) filterClauses.push(`Strongly prefer items where the role/title matches one of: ${hints.roles.join(' | ')}.`);
+  if (hints.keywords.length) filterClauses.push(`Strongly prefer items matching one of: ${hints.keywords.join(' | ')}.`);
   const filterBlock = filterClauses.length ? `\n${filterClauses.join('\n')}\n` : '';
 
-  const sysPrompt = `Each result is a web page. For each, identify the COMPANY that posted or is the subject of the page (typically the hiring company for job posts, the publisher for blog posts, the subject for news).${filterBlock}
-Return JSON: {"companies": [{"id": "<exa id>", "name": "<company name>", "domain": "<root domain or empty>"}]}.
-If a result clearly doesn't match the user's filters or has no identifiable company, omit it from the array.
-Don't invent companies. If unsure, omit.`;
+  const sysPrompt = `For each web page, identify the COMPANY most worth tracking:
+- News/funding: the subject company (the one that raised, launched, or is featured).
+- Job posts: the hiring company.
+- Blog or op-ed: the publisher of the post if a real company; otherwise the company the post is about.
+- Comparisons or listicles ("best X 2026", "7 tools compared"): pick the FIRST 1-2 companies recommended or featured. Do not bail with "too many subjects" - pick the first plausible one.
+- Forum / community discussion threads: extract only if a specific company is clearly the subject.${filterBlock}
+
+NEVER return: a user handle (lowercase one-word), a generic noun ("the team"), a person's name, or an invented company.
+
+EVERY input id MUST appear in exactly one of "companies" or "rejected". Do not omit any.
+
+Return JSON:
+{
+  "companies": [{"id": "<exa id>", "name": "<company name>", "domain": "<root domain or empty>"}],
+  "rejected":  [{"id": "<exa id>", "reason": "<reason_code>"}]
+}
+
+reason_code is one of:
+"topic_only_no_subject" | "forum_discussion_no_company" | "doesnt_match_filter" | "non_english" | "paywalled_or_thin_content" | "personal_blog_no_company" | "ambiguous_multi_subject" | "user_handle_not_company" | "person_not_company"`;
 
   const userPayload = JSON.stringify(results.map((r) => ({
     id: r.id,
@@ -289,20 +325,29 @@ Don't invent companies. If unsure, omit.`;
 
   const llm = await chatComplete({
     model,
-    max_tokens: 2000,
+    max_tokens: 2500,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: sysPrompt },
-      { role: 'user', content: userPayload },
+      { role: 'user', content: `Classify each result and return JSON in the format above:\n\n${userPayload}` },
     ],
   });
-  const parsed = JSON.parse(llm.text) as { companies: Array<{ id: string; name: string; domain?: string }> };
-  const out = new Map<string, { name: string; domain: string | null }>();
+  const parsed = JSON.parse(llm.text) as {
+    companies?: Array<{ id: string; name: string; domain?: string }>;
+    rejected?: Array<{ id: string; reason: string }>;
+  };
+  const companies = new Map<string, { name: string; domain: string | null }>();
   for (const c of parsed.companies ?? []) {
     if (!c.id || !c.name) continue;
-    out.set(c.id, { name: c.name.trim(), domain: c.domain?.trim() || null });
+    companies.set(c.id, { name: c.name.trim(), domain: c.domain?.trim() || null });
   }
-  return out;
+  const rejected = new Map<string, string>();
+  for (const r of parsed.rejected ?? []) {
+    if (r.id && r.reason) rejected.set(r.id, r.reason);
+  }
+  const seen = new Set<string>([...companies.keys(), ...rejected.keys()]);
+  const silently_dropped = results.map((r) => r.id).filter((id) => !seen.has(id));
+  return { companies, rejected, silently_dropped };
 }
 
 export default exa;

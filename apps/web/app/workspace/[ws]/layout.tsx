@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { EntitySearch } from '../../_components/EntitySearch';
 
 export default async function WorkspaceLayout({
   children,
@@ -14,7 +15,7 @@ export default async function WorkspaceLayout({
   // Constitution (it was always config).
   const primary = [
     { href: `/workspace/${ws}/channels`, label: 'Feed',     hint: 'every action the agent took' },
-    { href: `/workspace/${ws}/gates`,    label: 'Inbox',    hint: 'approvals · empty = healthy' },
+    { href: `/workspace/${ws}/gates`,    label: 'Approvals', hint: 'things needing your sign-off · empty = healthy' },
   ];
   const tools = [
     { href: `/workspace/${ws}/sources`,  label: 'Sources',  hint: 'where signals come from' },
@@ -64,10 +65,11 @@ export default async function WorkspaceLayout({
           overflowY: 'auto',
         }}
       >
-        <div style={{ padding: '0 .65rem', marginBottom: '1.25rem' }}>
+        <div style={{ padding: '0 .65rem', marginBottom: '1rem' }}>
           <div style={{ fontSize: '.95rem', fontWeight: 600, letterSpacing: '-.01em' }}>agent-crm</div>
           <div className="mono" style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: 2 }}>{ws.slice(0, 8)}…</div>
         </div>
+        <EntitySearch ws={ws} />
         <Section title="Main" items={primary} />
         <Section title="Configure" items={tools} />
         <Section title="Audit" items={debug} />

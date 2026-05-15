@@ -16,8 +16,11 @@ import { findContacts, linkContactToAccount } from './contacts.js';
 import { scoreEntity, scoreAndAssert, combineSubScores } from './scoring.js';
 import { selectAction, loadActionContext } from './action_selector.js';
 import { graphProximity } from './graph.js';
+import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.js';
 
 export { TOOL_SCHEMAS, type ToolName };
+export { sweepWorkspace, SWEEP_THRESHOLDS };
+export type { CheckResult, Severity };
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
 export { scoreEntity, scoreAndAssert, combineSubScores };

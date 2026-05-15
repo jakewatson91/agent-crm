@@ -151,28 +151,46 @@ export async function runAgent(
   // are audit-trail entries, not human work.
   // ============================================================
 
-  // Enricher: skip re-enrichment when the same signal body was processed for
-  // this entity in the last 7d. Catches YC-directory daily re-emit pattern.
-  // Cheap O(1) hash lookup via agent_run_metrics payload.
+  // Enricher: skip re-enrichment when the same signal body has already been
+  // observed for this entity in the last 7d. Catches YC-directory daily re-emit
+  // pattern (identical hourly scrapes). We compare against the signals table
+  // directly — not agent_run_metrics — so dedup fires on the very next signal,
+  // not after the first successful run accrues a metrics event. The skip
+  // outcome is an events row, not a channel_post, so the feed stays clean.
   let signalBodyHash: string | null = null;
-  if (behavior === 'enricher' && sigData?.body_for_embedding) {
+  if (behavior === 'enricher' && sigData?.body_for_embedding && payload.signal_id) {
     const normalized = sigData.body_for_embedding.trim().toLowerCase().replace(/\s+/g, ' ');
     signalBodyHash = createHash('sha256').update(normalized).digest('hex').slice(0, 16);
     const since7d = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
-    const prior = await supabase.from('events')
-      .select('id')
-      .eq('workspace_id', payload.workspace_id)
-      .eq('action', 'agent_run_metrics')
-      .gte('created_at', since7d)
-      .eq('payload->>signal_body_hash', signalBodyHash)
-      .eq('payload->>entity_id', ent.data.id)
-      .limit(1);
-    if ((prior.data?.length ?? 0) > 0) {
-      await callTool(supabase, actor, 'post_to_channel', {
-        channel_id, kind: 'decision',
-        body: `Skipped enrichment: identical signal body already processed for ${ent.data.name} in the last 7d. No new content to extract.`,
-        cites: [],
-      }, { parent_event_id: payload.parent_event_id });
+    const priorSignals = await supabase.from('signals')
+      .select('id, body_for_embedding, observed_at')
+      .eq('entity_id', ent.data.id)
+      .neq('id', sigData.id)
+      .lt('observed_at', sigData.observed_at)
+      .gte('observed_at', since7d)
+      .order('observed_at', { ascending: false })
+      .limit(50);
+    const priorMatch = (priorSignals.data ?? []).find((p) => {
+      const pNorm = ((p.body_for_embedding as string | null) ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+      return createHash('sha256').update(pNorm).digest('hex').slice(0, 16) === signalBodyHash;
+    });
+    if (priorMatch) {
+      await supabase.from('events').insert({
+        workspace_id: payload.workspace_id,
+        actor_kind: 'agent',
+        actor_id: payload.agent,
+        action: 'enrichment_skipped',
+        target_kind: 'entity',
+        target_id: ent.data.id,
+        payload: {
+          reason: 'duplicate_signal_body',
+          entity_id: ent.data.id,
+          current_signal_id: sigData.id,
+          prior_signal_id: priorMatch.id,
+          signal_body_hash: signalBodyHash,
+        },
+        parent_event_id: payload.parent_event_id ?? null,
+      });
       return { ok: true, action: 'skip', reason: 'duplicate_signal_body', behavior };
     }
   }
@@ -188,9 +206,17 @@ export async function runAgent(
       return entityDomain.includes(t) || entityName.includes(t) || ent.data.id === s;
     });
     if (suppressed) {
-      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-        `Drafter skipped: ${ent.data.name} matches the suppression list. No outbound generated.`, []);
-      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'suppression_match', behavior };
+      await supabase.from('events').insert({
+        workspace_id: payload.workspace_id,
+        actor_kind: 'agent',
+        actor_id: payload.agent,
+        action: 'drafter_skipped',
+        target_kind: 'entity',
+        target_id: ent.data.id,
+        payload: { reason: 'suppression_match', entity_id: ent.data.id, entity_name: ent.data.name },
+        parent_event_id: payload.parent_event_id ?? null,
+      });
+      return { ok: true, action: 'skip', reason: 'suppression_match', behavior };
     }
 
     // Workspace policy: daily send cap. Same reasoning — not scoring-driven.
@@ -204,9 +230,17 @@ export async function runAgent(
         .gte('created_at', startOfDay.toISOString());
       const usedToday = today.count ?? 0;
       if (usedToday >= cap) {
-        const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-          `Drafter skipped: daily send cap reached (${usedToday}/${cap}). Resumes tomorrow.`, []);
-        return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'rate_limit_exceeded', behavior };
+        await supabase.from('events').insert({
+          workspace_id: payload.workspace_id,
+          actor_kind: 'agent',
+          actor_id: payload.agent,
+          action: 'drafter_skipped',
+          target_kind: 'entity',
+          target_id: ent.data.id,
+          payload: { reason: 'rate_limit_exceeded', used_today: usedToday, cap },
+          parent_event_id: payload.parent_event_id ?? null,
+        });
+        return { ok: true, action: 'skip', reason: 'rate_limit_exceeded', behavior };
       }
     }
 
@@ -244,11 +278,26 @@ export async function runAgent(
     });
 
     if (decision.action !== 'draft_outreach') {
-      // Non-draft actions all share the same shape: emit a decision post with
-      // the action_selector's reason, then perform any side effects.
+      // Only post state-changing actions to the channel. watch_only and continue
+      // produce no observable change, so they're audit-trail events only — the
+      // feed stays focused on actions the user cares about.
       const cites = activeFacts.filter((f) => f.predicate.startsWith('score_')).map((f) => f.id);
-      await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-        `[${decision.action}] ${decision.reason}`, cites);
+      const STATE_CHANGING: ReadonlySet<typeof decision.action> = new Set(['deep_research', 'drop']);
+      if (STATE_CHANGING.has(decision.action)) {
+        await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+          `[${decision.action}] ${decision.reason}`, cites);
+      } else {
+        await supabase.from('events').insert({
+          workspace_id: payload.workspace_id,
+          actor_kind: 'agent',
+          actor_id: payload.agent,
+          action: 'action_selector_skip',
+          target_kind: 'entity',
+          target_id: ent.data.id,
+          payload: { action: decision.action, policy: decision.policy, reason: decision.reason },
+          parent_event_id: payload.parent_event_id ?? null,
+        });
+      }
 
       if (decision.action === 'deep_research') {
         // Mark that we triggered research so we don't re-trigger every cron
@@ -423,6 +472,21 @@ export async function runAgent(
       channel_id, kind: 'touch_draft', body: composed, cites: validCites,
     }, meta);
     if (!r.ok) return { ok: false, action: 'skip', reason: r.error, behavior, ...tokens };
+    // Open an approval for this draft. Sending is irreversible — gates are
+    // exactly the right primitive here. The condition jsonb is the full,
+    // already-parsed send payload so /api/gates/decide doesn't need to re-parse
+    // the post body string at approval time.
+    await callTool(supabase, actor, 'request_gate', {
+      channel_post_id: r.target_id,
+      policy: 'outreach_send',
+      condition: {
+        to_email: toEmail || null,
+        subject,
+        body,
+        entity_id: ent.data.id,
+        entity_name: ent.data.name,
+      },
+    }, meta);
     // Auditable decision post explaining why we drafted. Cites the same facts so the
     // provenance walk works from either the draft or the decision.
     const reasoning = sanitizeText(((decision as { reasoning?: string }).reasoning ?? '').toString());
@@ -462,16 +526,35 @@ export async function runAgent(
       if (r.ok) { asserted++; assertedIds.push(r.target_id); }
       // Per-fact failures don't bubble — the run is still useful with N-1 facts.
     }
-    const summary = sanitizeText((decision.summary as string) ?? `Extracted ${asserted} fact${asserted === 1 ? '' : 's'}.`);
-    const post = await callTool(supabase, actor, 'post_to_channel', {
-      channel_id, kind: 'claim', body: summary, cites: assertedIds,
-    }, meta);
-    // Auditable decision post explaining the extraction reasoning.
-    const reasoning = sanitizeText(((decision as { reasoning?: string }).reasoning ?? '').toString());
-    if (reasoning && post.ok) {
-      await callTool(supabase, actor, 'post_to_channel', {
-        channel_id, kind: 'decision', body: reasoning, cites: assertedIds, parent_post_id: post.target_id,
+    // Only post when we extracted something. Zero-fact runs become audit-trail
+    // events instead of channel noise. The summary still lives in the LLM's
+    // output if needed for debugging — it's just not surfaced as a "claim."
+    let post: { ok: boolean; target_id?: string; error?: string } = { ok: false };
+    if (asserted > 0) {
+      const summary = sanitizeText((decision.summary as string) ?? `Extracted ${asserted} fact${asserted === 1 ? '' : 's'}.`);
+      post = await callTool(supabase, actor, 'post_to_channel', {
+        channel_id, kind: 'claim', body: summary, cites: assertedIds,
       }, meta);
+      const reasoning = sanitizeText(((decision as { reasoning?: string }).reasoning ?? '').toString());
+      if (reasoning && post.ok) {
+        await callTool(supabase, actor, 'post_to_channel', {
+          channel_id, kind: 'decision', body: reasoning, cites: assertedIds, parent_post_id: post.target_id,
+        }, meta);
+      }
+    } else {
+      await supabase.from('events').insert({
+        workspace_id: payload.workspace_id,
+        actor_kind: 'agent',
+        actor_id: payload.agent,
+        action: 'enrichment_no_facts',
+        target_kind: 'entity',
+        target_id: ent.data.id,
+        payload: {
+          signal_id: payload.signal_id ?? null,
+          summary: sanitizeText((decision.summary as string) ?? 'No new facts extracted'),
+        },
+        parent_event_id: payload.parent_event_id ?? null,
+      });
     }
     // Auto-fetch contacts if the entity has a domain and no contacts yet.
     // Runs once per entity (idempotent on email). Skips silently if HUNTER_API_KEY
@@ -484,19 +567,27 @@ export async function runAgent(
         }, meta);
       }
     }
-    // Auto-score: ICP fit is workspace-wide and source-agnostic. Runs after each
-    // enrichment so the score reflects the latest fact set. supersede chain handles
-    // idempotency. Drafters read icp_fit when deciding to draft vs gate.
-    try {
-      const score = await scoreAndAssertFn(supabase, actor, ent.data.id);
-      if (score) {
-        const reasoning = `ICP fit ${score.icp_fit.toFixed(2)} — ${score.reasoning}`;
-        await callTool(supabase, actor, 'post_to_channel', {
-          channel_id, kind: 'decision', body: reasoning, cites: assertedIds,
-        }, meta);
+    // Auto-score: only re-run when the enricher actually asserted new facts.
+    // Score is a pure function of facts; identical facts in = identical score out,
+    // so skipping when nothing changed saves the LLM + 4 embedding calls per
+    // scoreEntity invocation. scoreEntity has its own guard as defense-in-depth.
+    // Post the score reasoning only on band change — the band maps to downstream
+    // action_selector thresholds, so a band shift is what actually changes behavior.
+    if (asserted > 0) {
+      try {
+        const priorScoreText = activeFacts.find((f) => f.predicate === 'score_total')?.object_text
+          ?? activeFacts.find((f) => f.predicate === 'icp_fit')?.object_text;
+        const priorScore = priorScoreText ? parseFloat(priorScoreText) : NaN;
+        const score = await scoreAndAssertFn(supabase, actor, ent.data.id);
+        if (score && (!Number.isFinite(priorScore) || icpBand(priorScore) !== icpBand(score.icp_fit))) {
+          const reasoning = `ICP fit ${score.icp_fit.toFixed(2)} (${icpBand(score.icp_fit)}) — ${score.reasoning}`;
+          await callTool(supabase, actor, 'post_to_channel', {
+            channel_id, kind: 'decision', body: reasoning, cites: assertedIds,
+          }, meta);
+        }
+      } catch {
+        // Non-fatal: enrichment is still useful without the score.
       }
-    } catch {
-      // Non-fatal: enrichment is still useful without the score.
     }
     return {
       ok: true, action: 'enrich',
@@ -744,6 +835,19 @@ function sanitizeText(s: string): string {
     .replace(/\(\s*\)/g, '')                                // empty parens
     .replace(/^\s+|\s+$/gm, (m) => m.trim() ? m : '')       // tidy line ends
     .trim();
+}
+
+/**
+ * ICP-score band. Maps the continuous icp_fit into the four buckets that
+ * action_selector cares about: drop (<0.35), watch (0.35–0.5), research
+ * (0.5–0.65), draft-ready (≥0.65). A band shift is what changes downstream
+ * behavior, so we only post score reasoning when the band actually moves.
+ */
+function icpBand(score: number): 'drop' | 'watch' | 'research' | 'draft-ready' {
+  if (!Number.isFinite(score) || score < 0.35) return 'drop';
+  if (score < 0.5) return 'watch';
+  if (score < 0.65) return 'research';
+  return 'draft-ready';
 }
 
 /**

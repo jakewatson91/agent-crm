@@ -5,6 +5,7 @@ import web, { meta as webMeta } from './connectors/web.js';
 import hn, { meta as hnMeta } from './connectors/hn.js';
 import yc, { meta as ycMeta } from './connectors/yc.js';
 import github, { meta as githubMeta } from './connectors/github.js';
+import githubTrending, { meta as githubTrendingMeta } from './connectors/github_trending.js';
 import producthunt, { meta as phMeta } from './connectors/producthunt.js';
 
 export type { Connector, ConnectorMeta, ConnectorContext, ConnectorResult } from './types.js';
@@ -28,6 +29,7 @@ export const CONNECTORS: Record<string, { run: Connector; meta: ConnectorMeta }>
   hn: { run: hn, meta: hnMeta },
   yc: { run: yc, meta: ycMeta },
   github: { run: github, meta: githubMeta },
+  github_trending: { run: githubTrending, meta: githubTrendingMeta },
   producthunt: { run: producthunt, meta: phMeta },
 };
 

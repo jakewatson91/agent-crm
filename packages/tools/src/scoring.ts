@@ -133,6 +133,20 @@ export async function scoreEntity(
   const facts = (factsRes.data ?? []) as Array<{ predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string }>;
   const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown> };
 
+  // Skip-when-stale guard: if a prior score_total exists and no substantive
+  // fact is newer than it, the score can't have changed — bail before the
+  // LLM + 4 embedding calls. Defense-in-depth; callers should already gate
+  // on whether new facts were asserted this tick.
+  const scoreTotalFact = facts.find((f) => f.predicate === 'score_total');
+  if (scoreTotalFact) {
+    const scoreTs = Date.parse(scoreTotalFact.observed_at ?? scoreTotalFact.created_at ?? '');
+    const hasNewerSubstantive = facts.some((f) =>
+      !ADMIN_PREDICATES.has(f.predicate) &&
+      Date.parse(f.observed_at ?? f.created_at ?? '') > scoreTs,
+    );
+    if (!hasNewerSubstantive) return null;
+  }
+
   // ---- Deterministic sub-scores ----
   const evidence_depth = evidenceDepth(facts);
   const recency = recencyScore(facts);
@@ -166,11 +180,10 @@ export async function scoreEntity(
     }
   }
 
-  // ---- Pre-filter shortcut: if everything points to "obviously off-ICP",
-  //      skip the LLM call. evidence_depth = 0 means we don't even have
-  //      facts to reason about; RRF < 0.3 means the embeddings disagree
-  //      with the ICP on every perspective.
-  if (rrf_prefilter < RRF_GATE && evidence_depth < 0.34) {
+  // ---- Pre-filter shortcut: when 3 embedding perspectives unanimously
+  //      disagree with the ICP, more facts won't flip the answer. Skip the
+  //      LLM call regardless of evidence depth.
+  if (rrf_prefilter < RRF_GATE) {
     const breakdown: ScoreBreakdown = {
       industry_match: clamp01(rrf_prefilter),
       stage_match: 0,

@@ -1,6 +1,6 @@
 # Project State
 
-Last Update: 2026-05-14 22:00 EDT
+Last Update: 2026-05-15 EDT
 
 ## Direction
 
@@ -58,41 +58,51 @@ Agent-first CRM. Primary user is the agent; humans intervene only at exception g
 - Writes: create_workspace, create_account, create_contact, assert_fact, supersede_fact, create_signal, create_subscription, post_to_channel, request_gate, decide_gate
 - Enrichment: find_contacts (Hunter.io), link_contact_to_account, score_entity (ICP-anchored), query, cite
 
-### Pipeline (end-to-end live as of 2026-05-10)
-- Hourly source-dispatcher cron fans out source.run events
-- 15 active sources (YC × 3, Exa × 9, web/RSS × 3)
+### Pipeline (end-to-end live as of 2026-05-10, scoring v2 layered 2026-05-15)
+- Hourly source-dispatcher cron fans out source.run events. Honors per-source `schedule_cron` (YC + PH daily, Exa/web/api_call every 6h, HN hourly, github every 30 min).
+- 15 active sources (YC × 3, Exa × 9, web/RSS × 3). Auto-deactivates sources with 0 signals over 7d.
 - Signals → signal.created (vault-backed pg_net) → match-signal → fan-out
-- Enricher: asserts facts → auto-links Hunter contacts (if domain) → universal ICP scoreAndAssert
-- Universal drafter (outbound_drafter): reads icp_fit + past_outcomes + contacts; gates if icp_fit < 0.30; otherwise drafts with To: <email>
+- Enricher: dedupes by signal_body_hash + entity_id (7d window) → asserts facts → auto-links Hunter contacts (negative-cache via `contact_lookup_attempted` fact, 30d TTL) → scoring v2.
+- Scoring v2: multi-dim rubric (industry_match, stage_match, signal_strength — LLM) + deterministic (evidence_depth, recency, graph_proximity) + RRF pre-filter via 4-perspective embeddings (default/pain/stack/vertical). Each sub-score asserted as its own `score_*` fact. `icp_fit` kept as alias for backward compat.
+- Action selector (deterministic, pre-LLM): draft_outreach (icp_total ≥ 0.65 AND signal_strength ≥ 0.7 AND evidence_depth ≥ 0.5 AND no draft in 14d) / watch_only / deep_research / drop / continue. Replaced the old icp_fit < 0.5 binary gate.
+- `research.requested` Inngest event + researchRunner — targeted Exa pull when fit suspected but evidence thin. Writes `research_completed` fact.
+- `drop` writes `dropped_until` fact (90d) that hard-suppresses re-evaluation.
+- All operational rejections are `decision` channel posts, never gates. Gates reserved for irreversible human approvals (currently unused — no sending pipeline).
 - Decision posts on every draft + enrichment (full audit chain)
 - Outcome posts when gates decided
 - Fact-triggered subscriptions architecture in place (subscriptions.fact_filter column + match_fact RPC + match-fact Inngest function); no fact-triggered subs created yet but infra is live
 
-### UX surfaces (audit-only)
-- Inbox (was /gates): approval queue. Empty = healthy. Shows system_health metrics at top.
-- Feed (was /channels): list_entities projection. Shows status, top contact, icp_fit (color-coded), draft preview. Sort by activity or icp_fit.
-- Activity: raw event log
-- Constitution (/settings): edit about/icp/persona/constitution/knowledge_base. Saves trigger workspaces.updated_at → rescore cron picks up
-- "Why this?" provenance popover, cite popover, replay slider — all from earlier sessions
-- / redirects to most-recent workspace's /gates (no auth, single-tenant dog-food)
+### UX surfaces (audit-only) — light pastel theme as of 2026-05-15
+- Theme: warm off-white (`#fbfaf6`), soft pastel accents, Inter + JetBrains Mono. CSS variables in `apps/web/app/globals.css`. 3-section sidebar (Main / Configure / Audit).
+- **Feed** (`/channels`) — unified chronological action stream replacing entity-grouped view. Filter chips (All/Drafts/Decisions/Claims/Gates), click-to-expand drafts, inline WhyThis + CiteChain. Activity merged in (redirect at `/activity`).
+- **Sidebar entity search** — fuzzy name match with ⌘K shortcut, inline dropdown shows kind + icp_fit, jumps to per-entity channel timeline.
+- Inbox (`/gates`): approval queue. Empty = healthy. system_health metrics at top.
+- Replay: real summary view (counts + top 5 signals with bodies + recent posts + newest entities with sub-score bars). No more raw JSON dump.
+- Settings (`/settings`): edit about/icp/persona/constitution/knowledge_base. Saves trigger workspaces.updated_at → rescore cron picks up.
+- "Why this?" provenance popover, cite popover, replay slider — themed to new palette.
+- / redirects to most-recent workspace's /channels (Feed is now the center)
 
 ### Observability
-- agent_run_metrics event emitted per LLM call (model, behavior, input/output/cached tokens)
-- token_summary MCP tool + /api/admin/health exposes tokens_24h + tokens_7d
+- agent_run_metrics event emitted per LLM call (model, behavior, input/output/cached tokens, signal_body_hash for dedup)
+- token_summary MCP tool + /api/admin/health exposes tokens_24h + tokens_7d, cache_rate, action_distribution (draft/watch/research/drop/continue counts), tokens_per_drafted_touch, tokens_per_scored_account
+- Per-source signals_7d in `sources.last_run_summary` for yield tracking
 - No pricing tables (per user direction): raw token counts only
-- check_stuck.ts, audit_state.ts, audit_subscriptions.ts, sample_recent_posts.ts, check_processing.ts, probe_matcher.ts — operator diagnostics
+- Diagnostic scripts fixed against real schema (events.created_at not .ts; signal_source under structured_tags; channel_posts joined via channels; gates.decided_at not .status)
+- check_stuck.ts, audit_state.ts, audit_subscriptions.ts, sample_recent_posts.ts, check_processing.ts, probe_matcher.ts, dismiss_operational_gates.ts — operator diagnostics
 
 ## Known issues (deferred)
 
-- RSS false-positive entity creation: tightened in 2026-05-10 push (looksLikeHandle filter + multi-company disambiguation prompt), but still imperfect
-- Render auto-deploy webhook broken — user reconnecting GitHub App
-- HN sources are watch-mode only; 3 misconfigured ones deactivated. Discover-mode HN connector not built.
-- 6 of 76 accounts have `.example` placeholder domains and can't get Hunter contacts
+- Exa account out of credits ($32/mo projected at hourly cadence; now $5/mo with schedule_cron enforcement) — user needs to top up to unblock 9 sources
+- RSS false-positive entity creation: tightened in 2026-05-10 push, still imperfect
+- Render auto-deploy webhook broken — user reconnecting GitHub App; manual redeploys for now
+- HN sources are watch-mode only; misconfigured ones deactivated. Discover-mode HN connector not built.
+- A handful of accounts have `.example` placeholder domains and can't get Hunter contacts
 - No sending pipeline — drafts stay in Inbox forever; human copy-pastes manually
+- Auto-mode classifier blocks `git push origin main` and bulk DB updates even after explicit AskUserQuestion approval; user has to run those manually
 
 ## Plan File
 
-`/Users/jakewatson/.claude/plans/quirky-mapping-pinwheel.md` — 2026-05-14 status check + credit-efficiency push. Shipped: pre-LLM short-circuits, no more operational gates, prompt-cache fix (preamble brings enricher to 1524 tokens), per-source schedule_cron enforcement, Hunter negative-result cache, source yield auto-deactivate, tokens-per-output metrics, diagnostic-script schema fixes, ICP backfill via cron.
+`/Users/jakewatson/.claude/plans/quirky-mapping-pinwheel.md` — twice in this session. First pass: credit-efficiency (Hunter neg cache, Exa schedule_cron, prompt-cache fix, source yield, attribution metrics, diagnostic-script fixes). Second pass: Scoring v2 (multi-dim rubric, RRF pre-filter, graph features, action selector, research handler) + UI overhaul (light pastel theme, unified Feed, click-to-expand drafts, replay summary redesign, entity search).
 
 Prior: `mellow-finding-noodle.md` (drafter consolidation, fact-triggered subs, ICP rescore, token obs).
 

@@ -1,7 +1,20 @@
 import { createServerClient } from '@agent-crm/db';
 import { gate } from '@agent-crm/primitives';
-import { healthCheck, scoreAndAssert } from '@agent-crm/tools';
+import { healthCheck, scoreAndAssert, sweepWorkspace } from '@agent-crm/tools';
 import { inngest } from '../client.js';
+
+// IDs from sweepWorkspace that warrant gating when RED. Tier 2 checks
+// (cron_stale, agent_silence, enricher_silence) overlap with healthCheck;
+// excluded here to avoid double-alerts.
+const SWEEP_GATE_ON_RED = [
+  'signal_diversity:',
+  'source_concentration',
+  'novelty:24h_vs_prior',
+  'cost_per_unique_signal',
+  'cost_per_claim',
+  'score_distribution',
+  'score_signal_coupling',
+];
 
 const RECOVERY_LOOKBACK_MIN = 30;
 const RECOVERY_LIMIT_PER_RUN = 25;
@@ -86,11 +99,29 @@ export const systemHealthMonitor = inngest.createFunction(
         if (h.errored_sources >= HEALTH_THRESHOLDS.errored_sources) breaches.push(`errored_sources=${h.errored_sources}`);
         if (h.stale_gates >= HEALTH_THRESHOLDS.stale_gates) breaches.push(`stale_gates=${h.stale_gates}`);
         if (h.stale_drafts >= HEALTH_THRESHOLDS.stale_drafts) breaches.push(`stale_drafts=${h.stale_drafts}`);
+
+        // Sweep adds tier 1/3/4 signal-quality + efficiency + scoring checks.
+        // Only RED breaches that aren't already covered by healthCheck escalate.
+        const sweep = await sweepWorkspace(supabase, ws.id);
+        const sweepBreaches: Record<string, string> = {};
+        for (const r of sweep) {
+          if (r.severity !== 'red') continue;
+          if (!SWEEP_GATE_ON_RED.some((p) => r.id === p || r.id.startsWith(p))) continue;
+          breaches.push(`${r.id}=${r.metric}`);
+          sweepBreaches[r.id] = r.metric;
+        }
+
         if (breaches.length) {
           flagged.push({
             workspace_id: ws.id,
             reason: breaches.join(', '),
-            metrics: { unmatched_signals: h.unmatched_signals, errored_sources: h.errored_sources, stale_gates: h.stale_gates, stale_drafts: h.stale_drafts },
+            metrics: {
+              unmatched_signals: h.unmatched_signals,
+              errored_sources: h.errored_sources,
+              stale_gates: h.stale_gates,
+              stale_drafts: h.stale_drafts,
+              ...sweepBreaches,
+            },
           });
         }
       }

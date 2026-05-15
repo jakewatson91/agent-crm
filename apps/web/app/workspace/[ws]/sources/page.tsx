@@ -21,7 +21,7 @@ interface Source {
   active: boolean;
   last_run_at: string | null;
   last_run_status: string | null;
-  last_run_summary: { signals_created?: number; entities_created?: number; skipped?: number; errors?: string[] } | null;
+  last_run_summary: { signals_created?: number; entities_created?: number; skipped?: number; errors?: string[]; signals_7d?: number } | null;
   created_at: string;
 }
 interface Entity { id: string; name: string; kind: string }
@@ -141,6 +141,22 @@ export default function SourcesPage() {
         Where signals come from. Each source is a configured ingest worker that runs on a schedule and creates
         signals via the same tools agents use.
       </p>
+      {(() => {
+        const active = sources.filter((s) => s.active);
+        const errored = active.filter((s) => s.last_run_status === 'error');
+        const silent = active.filter((s) => s.last_run_status === 'ok' && (s.last_run_summary?.signals_7d ?? 0) === 0);
+        const producing = active.length - errored.length - silent.length;
+        const paused = sources.length - active.length;
+        const chipBase: React.CSSProperties = { padding: '.25rem .55rem', borderRadius: 4, fontSize: '.75rem', border: '1px solid' };
+        return (
+          <div style={{ display: 'flex', gap: '.5rem', marginTop: '.75rem', flexWrap: 'wrap' }}>
+            <span style={{ ...chipBase, borderColor: '#9ece6a', color: '#9ece6a' }}>{producing} producing</span>
+            <span style={{ ...chipBase, borderColor: silent.length ? '#e0c080' : '#444', color: silent.length ? '#e0c080' : '#666' }}>{silent.length} silent (0 signals 7d)</span>
+            <span style={{ ...chipBase, borderColor: errored.length ? '#f7768e' : '#444', color: errored.length ? '#f7768e' : '#666' }}>{errored.length} errored</span>
+            <span style={{ ...chipBase, borderColor: '#444', color: '#666' }}>{paused} paused</span>
+          </div>
+        );
+      })()}
 
       <div style={{ marginTop: '1.5rem', padding: '1rem', border: '1px solid #1f1f1f', background: '#0a0a0a' }}>
         <div style={labelStyle}>describe a source in plain English</div>
@@ -295,7 +311,7 @@ export default function SourcesPage() {
               {s.last_run_at && (
                 <div style={{ fontSize: '.75rem', marginTop: '.5rem', color: s.last_run_status === 'ok' ? '#9ece6a' : '#f7768e' }}>
                   last run <Timestamp value={s.last_run_at} />: {s.last_run_status}
-                  {s.last_run_summary && ` · signals=${s.last_run_summary.signals_created ?? 0}, skipped=${s.last_run_summary.skipped ?? 0}`}
+                  {s.last_run_summary && ` · last=${s.last_run_summary.signals_created ?? 0}, 7d=${s.last_run_summary.signals_7d ?? 0}, skipped=${s.last_run_summary.skipped ?? 0}`}
                   {s.last_run_summary?.errors && s.last_run_summary.errors.length > 0 && (
                     <div style={{ color: '#f7768e', marginTop: '.25rem' }}>errors: {s.last_run_summary.errors.join('; ')}</div>
                   )}

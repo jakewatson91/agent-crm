@@ -1,20 +1,19 @@
 /**
- * Hacker News connector. Watches HN for posts mentioning configured entities.
+ * Hacker News connector. Watches HN for posts mentioning workspace accounts.
  *
  * Config shape:
  *   {
- *     watch_entities: [{ entity_id: uuid, name: string, aliases?: string[] }],
- *     keywords?: string[],           // optional additional free-text query terms
- *     since_hours?: number,          // default 24
- *     min_points?: number            // default 0
+ *     watch_entities?: [{ entity_id, name, aliases? }],  // optional override
+ *     keywords?: string[],
+ *     since_hours?: number,    // default 24
+ *     min_points?: number      // default 0
  *   }
  *
- * Approach:
- *   1. Build a single HN Algolia search query from `keywords` + entity names + aliases.
- *   2. Fetch hits since (now - since_hours) hours.
- *   3. For each hit, find the first watch_entity whose name/alias appears in title or URL.
- *   4. Create a signal tied to that entity_id. Skip hits that match no tracked entity.
- *   5. Idempotent: skip hits that already produced a signal (deduped by HN story_id in structured_tags).
+ * Watch list resolution:
+ *   - If watch_entities is non-empty in config, use it as-is (manual override).
+ *   - Otherwise, pull every account in the workspace. New accounts discovered
+ *     by other connectors (Exa, web, YC) get watched automatically on the
+ *     next run. Users can add accounts via chat with the agent.
  */
 
 import { callTool } from '@agent-crm/tools';
@@ -47,10 +46,9 @@ export const meta: ConnectorMeta = {
     fields: [
       {
         name: 'watch_entities',
-        label: 'Companies to watch',
+        label: 'Companies to watch (optional override)',
         kind: 'entity_picker_multi',
-        required: true,
-        help: 'Pick existing accounts in your workspace. The connector will create a signal whenever HN mentions any of them.',
+        help: 'Leave empty to watch every account in the workspace. Set explicitly to scope down.',
       },
       {
         name: 'keywords',
@@ -79,21 +77,35 @@ export const meta: ConnectorMeta = {
 const hn: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> => {
   const result: ConnectorResult = { signals_created: 0, entities_created: 0, skipped: 0, errors: [] };
 
-  const watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
+  let watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
   if (!watch.length) {
-    result.errors.push('config.watch_entities is empty — nothing to match against');
-    return result;
+    // Dynamic watch list: every account in the workspace. Picks up entities
+    // added by Exa/web/yc discovery + manual chat additions automatically.
+    const accountsRes = await ctx.supabase.from('entities')
+      .select('id, name').eq('workspace_id', ctx.workspace_id).eq('kind', 'account')
+      .limit(2000);
+    if (accountsRes.error) {
+      result.errors.push(`failed to load workspace accounts: ${accountsRes.error.message}`);
+      return result;
+    }
+    watch = ((accountsRes.data ?? []) as Array<{ id: string; name: string }>)
+      .map((r) => ({ entity_id: r.id, name: r.name }));
+    if (!watch.length) {
+      // No accounts yet. Not an error - just nothing to watch.
+      return result;
+    }
   }
   const keywords = ((ctx.config.keywords as string[]) ?? []).filter(Boolean);
   const since_hours = (ctx.config.since_hours as number) ?? 24;
   const min_points = (ctx.config.min_points as number) ?? 0;
 
-  // Build search query: union of entity names + extra keywords. HN Algolia supports OR via parens.
-  const queryTerms = [
-    ...watch.flatMap((w) => [w.name, ...(w.aliases ?? [])]),
-    ...keywords,
-  ].filter(Boolean);
-  const query = queryTerms.map((q) => `"${q}"`).join(' OR ');
+  // Build the Algolia narrowing query from keywords only. Joining N entity
+  // names into an OR query blows past Algolia's URL/query-length limit once
+  // the workspace has more than a few dozen accounts (the fallback list).
+  // Post-filter the returned hits for entity mentions in the loop below.
+  // If no keywords are configured, leave the query empty and let Algolia
+  // return recent top stories filtered by min_points + since_hours.
+  const query = keywords.map((q) => `"${q}"`).join(' OR ');
   const sinceUnix = Math.floor(Date.now() / 1000) - since_hours * 3600;
 
   const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&numericFilters=created_at_i>${sinceUnix},points>=${min_points}&hitsPerPage=100`;

@@ -19,9 +19,27 @@
  * signal type='yc_new_company'.
  */
 
+import { createHash } from 'node:crypto';
 import { callTool } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
 import { upsertEntityEmbedding } from '../utils.js';
+
+// Fields whose change we treat as a meaningful YC delta. team_size, hiring
+// status, YC status, batch (rare but possible), and stage are the things an
+// agent should react to. one_liner included so a company that materially
+// rewrites their pitch produces a re-eval.
+function ycSnapshotHash(c: YcCompany): string {
+  const tracked = {
+    team_size: c.team_size ?? null,
+    status: c.status,
+    isHiring: c.isHiring ?? false,
+    batch: c.batch,
+    stage: c.stage ?? null,
+    top_company: c.top_company ?? false,
+    one_liner: c.one_liner ?? '',
+  };
+  return createHash('sha256').update(JSON.stringify(tracked)).digest('hex').slice(0, 16);
+}
 
 // yc-oss publishes per-batch JSON. The "all active" file is the simplest entry point.
 const YC_ALL_URL = 'https://yc-oss.github.io/api/companies/all.json';
@@ -63,7 +81,9 @@ export const meta: ConnectorMeta = {
   description: 'Pull active YC companies from the directory. Creates account entities (deduped by domain) and emits signals so agents can score / enrich them.',
   category: 'preset',
   emits_signal_source: 'yc',
-  schedule_cron: '0 6 * * *',  // daily at 6am
+  // Quarterly. YC publishes new batches twice a year; daily polling produces
+  // the same data 364 days out of 365. First of Jan/Apr/Jul/Oct at 6am UTC.
+  schedule_cron: '0 6 1 */3 *',
   config_schema: {
     fields: [
       {
@@ -126,6 +146,7 @@ function batchMatches(yc_batch: string, user_input: string[]): boolean {
 
 const yc: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> => {
   const result: ConnectorResult = { signals_created: 0, entities_created: 0, skipped: 0, errors: [] };
+  let skipped_unchanged = 0;
   const batches = ((ctx.config.batches as string[]) ?? []).filter(Boolean);
   const statuses = ((ctx.config.statuses as string[]) ?? ['Active']).filter(Boolean);
   const industries = ((ctx.config.industries as string[]) ?? []).filter(Boolean);
@@ -172,21 +193,47 @@ const yc: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
     result.errors.push(`failed to fetch existing entities: ${existing.error.message}`);
     return result;
   }
-  const byDomain = new Map<string, { id: string; name: string }>();
+  const byDomain = new Map<string, { id: string; name: string; yc_snapshot_hash: string | null }>();
   for (const e of existing.data ?? []) {
-    const d = (e.attributes as { domain?: string } | null)?.domain;
-    if (d) byDomain.set(d.toLowerCase(), { id: e.id as string, name: e.name as string });
+    const attrs = (e.attributes as { domain?: string; yc_snapshot_hash?: string } | null) ?? {};
+    if (attrs.domain) {
+      byDomain.set(attrs.domain.toLowerCase(), {
+        id: e.id as string,
+        name: e.name as string,
+        yc_snapshot_hash: attrs.yc_snapshot_hash ?? null,
+      });
+    }
   }
 
   for (const c of sorted) {
     const domain = normalizeDomain(c.website) ?? `${c.slug}.yc.example`;
     const existingEnt = byDomain.get(domain);
+    const snapshot_hash = ycSnapshotHash(c);
 
     let entity_id: string;
     let isNew = false;
 
     if (existingEnt) {
       entity_id = existingEnt.id;
+      // Skip emission when nothing tracked has changed since last run.
+      if (existingEnt.yc_snapshot_hash === snapshot_hash) {
+        skipped_unchanged++;
+        continue;
+      }
+      // Material change detected. Update the snapshot hash so the next run
+      // measures change against this run, not the original create.
+      const upd = await ctx.supabase.from('entities')
+        .update({ attributes: {
+          ...(existing.data?.find((row) => row.id === entity_id)?.attributes as object ?? {}),
+          yc_snapshot_hash: snapshot_hash,
+          team_size: c.team_size ?? null,
+          yc_status: c.status,
+          is_hiring: c.isHiring ?? false,
+          stage: c.stage ?? null,
+          one_liner: c.one_liner ?? null,
+        } })
+        .eq('id', entity_id);
+      if (upd.error) result.errors.push(`update attrs failed for ${c.name}: ${upd.error.message}`);
     } else {
       const created = await callTool(
         ctx.supabase,
@@ -213,6 +260,7 @@ const yc: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
             one_liner: c.one_liner ?? null,
             description: c.long_description ?? null,
             tags: c.tags ?? [],
+            yc_snapshot_hash: snapshot_hash,
           },
         },
       );
@@ -223,7 +271,7 @@ const yc: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
       entity_id = created.target_id;
       result.entities_created++;
       isNew = true;
-      byDomain.set(domain, { id: entity_id, name: c.name });
+      byDomain.set(domain, { id: entity_id, name: c.name, yc_snapshot_hash: snapshot_hash });
 
       // Embed the new entity so query() and similarity-based scoring can find it.
       try {
@@ -259,9 +307,10 @@ const yc: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
     else result.errors.push(`create_signal failed for ${c.name}: ${signal.error}`);
   }
 
-  if (filtered.length > sorted.length) {
-    result.skipped = filtered.length - sorted.length;
-  }
+  // skipped counts both the cap overflow and unchanged-companies skips. The
+  // sweep cares about signals_created and entities_created; this counter is
+  // just for the source's last_run_summary so it's clear why volume looks low.
+  result.skipped = (filtered.length - sorted.length) + skipped_unchanged;
 
   return result;
 };

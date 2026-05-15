@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Timestamp } from '../../../_components/Timestamp';
 import { CiteChain } from '../../../_components/CiteChain';
 import { WhyThis } from '../../../_components/WhyThis';
+import { DraftActions } from '../../../_components/DraftActions';
 
 interface FeedItem {
   id: string;
@@ -19,26 +20,55 @@ interface FeedItem {
   author_id: string;
   created_at: string;
   icp_fit: number | null;
+  reasoning: string | null;
+  dup_count: number;
 }
 
 const KIND_META: Record<FeedItem['kind'], { label: string; badge: string; verb: string }> = {
-  claim:        { label: 'claim',     badge: 'badge-blue',   verb: 'extracted facts on' },
-  decision:     { label: 'decision',  badge: 'badge-purple', verb: 'decided on' },
-  touch_draft:  { label: 'draft',     badge: 'badge-green',  verb: 'drafted outreach to' },
-  gate_request: { label: 'gate',      badge: 'badge-coral',  verb: 'gated' },
-  outcome:      { label: 'outcome',   badge: 'badge-amber',  verb: 'recorded outcome on' },
-  system:       { label: 'system',    badge: 'badge-mute',   verb: 'noted on' },
-  question:     { label: 'question',  badge: 'badge-amber',  verb: 'asked about' },
+  claim:        { label: 'new info',        badge: 'badge-blue',   verb: 'extracted facts on' },
+  decision:     { label: 'note',            badge: 'badge-purple', verb: 'noted on' },
+  touch_draft:  { label: 'outreach',        badge: 'badge-green',  verb: 'drafted outreach to' },
+  gate_request: { label: 'needs approval',  badge: 'badge-coral',  verb: 'gated' },
+  outcome:      { label: 'outcome',         badge: 'badge-amber',  verb: 'recorded outcome on' },
+  system:       { label: 'system',          badge: 'badge-mute',   verb: 'noted on' },
+  question:     { label: 'question',        badge: 'badge-amber',  verb: 'asked about' },
 };
 
 const DEFAULT_PREVIEW = 220;
-const FILTERS: Array<{ key: 'all' | FeedItem['kind']; label: string }> = [
-  { key: 'all',          label: 'All' },
-  { key: 'touch_draft',  label: 'Drafts' },
-  { key: 'decision',     label: 'Decisions' },
-  { key: 'claim',        label: 'Claims' },
-  { key: 'gate_request', label: 'Gates' },
+
+type FilterKey = 'default' | 'outreach' | 'new_info' | 'needs_approval' | 'outcomes' | 'audit';
+
+const FILTERS: Array<{ key: FilterKey; label: string }> = [
+  { key: 'default',        label: 'Default' },
+  { key: 'outreach',       label: 'Outreach' },
+  { key: 'new_info',       label: 'New info' },
+  { key: 'needs_approval', label: 'Needs approval' },
+  { key: 'outcomes',       label: 'Outcomes' },
+  { key: 'audit',          label: 'Audit' },
 ];
+
+// Which raw kinds belong to each filter. Default = everything consequential
+// (state-changing or human-relevant). Audit = everything, raw. Specific tabs
+// narrow to one kind.
+function matchesFilter(it: FeedItem, key: FilterKey): boolean {
+  switch (key) {
+    case 'outreach':       return it.kind === 'touch_draft';
+    case 'new_info':       return it.kind === 'claim' && it.cites.length > 0;
+    case 'needs_approval': return it.kind === 'gate_request';
+    case 'outcomes':       return it.kind === 'outcome';
+    case 'audit':          return true;
+    case 'default':
+    default:
+      if (it.kind === 'touch_draft' || it.kind === 'gate_request' || it.kind === 'outcome') return true;
+      if (it.kind === 'claim' && it.cites.length > 0) return true;
+      if (it.kind === 'decision') {
+        // Only state-changing action-selector decisions surface in the default view.
+        const b = it.body ?? '';
+        return b.startsWith('[deep_research]') || b.startsWith('[drop]');
+      }
+      return false;
+  }
+}
 
 function icpColor(v: number | null): string {
   if (v === null) return 'var(--text-3)';
@@ -49,13 +79,10 @@ function icpColor(v: number | null): string {
 }
 
 export function FeedStream({ items, ws }: { items: FeedItem[]; ws: string }) {
-  const [filter, setFilter] = useState<'all' | FeedItem['kind']>('all');
+  const [filter, setFilter] = useState<FilterKey>('default');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const filtered = useMemo(() => {
-    if (filter === 'all') return items;
-    return items.filter((i) => i.kind === filter);
-  }, [items, filter]);
+  const filtered = useMemo(() => items.filter((i) => matchesFilter(i, filter)), [items, filter]);
 
   function toggle(id: string) {
     setExpanded((prev) => {
@@ -71,7 +98,7 @@ export function FeedStream({ items, ws }: { items: FeedItem[]; ws: string }) {
       <div style={{ display: 'flex', gap: '.4rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         {FILTERS.map((f) => {
           const active = filter === f.key;
-          const count = f.key === 'all' ? items.length : items.filter((i) => i.kind === f.key).length;
+          const count = items.filter((i) => matchesFilter(i, f.key)).length;
           return (
             <button
               key={f.key}
@@ -127,7 +154,8 @@ function FeedRow({
   const truncated = item.body.length > DEFAULT_PREVIEW;
   const display = expanded || !truncated ? item.body : item.body.slice(0, DEFAULT_PREVIEW) + '…';
   const isDraft = item.kind === 'touch_draft';
-  const isClickable = truncated || item.kind === 'touch_draft' || item.kind === 'decision';
+  const hasReasoning = !!item.reasoning;
+  const isClickable = truncated || isDraft || hasReasoning || item.kind === 'decision';
 
   return (
     <div
@@ -163,6 +191,15 @@ function FeedRow({
             icp {item.icp_fit.toFixed(2)}
           </span>
         )}
+        {item.dup_count > 1 && (
+          <span
+            className="mono muted"
+            style={{ fontSize: '.7rem', padding: '1px 6px', background: 'var(--panel-2)', borderRadius: 4 }}
+            title={`${item.dup_count} identical entries in the last 14d`}
+          >
+            ×{item.dup_count}
+          </span>
+        )}
         <span className="muted mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
           <Timestamp value={item.created_at} />
         </span>
@@ -180,9 +217,30 @@ function FeedRow({
         {display}
       </div>
 
-      {(truncated || isDraft || item.cites.length > 0) && (
+      {expanded && item.reasoning && (
+        <div
+          style={{
+            marginTop: '.55rem',
+            padding: '.5rem .75rem',
+            background: 'var(--panel-2)',
+            borderLeft: '3px solid var(--accent-purple, var(--accent-blue))',
+            borderRadius: 4,
+            fontSize: '.8rem',
+            color: 'var(--text-2)',
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.5,
+          }}
+        >
+          <div className="subtle" style={{ fontSize: '.68rem', marginBottom: '.25rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>why</div>
+          {item.reasoning}
+        </div>
+      )}
+
+      {isDraft && <DraftActions postId={item.id} workspaceId={ws} />}
+
+      {(truncated || isDraft || hasReasoning || item.cites.length > 0) && (
         <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.55rem', flexWrap: 'wrap' }}>
-          {truncated && (
+          {(truncated || hasReasoning) && (
             <button
               onClick={(e) => { e.stopPropagation(); onToggle(); }}
               style={{
@@ -194,7 +252,7 @@ function FeedRow({
                 cursor: 'pointer',
               }}
             >
-              {expanded ? 'collapse' : 'expand'}
+              {expanded ? 'collapse' : hasReasoning ? 'why?' : 'expand'}
             </button>
           )}
           {expanded && (

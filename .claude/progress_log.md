@@ -202,3 +202,53 @@
 
 ### Auto-mode classifier note
 Blocked `dismiss_operational_gates.ts --apply` twice even after explicit user approval via AskUserQuestion. User ran it themselves after.
+
+
+## 2026-05-15 — Scoring v2 + UI overhaul (same session, second pass)
+
+### Plan
+`/Users/jakewatson/.claude/plans/quirky-mapping-pinwheel.md` rewritten. User asked for deeper scoring drawing on SOTA techniques + higher draft threshold + non-outreach actions.
+
+### Light pastel theme + unified Feed
+- `apps/web/app/globals.css` — warm off-white (#fbfaf6), soft pastel accents, CSS variables, Inter + JetBrains Mono.
+- Workspace sidebar reorganized into Main / Configure / Audit. Activity removed from nav.
+- Feed (`/channels`) rewritten as chronological action stream (`FeedStream.tsx`). Filter chips, click-to-expand drafts, inline WhyThis + CiteChain. `/activity` now redirects to Feed.
+- Inbox, channel detail, CiteChain, WhyThis migrated to CSS variables.
+- Replay page redesigned: counts row + top 5 signals with body text + recent posts + newest entities with sub-score bars. New `/api/replay/summary` joins back to signals + posts + score facts. Old raw-JSON dump gone.
+- Entity search component (`EntitySearch.tsx`) in sidebar with ⌘K shortcut, fuzzy match via `lookupEntity` MCP, inline results show kind + icp_fit, jump to channel timeline. New `/api/entities/lookup` route.
+
+### Scoring v2 (the big one)
+- `packages/tools/src/scoring.ts` rewritten end-to-end. 6-dim rubric:
+  - LLM sub-scores: `industry_match`, `stage_match`, `signal_strength` (strict rubric, calibrated against "directory listing ≠ strong signal")
+  - Deterministic sub-scores: `evidence_depth` (substantive fact count / 6), `recency` (exponential decay τ=45d), `graph_proximity` (mean icp_fit of linked entities)
+  - Weighted-sum into `icp_total`. Each sub-score asserted as its own `score_*` fact. `icp_fit` kept as alias.
+- `packages/tools/src/graph.ts` — `graphProximity()` over `customer_of` / `partners_with` / `backed_by` / `integrates_with` / `invested_by` edges. Pure SQL, both directions.
+- `packages/tools/src/icp_embeddings.ts` — 4 perspective vectors (default/pain/stack/vertical) for workspace ICP, cached in `workspaces.policy.icp_embedding_cache` keyed by hash of icp+about. Auto-invalidates when ICP changes. Includes `cosine()` and `rrfFuse()` helpers (Cormack et al SIGIR 2009 RRF).
+- RRF pre-filter in scoreEntity: embed 4 perspectives for the entity, cosine vs cached ICP perspectives, fuse via RRF. If fused < 0.3 AND evidence_depth < 0.34, skip LLM entirely. Bi-encoder pre-filter / cross-encoder rerank pattern.
+- `packages/tools/src/action_selector.ts` — deterministic categorical decision: `draft_outreach` / `watch_only` / `deep_research` / `drop` / `continue`. Draft requires icp_total ≥ 0.65 AND signal_strength ≥ 0.7 AND evidence_depth ≥ 0.5 AND no draft in 14d. `drop` writes `dropped_until` fact for 90d hard suppression. `deep_research` emits `research.requested` Inngest event.
+- `inngest/functions/research.ts` — `researchRunner` listens on `research.requested`, runs targeted Exa pull keyed by entity name + fact keywords, attributes results back as `research_result` signals with embedding. Concurrency-limited 2/workspace.
+- `inngest/functions/agent_logic.ts` drafter branch rewired: workspace policy checks (suppression/cap) → `selectAction()` → if `draft_outreach` run LLM drafter, else emit decision post + side effects. Old gate-rule 1-5 block stripped from `DRAFTER_DECISION` prompt — gating now fully deterministic upstream.
+- `inngest/client.ts` — added `research.requested` event schema. `apps/web/app/api/inngest/route.ts` registers `researchRunner`.
+- `/api/admin/health` reports `action_distribution_24h/7d` (count of each action) by parsing `[action_name]` prefix on decision-post bodies.
+
+### Calibration spot-check on 16 entities (locally invoked scoring v2 against prod data)
+- Strong fits stayed strong or moved up: Resona 0.60→0.81, Growth Talent 0.50→0.74. Most-confidence drivers: industry_match=1.0, signal_strength=1.0, evidence_depth=0.67-0.83.
+- Mid-band (0.40) collapsed to 0.24-0.28 as designed.
+- Brand-new entities (no facts) land at 0.20 floor (evidence_depth=0, recency=0).
+- The 0.3-0.5 mediocre band is gone. The "YC page mention → email" failure mode is closed.
+
+### Operational
+- Committed in one shot: `6439d19 Scoring v2: multi-dim rubric + graph features + action selector + light theme + unified Feed`. Push deferred to user.
+- Dev server runs against prod Supabase via .env.local; scoring v2 invokable locally before deploy.
+- `_rescore_sample.ts` (temp script, deleted) walked through 16 entities to validate calibration before push.
+
+### Trade-offs / decisions
+- Did NOT do Bayesian fact aggregation, cross-encoder reranker model, or Thompson sampling. All overkill for v0; LLM rubric IS the reranker. Documented as deferred in plan.
+- Push-back on "scoring as moat": per `feedback_architecture_is_the_moat`, the scoring formula isn't defensible. The substrate (event-sourced facts with provenance, multi-perspective embeddings, entity↔fact graph, replay) is. Scoring v2 demonstrates the moat; it doesn't create it.
+- Kept `icp_fit` predicate as alias of `score_total` for backward compat (drafter prompt and UI badges still read it).
+
+### Deferred / known issues (unchanged from previous push)
+- Exa credit top-up still required
+- Render auto-deploy webhook still broken
+- No sending pipeline
+- HN discover-mode connector not built

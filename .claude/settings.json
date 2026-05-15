@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pnpm --silent sweep -- --quiet 2>&1 | head -80",
+            "statusMessage": "Running agent-crm sweep..."
+          }
+        ]
+      }
+    ]
+  }
+}
