@@ -26,6 +26,7 @@ export { getPolicy, DEFAULT_POLICY };
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, ValueTheme };
 export { cronToMinIntervalMinutes } from './cron.js';
 export { hasValueAlignedFact } from './action_selector.js';
+export { chatCompleteForWorkspace, type ChatForWorkspaceArgs } from './chat_workspace.js';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
 export { scoreEntity, scoreAndAssert, combineSubScores };

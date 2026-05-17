@@ -41,6 +41,27 @@ export interface DrafterPolicy {
   cooldown_days?: number;
 }
 
+/**
+ * LLM keys + model preferences scoped to the workspace.
+ *
+ * Stopgap until a real per-workspace secrets table exists — keys live on
+ * the policy jsonb. Each one is optional; when unset, callers fall back
+ * to the corresponding process.env variable so the demo workspace keeps
+ * working without a migration.
+ *
+ * Model routing follows the chatComplete convention:
+ *   - bare id (e.g. "gpt-4o-mini")        → OpenAI direct (uses openai_api_key)
+ *   - slash-prefixed (e.g. "deepseek/...") → OpenRouter (uses openrouter_api_key)
+ */
+export interface LLMPolicy {
+  openai_api_key?: string;
+  openrouter_api_key?: string;
+  /** Optional override of the workspace-wide cheap default. Unset = code default. */
+  default_chat_model?: string;
+  /** Optional override of the drafter model specifically (the customer-facing one). */
+  drafter_model?: string;
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
@@ -51,9 +72,10 @@ export interface WorkspacePolicy {
   outreach?: OutreachPolicy;
   enrichment?: EnrichmentPolicy;
   drafter?: DrafterPolicy;
+  llm?: LLMPolicy;
 }
 
-export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrichment' | 'drafter'>> & WorkspacePolicy = {
+export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrichment' | 'drafter' | 'llm'>> & WorkspacePolicy = {
   outreach: {
     override_to: null,
     from_email: 'onboarding@resend.dev',
@@ -66,6 +88,7 @@ export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrich
     value_themes: [],
     cooldown_days: 14,
   },
+  llm: {},
 };
 
 /**
@@ -81,5 +104,6 @@ export async function getPolicy(supabase: SupabaseClient, workspace_id: string):
     outreach: { ...DEFAULT_POLICY.outreach, ...(raw.outreach ?? {}) },
     enrichment: { ...DEFAULT_POLICY.enrichment, ...(raw.enrichment ?? {}) },
     drafter: { ...DEFAULT_POLICY.drafter, ...(raw.drafter ?? {}) },
+    llm: { ...DEFAULT_POLICY.llm, ...(raw.llm ?? {}) },
   };
 }

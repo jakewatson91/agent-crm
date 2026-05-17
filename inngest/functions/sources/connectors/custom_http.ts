@@ -51,8 +51,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool } from '@agent-crm/tools';
-import { chatComplete } from '@agent-crm/primitives';
+import { callTool, chatCompleteForWorkspace } from '@agent-crm/tools';
+// custom_http is per-workspace by construction (sources.workspace_id), so it
+// uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
+// keys and stay on raw chatComplete for now.
 import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
 
 interface CustomHttpSpec {
@@ -248,8 +250,9 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
 
     let extracted: ExtractedBatch;
     try {
-      const llm = await chatComplete({
+      const llm = await chatCompleteForWorkspace(ctx.supabase, ctx.workspace_id, {
         model,
+        behavior: 'connector_extract',
         max_tokens: 1500,
         response_format: { type: 'json_object' },
         messages: [

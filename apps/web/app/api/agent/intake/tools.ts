@@ -14,8 +14,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   callTool, scoreAndAssert, selectAction, loadActionContext,
   hasValueAlignedFact, lookupEntity, type ValueTheme, getPolicy,
+  chatCompleteForWorkspace,
 } from '@agent-crm/tools';
-import { chatComplete, type ToolSpec } from '@agent-crm/primitives';
+import { type ToolSpec } from '@agent-crm/primitives';
 import { inngest } from '@agent-crm/inngest';
 
 type Actor = { workspace_id: string; actor_kind: 'user'; actor_id: string };
@@ -139,8 +140,9 @@ ${args.text}
 Return JSON.`;
 
     try {
-      const llm = await chatComplete({
+      const llm = await chatCompleteForWorkspace(ctx.supabase, ctx.workspace_id, {
         model: 'deepseek/deepseek-v4-flash:free',
+        behavior: 'intake',
         max_tokens: 800,
         response_format: { type: 'json_object' },
         messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],

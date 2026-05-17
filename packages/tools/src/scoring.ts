@@ -16,10 +16,11 @@
  * fact, so the drafter prompt and UI badges that read `icp_fit` keep working.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chatComplete, embed } from '@agent-crm/primitives';
+import { embed } from '@agent-crm/primitives';
 import { act } from '@agent-crm/primitives';
 import { graphProximity } from './graph.js';
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.js';
+import { chatCompleteForWorkspace } from './chat_workspace.js';
 
 const SCORE_MODEL = 'deepseek/deepseek-v4-flash:free';
 const RRF_GATE = 0.3;           // below this, skip LLM
@@ -257,8 +258,9 @@ Score this account on the three rubric dimensions.`;
 
   let parsed: { industry_match?: number; stage_match?: number; signal_strength?: number; reasoning?: string };
   try {
-    const llm = await chatComplete({
+    const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
       model: SCORE_MODEL,
+      behavior: 'scoring',
       max_tokens: 350,
       response_format: { type: 'json_object' },
       messages: [

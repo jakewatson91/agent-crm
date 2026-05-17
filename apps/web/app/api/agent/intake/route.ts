@@ -14,7 +14,8 @@
  */
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { chatComplete, type ChatMessage } from '@agent-crm/primitives';
+import { type ChatMessage } from '@agent-crm/primitives';
+import { chatCompleteForWorkspace } from '@agent-crm/tools';
 import { INTAKE_TOOLS, intakeToolSpecs } from './tools';
 
 export const runtime = 'nodejs';
@@ -83,8 +84,9 @@ export async function POST(req: Request) {
     steps++;
     let res;
     try {
-      res = await chatComplete({
+      res = await chatCompleteForWorkspace(supabase, body.workspace_id, {
         model: INTAKE_MODEL,
+        behavior: 'intake',
         messages,
         tools,
         tool_choice: 'auto',

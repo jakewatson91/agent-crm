@@ -17,8 +17,8 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, loadActionContext, type WorkspacePolicy } from '@agent-crm/tools';
-import { chatComplete } from '@agent-crm/primitives';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, loadActionContext, chatCompleteForWorkspace, type WorkspacePolicy } from '@agent-crm/tools';
+// chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
 
@@ -429,8 +429,9 @@ export async function runAgent(
 
   let llm;
   try {
-    llm = await chatComplete({
+    llm = await chatCompleteForWorkspace(supabase, payload.workspace_id, {
       model,
+      behavior,
       max_tokens: behavior === 'drafter' ? 700 : 400,
       response_format: { type: 'json_object' },
       messages: [

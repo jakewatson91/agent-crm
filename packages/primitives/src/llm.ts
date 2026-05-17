@@ -38,6 +38,12 @@ export interface ChatCompleteArgs {
   tools?: ToolSpec[];
   /** Force a specific tool call or 'auto' (default) / 'none'. */
   tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
+  /**
+   * Per-call API-key override. If set and the chosen provider's key is here,
+   * it wins over process.env. Used by the workspace wrapper to inject the
+   * caller's pasted keys without leaking DB knowledge into this package.
+   */
+  api_keys?: { openai?: string; openrouter?: string };
 }
 
 export interface ChatCompleteResult {
@@ -55,7 +61,10 @@ async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   const isOpenRouter = args.model.includes('/');
   const provider: 'openai' | 'openrouter' = isOpenRouter ? 'openrouter' : 'openai';
 
-  const apiKey = isOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY;
+  // Per-call override (set by chatCompleteForWorkspace) beats env. Useful for
+  // new customers who paste their own key without redeploying.
+  const overrideKey = isOpenRouter ? args.api_keys?.openrouter : args.api_keys?.openai;
+  const apiKey = overrideKey || (isOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY);
   if (!apiKey) throw new Error(`Missing ${isOpenRouter ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'} for model ${args.model}`);
 
   const baseUrl = isOpenRouter ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';

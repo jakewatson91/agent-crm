@@ -15,7 +15,7 @@ interface Workspace {
   knowledge_base: string;
 }
 
-type Tab = 'setup' | 'email' | 'integrations' | 'advanced';
+type Tab = 'setup' | 'email' | 'integrations' | 'llm' | 'advanced';
 
 const ABOUT_PLACEHOLDER = `What this workspace tracks, who you sell to or want to find, how you want to come across.
 
@@ -54,6 +54,14 @@ export default function SettingsPage() {
   // Integrations tab
   const [contactProvider, setContactProvider] = useState<'none' | 'hunter'>('none');
 
+  // LLM tab
+  const [openaiKey, setOpenaiKey] = useState('');
+  const [openaiKeyDirty, setOpenaiKeyDirty] = useState(false);
+  const [openrouterKey, setOpenrouterKey] = useState('');
+  const [openrouterKeyDirty, setOpenrouterKeyDirty] = useState(false);
+  const [defaultChatModel, setDefaultChatModel] = useState('');
+  const [drafterModel, setDrafterModel] = useState('');
+
   // Advanced
   const [policyText, setPolicyText] = useState('');
   const [budget, setBudget] = useState(0);
@@ -82,6 +90,12 @@ export default function SettingsPage() {
       setResendKey((policy.outreach?.resend_api_key ?? '') as string);
       setResendKeyDirty(false);
       setContactProvider(((policy.enrichment?.contact_provider as 'none' | 'hunter') ?? 'none'));
+      setOpenaiKey((policy.llm?.openai_api_key ?? '') as string);
+      setOpenrouterKey((policy.llm?.openrouter_api_key ?? '') as string);
+      setOpenaiKeyDirty(false);
+      setOpenrouterKeyDirty(false);
+      setDefaultChatModel((policy.llm?.default_chat_model ?? '') as string);
+      setDrafterModel((policy.llm?.drafter_model ?? '') as string);
     }
   }
   useEffect(() => { load(); }, [params.ws]);
@@ -105,8 +119,19 @@ export default function SettingsPage() {
           : {}),
       },
       enrichment: { ...(base.enrichment ?? {}), contact_provider: contactProvider },
+      llm: {
+        ...(base.llm ?? {}),
+        ...(openaiKeyDirty
+          ? (openaiKey.trim() ? { openai_api_key: openaiKey.trim() } : { openai_api_key: undefined })
+          : {}),
+        ...(openrouterKeyDirty
+          ? (openrouterKey.trim() ? { openrouter_api_key: openrouterKey.trim() } : { openrouter_api_key: undefined })
+          : {}),
+        default_chat_model: defaultChatModel.trim() || undefined,
+        drafter_model: drafterModel.trim() || undefined,
+      },
     };
-  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, ws]);
+  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, ws]);
 
   async function save() {
     setErr(null); setMsg(null); setSaving(true);
@@ -197,6 +222,7 @@ export default function SettingsPage() {
         <TabButton id="setup" label="Setup" />
         <TabButton id="email" label="Email" />
         <TabButton id="integrations" label="Integrations" />
+        <TabButton id="llm" label="LLM" />
         <TabButton id="advanced" label="Advanced" />
       </div>
 
@@ -282,6 +308,62 @@ export default function SettingsPage() {
             <label style={labelStyle}>Custom connectors</label>
             <div style={helpStyle}>Wire a new HTTP source by URL + a plain-English description of what to extract. The agent runs it on a schedule and the LLM does the extraction — no code.</div>
             <a href={`/workspace/${params.ws}/connectors/new`} style={{ display: 'inline-block', marginTop: '.5rem', padding: '.5rem .9rem', background: 'var(--accent)', color: 'var(--accent-fg)', borderRadius: 6, textDecoration: 'none', fontSize: '.85rem', fontWeight: 500 }}>+ Add connector</a>
+          </div>
+        </div>
+      )}
+
+      {tab === 'llm' && (
+        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5 }}>
+            Paste API keys for this workspace. When set, these override the server's env vars for every call originating in this workspace (drafter, scoring, intake chat). Embedding still runs on OpenAI — leave the OpenAI key set even if you're routing chat through OpenRouter.
+          </p>
+
+          <div>
+            <label style={labelStyle}>OpenAI API key</label>
+            <div style={helpStyle}>Used for bare model ids (e.g. <code>gpt-4o-mini</code>) AND for all text embeddings. Leave empty to use the server's OPENAI_API_KEY env var.</div>
+            <input
+              type="password"
+              value={openaiKey}
+              onChange={(e) => { setOpenaiKey(e.target.value); setOpenaiKeyDirty(true); }}
+              style={{ ...jsonStyle, fontFamily: 'inherit' }}
+              placeholder="sk-..."
+              autoComplete="off"
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>OpenRouter API key</label>
+            <div style={helpStyle}>Used for slash-prefixed model ids (e.g. <code>deepseek/deepseek-v4-pro</code>, <code>anthropic/claude-sonnet-4-6</code>). Leave empty to use the server's OPENROUTER_API_KEY env var.</div>
+            <input
+              type="password"
+              value={openrouterKey}
+              onChange={(e) => { setOpenrouterKey(e.target.value); setOpenrouterKeyDirty(true); }}
+              style={{ ...jsonStyle, fontFamily: 'inherit' }}
+              placeholder="sk-or-..."
+              autoComplete="off"
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Default chat model</label>
+            <div style={helpStyle}>Override the workspace-wide default for non-drafter LLM calls (enricher, scoring, intake). Leave empty to keep the code default (<code>deepseek/deepseek-v4-flash:free</code>).</div>
+            <input
+              value={defaultChatModel}
+              onChange={(e) => setDefaultChatModel(e.target.value)}
+              style={{ ...jsonStyle, fontFamily: 'inherit' }}
+              placeholder="deepseek/deepseek-v4-flash:free"
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Drafter model</label>
+            <div style={helpStyle}>Override the model the drafter uses specifically. This is the customer-facing output, so quality matters. Leave empty to keep the code default (<code>deepseek/deepseek-v4-pro</code>).</div>
+            <input
+              value={drafterModel}
+              onChange={(e) => setDrafterModel(e.target.value)}
+              style={{ ...jsonStyle, fontFamily: 'inherit' }}
+              placeholder="deepseek/deepseek-v4-pro"
+            />
           </div>
         </div>
       )}
