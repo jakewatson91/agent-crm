@@ -269,7 +269,7 @@ export default function SettingsPage() {
       )}
 
       {tab === 'integrations' && (
-        <div style={{ marginTop: '1.5rem' }}>
+        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
           <div>
             <label style={labelStyle}>Contact lookups</label>
             <div style={helpStyle}>When the enricher finds an account with a domain, should it pull contacts via Hunter? Defaults to none.</div>
@@ -277,6 +277,11 @@ export default function SettingsPage() {
               <option value="none">none</option>
               <option value="hunter">hunter</option>
             </select>
+          </div>
+          <div>
+            <label style={labelStyle}>Custom connectors</label>
+            <div style={helpStyle}>Wire a new HTTP source by URL + a plain-English description of what to extract. The agent runs it on a schedule and the LLM does the extraction — no code.</div>
+            <a href={`/workspace/${params.ws}/connectors/new`} style={{ display: 'inline-block', marginTop: '.5rem', padding: '.5rem .9rem', background: 'var(--accent)', color: 'var(--accent-fg)', borderRadius: 6, textDecoration: 'none', fontSize: '.85rem', fontWeight: 500 }}>+ Add connector</a>
           </div>
         </div>
       )}
