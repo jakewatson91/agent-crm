@@ -63,6 +63,9 @@ export default function SettingsPage() {
   const [valuePropsText, setValuePropsText] = useState('');
   const [toneKeywordsText, setToneKeywordsText] = useState('');
   const [askExamplesText, setAskExamplesText] = useState('');
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewText, setPreviewText] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   // Routing tab
   const [draftIcp, setDraftIcp] = useState(0.65);
@@ -83,6 +86,13 @@ export default function SettingsPage() {
   const [wRecency, setWRecency] = useState(0.10);
   const [wGraph, setWGraph] = useState(0.10);
   const [rrfGate, setRrfGate] = useState(0.30);
+  const [routingPreviewOpen, setRoutingPreviewOpen] = useState(false);
+  const [routingPreview, setRoutingPreview] = useState<{
+    distribution: Record<string, number>;
+    samples: Array<{ entity_id: string; entity_name: string; icp_total_now: number; icp_total_reweighted: number; action: string; policy: string; matched_theme?: string | null }>;
+    sample_size: number;
+  } | null>(null);
+  const [routingPreviewLoading, setRoutingPreviewLoading] = useState(false);
 
   // LLM tab
   const [openaiKey, setOpenaiKey] = useState('');
@@ -411,9 +421,26 @@ export default function SettingsPage() {
 
       {tab === 'drafter' && (
         <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5 }}>
-            Shape what the cold-email drafter writes. These fields go directly into the drafter's system prompt — pain points become the bullets it picks from in the problem statement, value props become the one-liner options. Tone keywords steer voice.
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+            <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5, margin: 0, flex: 1 }}>
+              Shape what the cold-email drafter writes. These fields go directly into the drafter's system prompt — pain points become the bullets it picks from in the problem statement, value props become the one-liner options. Tone keywords steer voice.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setSubjectStyle('one_word');
+                setParagraphCount(4);
+                setPainPointsText('');
+                setValuePropsText('');
+                setToneKeywordsText('');
+                setAskExamplesText('Worth exploring?\nOpen to a quick chat?');
+              }}
+              style={{ padding: '.35rem .7rem', fontSize: '.75rem', background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+              title="Revert to vertical-neutral defaults"
+            >
+              Reset to defaults
+            </button>
+          </div>
 
           <div>
             <label style={labelStyle}>Subject style</label>
@@ -484,14 +511,70 @@ export default function SettingsPage() {
               style={proseStyle}
             />
           </div>
+
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
+            <button
+              type="button"
+              onClick={async () => {
+                if (previewOpen && previewText) { setPreviewOpen(false); return; }
+                setPreviewLoading(true);
+                try {
+                  const r = await fetch('/api/admin/preview-prompt', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      subject_style: subjectStyle,
+                      paragraph_count: paragraphCount,
+                      pain_points: painPointsText.split('\n').map((s) => s.trim()).filter(Boolean),
+                      value_props: valuePropsText.split('\n').map((s) => s.trim()).filter(Boolean),
+                      tone_keywords: toneKeywordsText.split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
+                      ask_examples: askExamplesText.split('\n').map((s) => s.trim()).filter(Boolean),
+                      forbidden_phrases: bannedPhrasesText.split('\n').map((s) => s.trim()).filter(Boolean),
+                    }),
+                  });
+                  const j = await r.json();
+                  setPreviewText(j.prompt ?? '(no preview)');
+                  setPreviewOpen(true);
+                } finally { setPreviewLoading(false); }
+              }}
+              style={{ padding: '.45rem .9rem', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: '.85rem' }}
+            >
+              {previewLoading ? 'rendering…' : previewOpen ? 'Hide preview' : 'Preview prompt'}
+            </button>
+            <div style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.35rem' }}>
+              Renders what the drafter LLM will actually be told, with your current form values. Save to make it live.
+            </div>
+            {previewOpen && previewText && (
+              <pre style={{ marginTop: '.75rem', padding: '.75rem', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 6, fontSize: '.75rem', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 480, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace' }}>
+                {previewText}
+              </pre>
+            )}
+          </div>
         </div>
       )}
 
       {tab === 'routing' && (
         <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5 }}>
-            Tune when the agent drafts, watches, researches, or drops an entity. Higher draft thresholds = pickier (fewer drafts). Lower drop thresholds = give up on entities faster.
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+            <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5, margin: 0, flex: 1 }}>
+              Tune when the agent drafts, watches, researches, or drops an entity. Higher draft thresholds = pickier (fewer drafts). Lower drop thresholds = give up on entities faster.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setDraftIcp(0.65); setDraftSignal(0.7); setDraftEvidence(0.5); setDraftSuppress(14);
+                setResearchIcp(0.5); setResearchEvidenceMax(0.4); setResearchCooldown(7);
+                setDropIcp(0.35); setDropEvidenceMin(0.5); setDropSuppress(90);
+                setWatchIcp(0.5);
+                setWIndustry(0.30); setWStage(0.20); setWSignal(0.10);
+                setWEvidence(0.20); setWRecency(0.10); setWGraph(0.10);
+                setRrfGate(0.30);
+              }}
+              style={{ padding: '.35rem .7rem', fontSize: '.75rem', background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+              title="Revert to code defaults"
+            >
+              Reset to defaults
+            </button>
+          </div>
 
           <div>
             <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Draft</div>
@@ -541,6 +624,88 @@ export default function SettingsPage() {
           <div>
             <NumRow label="RRF prefilter gate (skip LLM scoring when fused similarity below this)" value={rrfGate} onChange={setRrfGate} step={0.05} />
           </div>
+
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
+            <button
+              type="button"
+              onClick={async () => {
+                if (routingPreviewOpen && routingPreview) { setRoutingPreviewOpen(false); return; }
+                setRoutingPreviewLoading(true);
+                try {
+                  const r = await fetch('/api/admin/routing-preview', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      workspace_id: params.ws,
+                      routing: {
+                        draft_icp_total: draftIcp, draft_signal_strength: draftSignal,
+                        draft_evidence_depth: draftEvidence, draft_suppression_days: draftSuppress,
+                        research_icp_total: researchIcp, research_evidence_depth_max: researchEvidenceMax,
+                        research_cooldown_days: researchCooldown,
+                        drop_icp_total: dropIcp, drop_evidence_depth_min: dropEvidenceMin, drop_suppression_days: dropSuppress,
+                        watch_icp_total: watchIcp,
+                      },
+                      scoring: {
+                        weights: { industry_match: wIndustry, stage_match: wStage, signal_strength: wSignal, evidence_depth: wEvidence, recency: wRecency, graph_proximity: wGraph },
+                        rrf_gate: rrfGate,
+                      },
+                      limit: 30,
+                    }),
+                  });
+                  const j = await r.json();
+                  setRoutingPreview(j);
+                  setRoutingPreviewOpen(true);
+                } finally { setRoutingPreviewLoading(false); }
+              }}
+              style={{ padding: '.45rem .9rem', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: '.85rem' }}
+            >
+              {routingPreviewLoading ? 'running…' : routingPreviewOpen ? 'Hide preview' : 'Preview: what would happen?'}
+            </button>
+            <div style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.35rem' }}>
+              Runs the action selector against the top 30 entities with your current thresholds + weights. Read-only — no facts get written.
+            </div>
+
+            {routingPreviewOpen && routingPreview && (
+              <div style={{ marginTop: '.75rem', display: 'flex', flexDirection: 'column', gap: '.75rem' }}>
+                <div style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap' }}>
+                  {Object.entries(routingPreview.distribution).sort((a, b) => b[1] - a[1]).map(([action, count]) => (
+                    <div key={action} style={{ padding: '.3rem .6rem', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 6, fontSize: '.8rem' }}>
+                      <strong>{count}</strong> <span style={{ color: 'var(--text-3)' }}>{action}</span>
+                    </div>
+                  ))}
+                  <div style={{ padding: '.3rem .6rem', fontSize: '.8rem', color: 'var(--text-3)' }}>
+                    of {routingPreview.sample_size}
+                  </div>
+                </div>
+
+                <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+                  <table style={{ width: '100%', fontSize: '.75rem', borderCollapse: 'collapse' }}>
+                    <thead style={{ background: 'var(--panel-2)' }}>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>entity</th>
+                        <th style={{ textAlign: 'right', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>now</th>
+                        <th style={{ textAlign: 'right', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>new</th>
+                        <th style={{ textAlign: 'left', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>action / policy</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {routingPreview.samples.map((s) => (
+                        <tr key={s.entity_id}>
+                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)' }}>{s.entity_name}</td>
+                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)', textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{s.icp_total_now.toFixed(2)}</td>
+                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)', textAlign: 'right', fontFamily: 'JetBrains Mono, monospace', color: s.icp_total_reweighted > s.icp_total_now ? '#48a' : s.icp_total_reweighted < s.icp_total_now ? '#a48' : 'inherit' }}>{s.icp_total_reweighted.toFixed(2)}</td>
+                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)' }}>
+                            <strong>{s.action}</strong>
+                            <span style={{ color: 'var(--text-3)' }}> · {s.policy}</span>
+                            {s.matched_theme && <span style={{ color: 'var(--text-3)' }}> · theme={s.matched_theme}</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -561,7 +726,17 @@ export default function SettingsPage() {
           </div>
 
           <div>
-            <label style={labelStyle}>Enricher examples</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '1rem' }}>
+              <label style={labelStyle}>Enricher examples</label>
+              <button
+                type="button"
+                onClick={() => { setExampleFactsText(''); setBannedPredicatesText(''); }}
+                style={{ padding: '.25rem .55rem', fontSize: '.7rem', background: 'transparent', color: 'var(--text-3)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer' }}
+                title="Clear examples + banned predicates"
+              >
+                Reset
+              </button>
+            </div>
             <div style={helpStyle}>What kinds of facts should the agent look for when reading signals about an entity? One per line in the form <code>predicate | example value</code>. The LLM uses these as exemplars — extracted facts don't have to match exactly. Leave empty for vertical-neutral defaults.</div>
             <textarea
               value={exampleFactsText}

@@ -27,6 +27,7 @@ export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, 
 export { cronToMinIntervalMinutes } from './cron.js';
 export { hasValueAlignedFact } from './action_selector.js';
 export { chatCompleteForWorkspace, type ChatForWorkspaceArgs } from './chat_workspace.js';
+export { buildDrafterDecision, type DrafterDecisionOpts } from './prompt_builders.js';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
 export { scoreEntity, scoreAndAssert, combineSubScores };
