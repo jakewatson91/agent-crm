@@ -1,0 +1,211 @@
+{
+  "system": "hubspot",
+  "model": "gpt-4o-mini",
+  "runs": [
+    {
+      "system": "hubspot",
+      "account": "Resona Labs",
+      "run": 1,
+      "input_tokens": 10763,
+      "output_tokens": 167,
+      "latency_ms": 5343,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"maya@resonalabs.example\",\"subject\":\"Quick follow-up on hiring\",\"body\":\"Hey Maya, I noticed you're hiring senior engineers with TypeScript expertise – exciting times! Last time we spoke, I mentioned our CRM solution that streamlines outbound efforts. Would love to explore how we can support your team during this critical hiring phase.\",\"cites\":[\"https://app-na2.hubspot.com/contacts/246140168/record/0-2/322006348531\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Resona Labs",
+      "run": 2,
+      "input_tokens": 10763,
+      "output_tokens": 197,
+      "latency_ms": 5747,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"maya@resonalabs.example\",\"subject\":\"Quick Follow-Up on Resona's Growth\",\"body\":\"Hey Maya, I noticed that Resona Labs is expanding its team with new infra engineers—exciting times! I just wanted to follow up on our last chat about a CRM solution that simplifies outbound operations. Would love to discuss further when you have a moment.\",\"cites\":[\"Subject: agent-crm: founder-friendly outbound\",\"Hey Maya, saw Resona is hiring infra engineers and your last fundraise. We built a CRM where the agent runs outbound and you only show up to approve. Worth a 10-min look?\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Resona Labs",
+      "run": 3,
+      "input_tokens": 10763,
+      "output_tokens": 162,
+      "latency_ms": 7680,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"maya@resonalabs.example\",\"subject\":\"Quick follow-up on our last chat\",\"body\":\"Hey Maya, I noticed that Resona Labs is hiring for infra engineers, which is exciting! Last time we spoke about my CRM that lets agents run outbound for you to just approve. I think it could really streamline your process. Want to catch up for a quick chat?\",\"cites\":[\"HS Note: Subject: agent-crm: founder-friendly outbound\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Forge Robotics",
+      "run": 1,
+      "input_tokens": 3445,
+      "output_tokens": 200,
+      "latency_ms": 5130,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"jules@forgerobotics.example\",\"subject\":\"Following Up on Our Last Chat\",\"body\":\"Hey Jules, I remember we discussed how Forge Robotics is currently post-seed and still looking for sales hires. I think our outbound solution could really streamline that process for your team, especially with your focus on autonomous mobile robots for warehouses. Let’s revisit that demo link I sent if you’re still interested!\",\"cites\":[\"Forge Robotics is post-seed with no sales hire yet.\",\"Jules — noticed Forge is post-seed with no sales hire yet. Built a thing that does outbound for you. 90s demo: [link]\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Forge Robotics",
+      "run": 2,
+      "input_tokens": 3445,
+      "output_tokens": 159,
+      "latency_ms": 5146,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"jules@forgerobotics.example\",\"subject\":\"Following Up on Our Last Chat\",\"body\":\"Hey Jules, I saw that Forge is ramping up with autonomous mobile robots for warehouses—exciting times! Last time we chatted, I mentioned how we've built a solution that handles outbound for companies like yours without needing a dedicated sales hire. Let’s explore how we can help you streamline that process!\",\"cites\":[\"industry\",\"last note\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Forge Robotics",
+      "run": 3,
+      "input_tokens": 3445,
+      "output_tokens": 170,
+      "latency_ms": 5162,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"jules@forgerobotics.example\",\"subject\":\"Building on our last chat\",\"body\":\"Jules, I was excited to see that Forge is diving into autonomous mobile robots for warehouses—an exciting space! Last week, we touched on how you’re currently building out your sales team. Our tool could really accelerate your outreach, especially as you scale. Let’s connect and explore further!\",\"cites\":[\"Sales Note from 2026-05-07: Subject: sales without an SDR\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Plaintext.so",
+      "run": 1,
+      "input_tokens": 3585,
+      "output_tokens": 157,
+      "latency_ms": 4310,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"avery@plaintext.example\",\"subject\":\"Quick Check-In on Plaintext.so\",\"body\":\"Avery, I loved seeing your Show HN on Plaintext! I remember we discussed how you’re running a tiny team without a sales hire, which is super impressive. Just wanted to check if you’d be curious to explore how our agent can support your growth. Let me know!\",\"cites\":[\"Show HN on Plaintext\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Plaintext.so",
+      "run": 2,
+      "input_tokens": 2730,
+      "output_tokens": 186,
+      "latency_ms": 5833,
+      "llm_calls": 3,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"avery@plaintext.example\",\"subject\":\"Quick follow-up on your Show HN\",\"body\":\"Hey Avery, I loved your recent Show HN submission for Plaintext.so! Last time we chatted, I mentioned how our agent can step in for an SDR, especially for your tiny team. I’m curious if you had any more thoughts on that?\",\"cites\":[\"https://app-na2.hubspot.com/contacts/246140168/record/0-2/321985432280\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Plaintext.so",
+      "run": 3,
+      "input_tokens": 3585,
+      "output_tokens": 162,
+      "latency_ms": 4731,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"avery@plaintext.example\",\"subject\":\"Exciting Updates for Plaintext\",\"body\":\"Hey Avery, I loved checking out your recent Show HN about Plaintext! Last time we talked, you mentioned that you’re a tiny team without a sales hire. I believe our agent could be the perfect fit to act as your virtual SDR and help streamline your sales process. Let’s chat soon!\",\"cites\":[\"agent-crm for tiny teams\",\"Plaintext\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Halo Health",
+      "run": 1,
+      "input_tokens": 3457,
+      "output_tokens": 168,
+      "latency_ms": 4760,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"priya@halohealth.example\",\"subject\":\"Scaling pilots at Halo Health?\",\"body\":\"Hey Priya,\\n\\nI noticed that Halo is scaling its pilots—exciting times ahead! Last time we chatted, I mentioned an agent-driven CRM that could help manage your outbound efforts without needing an SDR. Let’s connect and explore how we can support your growth plans!\\n\\nBest,\",\"cites\":[\"Halo Health company record\",\"Note from May 5 regarding outbound for healthcare startups\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Halo Health",
+      "run": 2,
+      "input_tokens": 3457,
+      "output_tokens": 162,
+      "latency_ms": 5768,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"priya@halohealth.example\",\"subject\":\"Let’s chat about your scaling pilots\",\"body\":\"Hey Priya, I noticed that Halo is scaling pilots in your care coordination platform. Last time we spoke, we discussed how our agent-driven CRM could streamline your outbound efforts. I’d love to explore how we can support this growth. Let me know when you're free!\",\"cites\":[\"halohealth.example\",\"business conversation on May 5, 2026\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Halo Health",
+      "run": 3,
+      "input_tokens": 3457,
+      "output_tokens": 175,
+      "latency_ms": 5234,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"priya@halohealth.example\",\"subject\":\"Following Up on Halo's Growth\",\"body\":\"Hey Priya, I noticed Halo is scaling its pilots, which is impressive! Last time we spoke, we touched on how our agent-driven CRM could streamline your outbound efforts. Would love to revisit that conversation and see how we can support your growth!\",\"cites\":[\"Subject: outbound for healthcare startups\",\"Priya — saw Halo is scaling pilots. Agent-driven CRM that handles outbound + approvals without an SDR. Worth a chat?\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Brightvine",
+      "run": 1,
+      "input_tokens": 3239,
+      "output_tokens": 173,
+      "latency_ms": 5965,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"theo@brightvine.example\",\"subject\":\"Excited About Brightvine's Launch!\",\"body\":\"Hey Theo,\\n\\nI noticed Brightvine launched in Q1—what an exciting milestone! Last time we talked about how founders like you often prefer an agent over the traditional SDR. Let’s connect for a quick demo; I think you’ll find it valuable!\\n\\nBest,\\n[Your Name]\",\"cites\":[\"Subject: re: Brightvine outbound\",\"Noticed Brightvine launched Q1.\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Brightvine",
+      "run": 2,
+      "input_tokens": 3239,
+      "output_tokens": 167,
+      "latency_ms": 5057,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"theo@brightvine.example\",\"subject\":\"Quick follow-up on Brightvine\",\"body\":\"Hey Theo, I saw Brightvine just launched in Q1—exciting times ahead! Last we spoke, I mentioned our agent as a great alternative to hiring your first SDR. Would love to show you how it works with a quick demo soon!\",\"cites\":[\"Brightvine launched Q1\",\"Last we spoke, I mentioned our agent as a great alternative to hiring your first SDR.\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Brightvine",
+      "run": 3,
+      "input_tokens": 3239,
+      "output_tokens": 175,
+      "latency_ms": 4416,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"theo@brightvine.example\",\"subject\":\"Excited About Brightvine's Launch\",\"body\":\"Hey Theo, congratulations on Brightvine's launch in Q1! Last time we spoke, we discussed how we developed an agent that founders hire instead of their first SDR. I'd love to show you how this could benefit you too; how about a quick demo?\",\"cites\":[\"Subject: re: Brightvine outbound\",\"noticed Brightvine launched Q1.\",\"built the agent founders hire instead of their first SDR. Quick demo?\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Strand Compute",
+      "run": 1,
+      "input_tokens": 3248,
+      "output_tokens": 175,
+      "latency_ms": 5229,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"lior@strandcompute.example\",\"subject\":\"Quick follow-up on our last chat\",\"body\":\"Hey Lior,\\n\\nI wanted to circle back after our last conversation about the CRM for infra teams. I saw that Strand Compute is doing some exciting work with GPU spot pricing for ML teams! Would love to discuss how our agent could support your growth.\\n\\nLooking forward to hearing from you!\",\"cites\":[\"hubspot_get_company_by_name\",\"hubspot_get_associated_contacts\",\"hubspot_get_recent_notes\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Strand Compute",
+      "run": 2,
+      "input_tokens": 3248,
+      "output_tokens": 164,
+      "latency_ms": 4807,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"lior@strandcompute.example\",\"subject\":\"Following Up on Our Last Chat\",\"body\":\"Hi Lior,\\n\\nI noticed that Strand Compute is making strides in GPU spot pricing for ML teams—exciting times! Last time we talked, you mentioned being post-seed and how our agent-crm might fit your needs. I'd love to dive deeper into how it can support your growing infrastructure team.\",\"cites\":[\"Subject: agent-crm for infra teams\"]}"
+    },
+    {
+      "system": "hubspot",
+      "account": "Strand Compute",
+      "run": 3,
+      "input_tokens": 3248,
+      "output_tokens": 194,
+      "latency_ms": 5305,
+      "llm_calls": 4,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"to\":\"lior@strandcompute.example\",\"subject\":\"Quick follow-up on Strand Compute\",\"body\":\"Hi Lior, I wanted to check in after our last chat about the agent-CRM solution I shared with you. It's great to see how Strand Compute is innovating in GPU spot pricing for ML teams. Let me know when you're free to dive deeper—I'm excited to help streamline your processes!\",\"cites\":[\"Subject: agent-crm for infra teams\",\"Lior — saw Strand is post-seed and small. Built a CRM the agent runs end-to-end with you as the auditor. 10 min?\"]}"
+    }
+  ],
+  "summary": {
+    "avg_input_tokens": 4575.333333333333,
+    "avg_output_tokens": 172.94444444444446,
+    "avg_latency_ms": 5312.388888888889,
+    "avg_llm_calls": 3.9444444444444446,
+    "avg_data_calls": 3
+  }
+}

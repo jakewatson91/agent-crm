@@ -42,7 +42,7 @@ export const DEFAULT_CONFIG: ScoreFactsConfig = {
   overuse_cap: 1,
   outcome_alpha: 0.5,
   bayes_k: 5,
-  min_score: 0.4,
+  min_score: 0.35,
 };
 
 /**
@@ -282,27 +282,28 @@ export async function scoreFacts(
 }
 
 /**
- * Build (and cache) the workspace's pitch embedding from policy.drafter.
- * Returns null when no pitch content is configured — caller falls back to ICP.
+ * Build (and cache) the workspace's pitch embedding from `about` + `constitution`.
+ * These are the canonical place workspaces describe what they sell and how they
+ * pitch value. Returns null only when both fields are empty — caller falls back
+ * to ICP perspectives.
  */
 async function getPitchVector(
   supabase: SupabaseClient,
   workspace_id: string,
 ): Promise<number[] | null> {
   const ws = await supabase
-    .from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
-  const policy = (ws.data?.policy ?? {}) as Record<string, unknown>;
-  const drafter = (policy.drafter ?? {}) as Record<string, unknown>;
-  const pains = ((drafter.pain_points as string[] | undefined) ?? []).filter((s) => s.trim().length > 0);
-  const values = ((drafter.value_props as string[] | undefined) ?? []).filter((s) => s.trim().length > 0);
-  if (!pains.length && !values.length) return null;
+    .from('workspaces').select('about, constitution, policy').eq('id', workspace_id).maybeSingle();
+  const about = ((ws.data?.about as string | undefined) ?? '').trim();
+  const constitution = ((ws.data?.constitution as string | undefined) ?? '').trim();
+  if (!about && !constitution) return null;
 
   const text = [
-    pains.length ? `Customer pain points:\n${pains.map((p) => `- ${p}`).join('\n')}` : '',
-    values.length ? `Our value props:\n${values.map((v) => `- ${v}`).join('\n')}` : '',
-  ].filter(Boolean).join('\n\n');
+    about ? `What we sell:\n${about}` : '',
+    constitution ? `How we describe value:\n${constitution}` : '',
+  ].filter(Boolean).join('\n\n').slice(0, 4000);
 
-  // Cache keyed by hash of the input — auto-invalidates when pitch content changes.
+  // Cache keyed by hash of the input — auto-invalidates when about/constitution change.
+  const policy = (ws.data?.policy ?? {}) as Record<string, unknown>;
   const cached = (policy.pitch_embedding_cache ?? {}) as { hash?: string; vector?: number[] };
   const { createHash } = await import('node:crypto');
   const hash = createHash('sha256').update(text).digest('hex').slice(0, 24);

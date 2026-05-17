@@ -6,186 +6,186 @@
       "system": "agent-crm",
       "account": "Resona Labs",
       "run": 1,
-      "input_tokens": 567,
-      "output_tokens": 120,
-      "latency_ms": 3677,
+      "input_tokens": 1203,
+      "output_tokens": 122,
+      "latency_ms": 2838,
       "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Resona Labs is currently hiring senior engineers specializing in TypeScript, indicating growth and potential new projects in their AI voice analytics offering. This signals an opportunity to engage them as they may be looking to enhance their product with additional expertise.\",\n  \"citations\": [\n    \"84f4068e-e8ea-40c0-b1f9-b55ba55d383a\",\n    \"f5ea84dd-96d0-4b97-aff7-a16d13c30434\"\n  ]\n}"
+      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Resona Labs shows a strong ICP fit of 0.81 and is actively hiring for a senior typescript engineering role, indicating a potential need for solutions that enhance their AI voice analytics capabilities for sales. This combination of factors warrants an outbound touch this week.\",\n  \"citations\": [\n    \"64442799-7bb7-458f-b060-deee23303b96\",\n    \"58e1970e-eb20-4e1a-a26b-14eade2509b7\"\n  ]\n}"
     },
     {
       "system": "agent-crm",
       "account": "Resona Labs",
       "run": 2,
-      "input_tokens": 567,
-      "output_tokens": 158,
-      "latency_ms": 2514,
+      "input_tokens": 1203,
+      "output_tokens": 172,
+      "latency_ms": 3644,
       "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Resona Labs is actively hiring senior engineers in TypeScript, indicating growth and potential scalability of their operations. This aligns well with their focus on AI voice analytics for sales calls in the B2B SaaS sector, suggesting they may be in need of support or solutions that enhance their technology stack.\",\n  \"citations\": [\n    \"84f4068e-e8ea-40c0-b1f9-b55ba55d383a\",\n    \"3ee93dba-d932-42b3-949f-d69f55a6de46\",\n    \"f5ea84dd-96d0-4b97-aff7-a16d13c30434\"\n  ]\n}"
+      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Resona Labs shows a strong fit for our ideal customer profile with an ICP fit score of 0.81 and is actively hiring for a senior TypeScript engineering role, indicating growth. Additionally, their focus on AI voice analytics aligns well with our offerings.\",\n  \"citations\": [\n    \"64442799-7bb7-458f-b060-deee23303b96\",\n    \"58e1970e-eb20-4e1a-a26b-14eade2509b7\",\n    \"84f4068e-e8ea-40c0-b1f9-b55ba55d383a\",\n    \"3ee93dba-d932-42b3-949f-d69f55a6de46\"\n  ]\n}"
     },
     {
       "system": "agent-crm",
       "account": "Resona Labs",
       "run": 3,
-      "input_tokens": 567,
-      "output_tokens": 111,
+      "input_tokens": 1203,
+      "output_tokens": 175,
+      "latency_ms": 3027,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Resona Labs has demonstrated a strong ICP fit of 0.81, particularly with a perfect industry match and high recency scores. Their hiring for a senior TypeScript engineering role suggests they are in a growth phase, making them a relevant target for outreach this week.\",\n  \"citations\": [\n    \"64442799-7bb7-458f-b060-deee23303b96\",\n    \"6951385c-58f7-4348-8315-0860c6af11ad\",\n    \"46725171-dad0-4eaf-9a31-672c3af2f48e\",\n    \"58e1970e-eb20-4e1a-a26b-14eade2509b7\"\n  ]\n}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Forge Robotics",
+      "run": 1,
+      "input_tokens": 1342,
+      "output_tokens": 198,
+      "latency_ms": 3091,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"decide\": true, \"reasoning\": \"Forge Robotics is currently hiring senior engineers in Rust, indicating growth and a need for recruitment support in a related tech stack. Additionally, they fit our ideal customer profile with a target market in the industrial sector and a strong interest in autonomous robotics, warranting an outbound touch to explore potential solutions we can offer.\", \"citations\": [\"d5dd704b-09cf-4816-b4d9-7fc5737ed9d0\", \"cd93f8f2-4b6f-4025-ba03-099f558fdc38\", \"e3310de6-f5dc-421f-87fb-567d60bf8dab\", \"227c6ef0-b801-4891-8df6-451c1676be42\", \"3eeb4439-11ff-4f1b-bf54-f9ef06701032\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Forge Robotics",
+      "run": 2,
+      "input_tokens": 1342,
+      "output_tokens": 171,
+      "latency_ms": 3047,
+      "api_calls_to_data_store": 3,
+      "decision_text": "```json\n{\n  \"decide\": true,\n  \"reasoning\": \"Forge Robotics is currently hiring senior Rust engineers, indicating a need for technical talent and potential growth opportunities. This aligns with the company's focus on autonomous mobile robots for warehouses and meets the ideal customer profile in the industrial sector.\",\n  \"citations\": [\n    \"d5dd704b-09cf-4816-b4d9-7fc5737ed9d0\",\n    \"e3310de6-f5dc-421f-87fb-567d60bf8dab\",\n    \"cd93f8f2-4b6f-4025-ba03-099f558fdc38\",\n    \"227c6ef0-b801-4891-8df6-451c1676be42\"\n  ]\n}\n```"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Forge Robotics",
+      "run": 3,
+      "input_tokens": 1342,
+      "output_tokens": 138,
+      "latency_ms": 2467,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Forge Robotics is actively hiring senior engineers with expertise in Rust, which aligns with their technology stack. Despite a low ICP fit score, the strong hiring signal indicates an immediate opportunity for engagement.\",\n  \"citations\": [\n    \"d5dd704b-09cf-4816-b4d9-7fc5737ed9d0\",\n    \"cd93f8f2-4b6f-4025-ba03-099f558fdc38\",\n    \"72330030-878b-4b4e-a42c-e2d5341359f5\"\n  ]\n}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Plaintext.so",
+      "run": 1,
+      "input_tokens": 1330,
+      "output_tokens": 148,
+      "latency_ms": 2585,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Plaintext.so is currently hiring senior engineers skilled in Elixir, indicating they are in a growth phase and actively expanding their team. Additionally, they recently released a significant update to their product, which suggests they may be open to new partnerships or solutions that can support their initiatives.\",\n  \"citations\": [\n    \"91600ca8-4fb8-4339-8230-3b32f7366765\",\n    \"550d4b31-e875-46db-b519-a2d2f10db648\",\n    \"80431e68-1613-4893-a726-d5a350da4008\"\n  ]\n}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Plaintext.so",
+      "run": 2,
+      "input_tokens": 1330,
+      "output_tokens": 117,
+      "latency_ms": 2048,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Plaintext.so is actively hiring senior engineers in Elixir, which suggests growth and a need for scalable solutions. Their recent release shows involvement in product development, indicating they could benefit from our services.\",\"citations\":[\"91600ca8-4fb8-4339-8230-3b32f7366765\",\"550d4b31-e875-46db-b519-a2d2f10db648\",\"082c2f78-0dce-450c-a595-b466659e4251\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Plaintext.so",
+      "run": 3,
+      "input_tokens": 1330,
+      "output_tokens": 142,
+      "latency_ms": 2858,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Plaintext.so is actively hiring senior engineers skilled in Elixir, which indicates growth and a need for additional support. Additionally, they recently released a new version of their product, suggesting that they are in a development phase where outreach could be beneficial.\",\n  \"citations\": [\n    \"91600ca8-4fb8-4339-8230-3b32f7366765\",\n    \"550d4b31-e875-46db-b519-a2d2f10db648\",\n    \"80431e68-1613-4893-a726-d5a350da4008\"\n  ]\n}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Halo Health",
+      "run": 1,
+      "input_tokens": 1226,
+      "output_tokens": 131,
+      "latency_ms": 2537,
+      "api_calls_to_data_store": 3,
+      "decision_text": "```json\n{\n  \"decide\": false,\n  \"reasoning\": \"While Halo Health's care coordination platform aligns with our pitch, their account has a low ICP fit score of 0.23, indicating a poor overall alignment with our ideal customer profile. Additionally, there are no strong signals suggesting immediate engagement opportunities.\",\n  \"citations\": [\n    \"6a2bfbb5-fcc0-4791-ae1e-71a27a7fa228\",\n    \"f643cce4-c5f9-412d-ac3e-8c91e08e30b8\"\n  ]\n}\n```"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Halo Health",
+      "run": 2,
+      "input_tokens": 1226,
+      "output_tokens": 133,
+      "latency_ms": 2467,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Halo Health has a low ICP fit score of 0.23, indicating that they might not align perfectly with our ideal customer profile. However, the recent hiring of senior engineers in ruby signals potential growth or expansion within the company, which could warrant outreach to explore possible synergies.\",\n  \"citations\": [\n    \"6a2bfbb5-fcc0-4791-ae1e-71a27a7fa228\",\n    \"897f74a1-905c-433f-a308-8f21b4f13f0d\"\n  ]\n}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Halo Health",
+      "run": 3,
+      "input_tokens": 1226,
+      "output_tokens": 151,
       "latency_ms": 2468,
       "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Resona Labs is currently hiring senior engineers in TypeScript, indicating potential growth and an increased focus on improving their product, which aligns well with our AI voice analytics solution for sales calls.\",\n  \"citations\": [\n    \"84f4068e-e8ea-40c0-b1f9-b55ba55d383a\",\n    \"f5ea84dd-96d0-4b97-aff7-a16d13c30434\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Forge Robotics",
-      "run": 1,
-      "input_tokens": 550,
-      "output_tokens": 184,
-      "latency_ms": 6044,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Forge Robotics is actively hiring senior engineers skilled in Rust, indicating growth and potential new projects, which makes it a good time to reach out. Additionally, their focus on autonomous mobile robots aligns well with our offerings.\",\n  \"citations\": [\n    \"e3310de6-f5dc-421f-87fb-567d60bf8dab\",\n    \"72330030-878b-4b4e-a42c-e2d5341359f5\",\n    \"3e89e383-4076-4bf7-a862-93978dacfb0b\",\n    \"17290e03-c671-4600-869f-61cf90609991\",\n    \"3eeb4439-11ff-4f1b-bf54-f9ef06701032\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Forge Robotics",
-      "run": 2,
-      "input_tokens": 550,
-      "output_tokens": 189,
-      "latency_ms": 5639,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Forge Robotics is actively hiring senior engineers skilled in Rust, which indicates growth and a potential need for support in their tech stack. Given their focus on autonomous mobile robots for warehouses, they fit within our ideal customer profile for industrial automation solutions.\",\n  \"citations\": [\n    \"e3310de6-f5dc-421f-87fb-567d60bf8dab\",\n    \"72330030-878b-4b4e-a42c-e2d5341359f5\",\n    \"3e89e383-4076-4bf7-a862-93978dacfb0b\",\n    \"17290e03-c671-4600-869f-61cf90609991\",\n    \"3eeb4439-11ff-4f1b-bf54-f9ef06701032\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Forge Robotics",
-      "run": 3,
-      "input_tokens": 550,
-      "output_tokens": 143,
-      "latency_ms": 6404,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Forge Robotics is actively hiring senior engineers for rust, indicating significant growth and a potential need for solutions that can optimize their operational efficiency. This aligns well with their focus on autonomous mobile robots for warehouses, making an outreach timely and relevant.\",\n  \"citations\": [\n    \"e3310de6-f5dc-421f-87fb-567d60bf8dab\",\n    \"72330030-878b-4b4e-a42c-e2d5341359f5\",\n    \"3eeb4439-11ff-4f1b-bf54-f9ef06701032\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Plaintext.so",
-      "run": 1,
-      "input_tokens": 605,
-      "output_tokens": 137,
-      "latency_ms": 2756,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Plaintext.so has recently released a new version of their product and is actively hiring senior engineers, indicating growth and a potential need for additional support or collaboration. This aligns well with their B2B SaaS focus and technology stack.\",\n  \"citations\": [\n    \"80431e68-1613-4893-a726-d5a350da4008\",\n    \"cae91e37-c906-454a-b054-31195c6d1328\",\n    \"550d4b31-e875-46db-b519-a2d2f10db648\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Plaintext.so",
-      "run": 2,
-      "input_tokens": 605,
-      "output_tokens": 152,
-      "latency_ms": 2291,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Plaintext.so has recently released a new version of their CRM with AI features, indicating active product development, and they are hiring senior engineers in Elixir, which suggests they are investing in their technology stack. These signals align well with their focus on being a leader in the b2b_saas space.\",\n  \"citations\": [\n    \"80431e68-1613-4893-a726-d5a350da4008\",\n    \"cae91e37-c906-454a-b054-31195c6d1328\",\n    \"550d4b31-e875-46db-b519-a2d2f10db648\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Plaintext.so",
-      "run": 3,
-      "input_tokens": 605,
-      "output_tokens": 117,
-      "latency_ms": 1605,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Plaintext.so has recently released a new version of their product, which suggests they are actively innovating. Additionally, they are hiring senior engineers specifically for Elixir, indicating potential growth and a need for solutions or partnerships that could assist them.\",\n  \"citations\": [\n    \"cae91e37-c906-454a-b054-31195c6d1328\",\n    \"550d4b31-e875-46db-b519-a2d2f10db648\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Halo Health",
-      "run": 1,
-      "input_tokens": 559,
-      "output_tokens": 127,
-      "latency_ms": 4611,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Halo Health is currently hiring senior engineers with expertise in Ruby, suggesting they may be looking to expand their capabilities in their care coordination platform for primary care. This indicates growth and an opportunity for our solutions that align with their technology stack.\",\n  \"citations\": [\n    \"d9a03af5-12d2-46c1-b32a-629c9023b9c9\",\n    \"ca50be13-5f4b-4908-aafc-4eca1562ee75\",\n    \"signals\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Halo Health",
-      "run": 2,
-      "input_tokens": 559,
-      "output_tokens": 202,
-      "latency_ms": 5021,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Halo Health is actively hiring senior engineers in Ruby, which indicates growth and a need for engineering talent that aligns with their tech stack. This presents a strong opportunity for engagement, especially given their focus on a care coordination platform in the healthtech industry.\",\n  \"citations\": [\n    \"d9a03af5-12d2-46c1-b32a-629c9023b9c9\",\n    \"ca50be13-5f4b-4908-aafc-4eca1562ee75\",\n    \"407eefec-d3bf-4397-a382-63537d9d2de5\",\n    \"e1189c1d-5ed0-4b83-af57-1865eaeea764\",\n    \"897f74a1-905c-433f-a308-8f21b4f13f0d\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Halo Health",
-      "run": 3,
-      "input_tokens": 559,
-      "output_tokens": 170,
-      "latency_ms": 5592,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Halo Health is currently hiring senior engineers in Ruby, which indicates growth and potential new projects. Their focus on healthtech aligns well with our offerings, making this a timely opportunity to engage them this week.\",\n  \"citations\": [\n    \"d9a03af5-12d2-46c1-b32a-629c9023b9c9\",\n    \"ca50be13-5f4b-4908-aafc-4eca1562ee75\",\n    \"e1189c1d-5ed0-4b83-af57-1865eaeea764\",\n    \"897f74a1-905c-433f-a308-8f21b4f13f0d\"\n  ]\n}"
+      "decision_text": "{\n  \"decide\": false,\n  \"reasoning\": \"Although Halo Health matches our technological stack and has recent hiring signals indicating growth, their overall ICP fit score is low at 0.23, suggesting they may not align well with our ideal customer profile, warranting no immediate outreach.\",\n  \"citations\": [\n    \"6a2bfbb5-fcc0-4791-ae1e-71a27a7fa228\",\n    \"f643cce4-c5f9-412d-ac3e-8c91e08e30b8\",\n    \"897f74a1-905c-433f-a308-8f21b4f13f0d\"\n  ]\n}"
     },
     {
       "system": "agent-crm",
       "account": "Brightvine",
       "run": 1,
-      "input_tokens": 456,
-      "output_tokens": 182,
-      "latency_ms": 4365,
+      "input_tokens": 1124,
+      "output_tokens": 115,
+      "latency_ms": 2305,
       "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Brightvine is a targeted account in the direct-to-consumer (d2c) industry with a specific focus on AI solutions for wine retailers. Given their advanced tech stack and the potential alignment with our offerings, an outbound touch this week is warranted to explore synergies.\",\n  \"citations\": [\n    \"9f167851-0b52-4c8b-bd77-2a167243b906\",\n    \"7c1c61b2-f980-48fb-a3af-3fdf5a0d313b\",\n    \"313b63d3-61df-4b25-af9c-fdbbea39c426\",\n    \"c82bb077-1ec0-4b4f-830f-0477eea9046e\"\n  ]\n}"
+      "decision_text": "```json\n{\"decide\": false, \"reasoning\": \"The overall ICP fit score is low at 0.23, indicating that Brightvine may not be an ideal target at this time despite their innovative AI shopping assistant. Additionally, there are no relevant signals to prompt outreach this week.\", \"citations\": [\"e99fd419-e954-4ed6-90b1-ae08bce76987\", \"aafc70e2-a3f9-4b79-9f2d-a4cffb082005\"]}\n```"
     },
     {
       "system": "agent-crm",
       "account": "Brightvine",
       "run": 2,
-      "input_tokens": 456,
-      "output_tokens": 176,
-      "latency_ms": 6925,
+      "input_tokens": 1124,
+      "output_tokens": 136,
+      "latency_ms": 2250,
       "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Brightvine's focus on AI shopping assistance for wine retailers suggests alignment with current market trends, making them a relevant target. Given their use of modern technologies like Python, Postgres, and React, they are a good fit for our offerings.\",\n  \"citations\": [\n    \"9f167851-0b52-4c8b-bd77-2a167243b906\",\n    \"7c1c61b2-f980-48fb-a3af-3fdf5a0d313b\",\n    \"313b63d3-61df-4b25-af9c-fdbbea39c426\",\n    \"c82bb077-1ec0-4b4f-830f-0477eea9046e\"\n  ]\n}"
+      "decision_text": "```json\n{\"decide\": false, \"reasoning\": \"Brightvine shows a low overall ICP fit score of 0.23, indicating that they do not align well with ideal customer profile parameters. Additionally, there are no significant signals or recent activities suggesting immediate engagement opportunities.\", \"citations\": [\"e99fd419-e954-4ed6-90b1-ae08bce76987\", \"aafc70e2-a3f9-4b79-9f2d-a4cffb082005\", \"b72d2505-af66-4e21-b719-53e2a4f86181\"]}\n```"
     },
     {
       "system": "agent-crm",
       "account": "Brightvine",
       "run": 3,
-      "input_tokens": 456,
-      "output_tokens": 186,
-      "latency_ms": 3555,
+      "input_tokens": 1124,
+      "output_tokens": 151,
+      "latency_ms": 2871,
       "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Brightvine operates in the d2c industry and utilizes a modern tech stack (Python, Postgres, React), which aligns well with current market trends for digital solutions. Furthermore, their focus on AI for retail indicates a potential need for innovative partnerships, making them a good candidate for outreach.\",\n  \"citations\": [\n    \"9f167851-0b52-4c8b-bd77-2a167243b906\",\n    \"7c1c61b2-f980-48fb-a3af-3fdf5a0d313b\",\n    \"313b63d3-61df-4b25-af9c-fdbbea39c426\",\n    \"c82bb077-1ec0-4b4f-830f-0477eea9046e\"\n  ]\n}"
+      "decision_text": "```json\n{\"decide\": false, \"reasoning\": \"Although the account has a relevant use case as an AI shopping assistant and a good technical stack, the ICP fit score is low (0.23) with critical areas such as industry and stage match scoring 0.0, which indicates a poor overall alignment for an outbound touch.\", \"citations\": [\"e99fd419-e954-4ed6-90b1-ae08bce76987\", \"f1f98270-7d65-471c-8200-cb67fdb1da60\", \"e010eaf1-5bd8-4ebd-a6e7-ed61d2d5be9d\"]}\n```"
     },
     {
       "system": "agent-crm",
       "account": "Strand Compute",
       "run": 1,
-      "input_tokens": 457,
+      "input_tokens": 1125,
+      "output_tokens": 142,
+      "latency_ms": 2450,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\n  \"decide\": false,\n  \"reasoning\": \"Strand Compute exhibits a low overall ICP fit score (0.23), with significant limitations in industry, stage, and signal strength. The evidence indicates a high recency but lacks substantial alignment with target criteria for effective outreach.\",\n  \"citations\": [\n    \"407346a7-5154-4b8a-b414-ffdf8c96dc87\",\n    \"4c928588-0407-4ab4-9d6a-5ee077fa86ae\",\n    \"49ad1cd-a693-4db8-8275-da50b2bb1758\"\n  ]\n}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Strand Compute",
+      "run": 2,
+      "input_tokens": 1125,
+      "output_tokens": 147,
+      "latency_ms": 3036,
+      "api_calls_to_data_store": 3,
+      "decision_text": "{\n  \"decide\": false,\n  \"reasoning\": \"Strand Compute has a low ICP fit score of 0.23 and lacks strong industry match, stage match, and signal strength, indicating limited alignment with our ideal customer profile. Therefore, an outbound touch this week is not warranted.\",\n  \"citations\": [\n    \"407346a7-5154-4b8a-b414-ffdf8c96dc87\",\n    \"afc1da62-8d42-459c-9484-ae654f7c2f75\",\n    \"0c684dca-a0e2-4264-b6f9-996071225af8\"\n  ]\n}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Strand Compute",
+      "run": 3,
+      "input_tokens": 1125,
       "output_tokens": 174,
-      "latency_ms": 2618,
+      "latency_ms": 3147,
       "api_calls_to_data_store": 3,
-      "decision_text": "```json\n{\"decide\": true, \"reasoning\": \"Strand Compute is focused on GPU spot pricing for ML teams, a relevant and growing area in the infra industry. The technology stack they use (Go, Rust, PostgreSQL) aligns well with current trends, indicating an opportunity to connect and discuss potential solutions that could enhance their offerings.\", \"citations\": [\"ef68a51b-c33f-4650-ae63-3e7952c70ea5\", \"29b20524-cf49-4d1c-9e1b-74d6f7461dde\", \"c3ddade1-516d-4868-a19b-c8ac415a64dc\", \"697e5282-860b-4148-9252-0169cb42b86e\"]}\n```"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Strand Compute",
-      "run": 2,
-      "input_tokens": 457,
-      "output_tokens": 177,
-      "latency_ms": 2476,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Strand Compute's focus on GPU spot pricing for ML teams suggests a strong alignment with current industry demand for cost-effective compute solutions. Their technology stack of Go, Rust, and Postgres indicates a modern development environment, making them a good fit for outbound engagement.\",\n  \"citations\": [\n    \"697e5282-860b-4148-9252-0169cb42b86e\",\n    \"ef68a51b-c33f-4650-ae63-3e7952c70ea5\",\n    \"29b20524-cf49-4d1c-9e1b-74d6f7461dde\",\n    \"c3ddade1-516d-4868-a19b-c8ac415a64dc\"\n  ]\n}"
-    },
-    {
-      "system": "agent-crm",
-      "account": "Strand Compute",
-      "run": 3,
-      "input_tokens": 457,
-      "output_tokens": 159,
-      "latency_ms": 2403,
-      "api_calls_to_data_store": 3,
-      "decision_text": "{\n  \"decide\": true,\n  \"reasoning\": \"Strand Compute is focused on GPU pricing for ML teams, which is a growing market. Their technology stack fits well with our solutions, providing a solid opportunity for outreach.\",\n  \"citations\": [\n    \"ef68a51b-c33f-4650-ae63-3e7952c70ea5\",\n    \"29b20524-cf49-4d1c-9e1b-74d6f7461dde\",\n    \"c3ddade1-516d-4868-a19b-c8ac415a64dc\",\n    \"697e5282-860b-4148-9252-0169cb42b86e\"\n  ]\n}"
+      "decision_text": "{\n  \"decide\": false,\n  \"reasoning\": \"The account Strand Compute has a low ICP fit score of 0.23 and lacks strong signals that would suggest immediate engagement is warranted. The industry match and signal strength are particularly low, indicating that a touch this week may not yield significant interest or value.\",\n  \"citations\": [\n    \"407346a7-5154-4b8a-b414-ffdf8c96dc87\",\n    \"049ad1cd-a693-4db8-8275-da50b2bb1758\",\n    \"afc1da62-8d42-459c-9484-ae654f7c2f75\",\n    \"e8c10d38-c9be-405a-8252-63ea6058c708\"\n  ]\n}"
     }
   ],
   "summary": {
-    "avg_input_tokens": 532.3333333333334,
-    "avg_output_tokens": 159.11111111111111,
-    "avg_latency_ms": 3942.4444444444443
+    "avg_input_tokens": 1225,
+    "avg_output_tokens": 147.94444444444446,
+    "avg_latency_ms": 2729.777777777778
   }
 }

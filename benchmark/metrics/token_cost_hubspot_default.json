@@ -1,0 +1,211 @@
+{
+  "system": "hubspot-default",
+  "model": "gpt-4o-mini",
+  "runs": [
+    {
+      "system": "hubspot-default",
+      "account": "Resona Labs",
+      "run": 1,
+      "input_tokens": 3266,
+      "output_tokens": 173,
+      "latency_ms": 5106,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Resona Labs specializes in AI voice analytics for sales calls and is currently hiring senior engineers in TypeScript, indicating growth and potential interest in advanced solutions. This aligns well with our target market, warranting an outbound touch.\",\"citations\":[\"f5ea84dd-96d0-4b97-aff7-a16d13c30434\",\"84f4068e-e8ea-40c0-b1f9-b55ba55d383a\",\"3ee93dba-d932-42b3-949f-d69f55a6de46\",\"a4ed25de-c307-4611-b8d8-7ea9727d5c77\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Resona Labs",
+      "run": 2,
+      "input_tokens": 3266,
+      "output_tokens": 140,
+      "latency_ms": 4222,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "```json\n{\n  \"decide\": true,\n  \"reasoning\": \"Resona Labs is actively hiring senior engineers in TypeScript, which indicates growth and potential for engagement. Their focus on AI voice analytics also aligns well with current market trends in B2B SaaS.\",\n  \"citations\": [\n    \"f5ea84dd-96d0-4b97-aff7-a16d13c30434\",\n    \"84f4068e-e8ea-40c0-b1f9-b55ba55d383a\"\n  ]\n}\n```"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Resona Labs",
+      "run": 3,
+      "input_tokens": 3266,
+      "output_tokens": 180,
+      "latency_ms": 3686,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Resona Labs is actively hiring senior engineers in TypeScript, indicating growth and a need for support in their technology stack. Their focus on AI voice analytics for sales calls aligns well with current market trends in AI and SaaS, making outreach timely and relevant.\",\"citations\":[\"f5ea84dd-96d0-4b97-aff7-a16d13c30434\",\"84f4068e-e8ea-40c0-b1f9-b55ba55d383a\",\"3ee93dba-d932-42b3-949f-d69f55a6de46\",\"a4ed25de-c307-4611-b8d8-7ea9727d5c77\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Forge Robotics",
+      "run": 1,
+      "input_tokens": 829,
+      "output_tokens": 148,
+      "latency_ms": 4553,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Forge Robotics is actively hiring senior engineers with expertise in Rust, indicating growth and potential investment in their technology. Their focus on autonomous mobile robots for warehouses aligns with emerging trends in automation and logistics, making it a timely moment for outreach.\",\"citations\":[\"e3310de6-f5dc-421f-87fb-567d60bf8dab\",\"3eeb4439-11ff-4f1b-bf54-f9ef06701032\",\"72330030-878b-4b4e-a42c-e2d5341359f5\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Forge Robotics",
+      "run": 2,
+      "input_tokens": 829,
+      "output_tokens": 137,
+      "latency_ms": 2994,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Forge Robotics is actively hiring senior engineers in Rust, indicating growth and a potential need for additional resources or support. Their focus on autonomous mobile robots aligns well with our target market.\",\"citations\":[\"e3310de6-f5dc-421f-87fb-567d60bf8dab\",\"3eeb4439-11ff-4f1b-bf54-f9ef06701032\",\"72330030-878b-4b4e-a42c-e2d5341359f5\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Forge Robotics",
+      "run": 3,
+      "input_tokens": 829,
+      "output_tokens": 141,
+      "latency_ms": 3812,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Forge Robotics is actively hiring senior engineers specializing in Rust, indicating growth and a need for advanced tech solutions. Their focus on autonomous mobile robots aligns well with our ICP for innovative, tech-driven companies.\",\"citations\":[\"e3310de6-f5dc-421f-87fb-567d60bf8dab\",\"3eeb4439-11ff-4f1b-bf54-f9ef06701032\",\"72330030-878b-4b4e-a42c-e2d5341359f5\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Plaintext.so",
+      "run": 1,
+      "input_tokens": 880,
+      "output_tokens": 135,
+      "latency_ms": 4695,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Plaintext.so is currently hiring senior engineers in Elixir, indicating growth and an opportunity for engagement. Their focus on being an email-first CRM for indie hackers aligns well with our target ICP.\",\"citations\":[\"80431e68-1613-4893-a726-d5a350da4008\",\"550d4b31-e875-46db-b519-a2d2f10db648\",\"cae91e37-c906-454a-b054-31195c6d1328\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Plaintext.so",
+      "run": 2,
+      "input_tokens": 880,
+      "output_tokens": 131,
+      "latency_ms": 2366,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "```json\n{\n  \"decide\": true,\n  \"reasoning\": \"Plaintext.so is actively hiring senior engineers, indicating growth and potential need for new tools. Additionally, they recently released a significant update, suggesting they are in a phase of innovation.\",\n  \"citations\": [\n    \"550d4b31-e875-46db-b519-a2d2f10db648\",\n    \"cae91e37-c906-454a-b054-31195c6d1328\"\n  ]\n}\n```"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Plaintext.so",
+      "run": 3,
+      "input_tokens": 880,
+      "output_tokens": 141,
+      "latency_ms": 2664,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Plaintext.so is actively hiring senior engineers in Elixir, indicating growth and potential collaboration opportunities. Additionally, they have recently released a new version of their product with AI features, suggesting they are investing in development and innovation.\",\"citations\":[\"550d4b31-e875-46db-b519-a2d2f10db648\",\"cae91e37-c906-454a-b054-31195c6d1328\",\"80431e68-1613-4893-a726-d5a350da4008\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Halo Health",
+      "run": 1,
+      "input_tokens": 838,
+      "output_tokens": 127,
+      "latency_ms": 2889,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Halo Health is a healthtech company that is actively hiring senior engineers, indicating potential growth and a need for solutions that could benefit from our offerings. Their focus on care coordination aligns well with our target market.\",\"citations\":[\"d9a03af5-12d2-46c1-b32a-629c9023b9c9\",\"897f74a1-905c-433f-a308-8f21b4f13f0d\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Halo Health",
+      "run": 2,
+      "input_tokens": 838,
+      "output_tokens": 117,
+      "latency_ms": 2871,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Halo Health is a healthtech company focused on care coordination and is actively hiring senior engineers in Ruby, indicating growth and potential interest in relevant services or products.\",\"citations\":[\"d9a03af5-12d2-46c1-b32a-629c9023b9c9\",\"897f74a1-905c-433f-a308-8f21b4f13f0d\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Halo Health",
+      "run": 3,
+      "input_tokens": 838,
+      "output_tokens": 122,
+      "latency_ms": 2532,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Halo Health is currently hiring senior engineers in Ruby, indicating growth and a potential need for tools to support their development processes. Their focus on healthtech aligns well with our target market.\",\"citations\":[\"d9a03af5-12d2-46c1-b32a-629c9023b9c9\",\"897f74a1-905c-433f-a308-8f21b4f13f0d\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Brightvine",
+      "run": 1,
+      "input_tokens": 766,
+      "output_tokens": 100,
+      "latency_ms": 2083,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Brightvine operates in the D2C sector as an AI shopping assistant for wine retailers, indicating a potential fit with our target audience. Engaging them now could capitalize on emerging trends in AI and e-commerce.\",\"citations\":[\"9f167851-0b52-4c8b-bd77-2a167243b906\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Brightvine",
+      "run": 2,
+      "input_tokens": 766,
+      "output_tokens": 178,
+      "latency_ms": 3351,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Brightvine operates in the D2C industry with a focus on AI shopping for wine retailers, which aligns with our target market. Given their clear technology stack and status as a lead, an outbound touch can help establish a supportive connection.\",\"citations\":[\"9f167851-0b52-4c8b-bd77-2a167243b906\",\"7c1c61b2-f980-48fb-a3af-3fdf5a0d313b\",\"313b63d3-61df-4b25-af9c-fdbbea39c426\",\"c82bb077-1ec0-4b4f-830f-0477eea9046e\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Brightvine",
+      "run": 3,
+      "input_tokens": 766,
+      "output_tokens": 180,
+      "latency_ms": 3088,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Brightvine is an AI shopping assistant for wine retailers, indicating a focus on D2C markets which aligns with potential interests for our offerings. As they are categorized as a lead in the lifecycle stage, an outbound touch could help advance our relationship.\",\"citations\":[\"9f167851-0b52-4c8b-bd77-2a167243b906\",\"7c1c61b2-f980-48fb-a3af-3fdf5a0d313b\",\"313b63d3-61df-4b25-af9c-fdbbea39c426\",\"c82bb077-1ec0-4b4f-830f-0477eea9046e\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Strand Compute",
+      "run": 1,
+      "input_tokens": 767,
+      "output_tokens": 180,
+      "latency_ms": 3303,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Strand Compute specializes in GPU spot pricing arbitrage for machine learning teams, making them a strong fit for our target audience in the tech industry. Their use of Go, Rust, and Postgres indicates a modern tech stack that aligns with our product offerings.\",\"citations\":[\"697e5282-860b-4148-9252-0169cb42b86e\",\"ef68a51b-c33f-4650-ae63-3e7952c70ea5\",\"29b20524-cf49-4d1c-9e1b-74d6f7461dde\",\"c3ddade1-516d-4868-a19b-c8ac415a64dc\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Strand Compute",
+      "run": 2,
+      "input_tokens": 767,
+      "output_tokens": 179,
+      "latency_ms": 2770,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Strand Compute is focused on GPU spot pricing for machine learning teams, which aligns well with our target market for tech solutions. Given their industry signals and tech stack of Go, Rust, and Postgres, this account presents a relevant opportunity this week.\",\"citations\":[\"697e5282-860b-4148-9252-0169cb42b86e\",\"ef68a51b-c33f-4650-ae63-3e7952c70ea5\",\"29b20524-cf49-4d1c-9e1b-74d6f7461dde\",\"c3ddade1-516d-4868-a19b-c8ac415a64dc\"]}"
+    },
+    {
+      "system": "hubspot-default",
+      "account": "Strand Compute",
+      "run": 3,
+      "input_tokens": 767,
+      "output_tokens": 179,
+      "latency_ms": 4319,
+      "api_calls_to_data_store": 1,
+      "turns": 2,
+      "decision_text": "{\"decide\":true,\"reasoning\":\"Strand Compute operates in the AI infrastructure space, focusing on GPU pricing solutions for machine learning teams, which aligns well with our target market. As they are currently categorized as a 'lead', it is crucial to engage them and explore potential partnership opportunities.\",\"citations\":[\"697e5282-860b-4148-9252-0169cb42b86e\",\"ef68a51b-c33f-4650-ae63-3e7952c70ea5\",\"29b20524-cf49-4d1c-9e1b-74d6f7461dde\",\"c3ddade1-516d-4868-a19b-c8ac415a64dc\"]}"
+    }
+  ],
+  "summary": {
+    "avg_input_tokens": 1224.3333333333333,
+    "avg_output_tokens": 149.33333333333334,
+    "avg_latency_ms": 3405.777777777778,
+    "avg_turns": 2,
+    "avg_hubspot_api_calls": 1
+  }
+}

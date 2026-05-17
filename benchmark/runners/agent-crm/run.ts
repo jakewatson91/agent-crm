@@ -68,13 +68,23 @@ async function loadDecisionContext(ws: string, accountName: string): Promise<Dec
     .single();
   if (ent.error || !ent.data) throw new Error(`account not found: ${accountName}`);
 
-  const facts = await supabase
+  // Active facts = the latest in each supersede chain = facts whose id is not
+  // referenced by any other fact's `supersedes` column. Filtering on
+  // `supersedes is null` is WRONG: it returns original facts only and drops
+  // every newer fact that replaced an older one.
+  const allFacts = await supabase
     .from('facts')
-    .select('id, predicate, object_text, confidence')
+    .select('id, predicate, object_text, confidence, supersedes')
     .eq('workspace_id', ws)
-    .eq('subject_entity', ent.data.id)
-    .is('supersedes', null);
-  if (facts.error) throw facts.error;
+    .eq('subject_entity', ent.data.id);
+  if (allFacts.error) throw allFacts.error;
+  const supersededIds = new Set(
+    (allFacts.data ?? []).map((f) => f.supersedes as string | null).filter((x): x is string => !!x),
+  );
+  const facts = {
+    error: null as null,
+    data: (allFacts.data ?? []).filter((f) => !supersededIds.has(f.id as string)),
+  };
 
   const signals = await supabase
     .from('signals')

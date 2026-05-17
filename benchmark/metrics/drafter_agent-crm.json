@@ -1,0 +1,210 @@
+{
+  "system": "agent-crm",
+  "model": "gpt-4o-mini",
+  "runs": [
+    {
+      "system": "agent-crm",
+      "account": "Resona Labs",
+      "run": 1,
+      "input_tokens": 1063,
+      "output_tokens": 109,
+      "latency_ms": 4025,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"maya@resonalabs.example\", \"subject\": \"Quick check-in on hiring\", \"body\": \"Hey Maya, I noticed that Resona Labs is hiring for a senior typescript engineering role. Last time we chatted, we discussed how our CRM could streamline your outreach efforts, which seems perfect for your growing team. Would love to catch up and see how we can help!\",\"cites\":[\"58e1970e-eb20-4e1a-a26b-14eade2509b7\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Resona Labs",
+      "run": 2,
+      "input_tokens": 1063,
+      "output_tokens": 113,
+      "latency_ms": 3394,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"maya@resonalabs.example\", \"subject\": \"Quick follow-up on your hiring needs\", \"body\": \"Hey Maya, I noticed that Resona Labs is currently hiring for a senior typescript engineering role. Last time we chatted, we mentioned the potential of our CRM to streamline outbound efforts. I believe it could be a great fit as your team expands. Let’s catch up soon!\", \"cites\": [\"58e1970e-eb20-4e1a-a26b-14eade2509b7\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Resona Labs",
+      "run": 3,
+      "input_tokens": 1063,
+      "output_tokens": 115,
+      "latency_ms": 4110,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"maya@resonalabs.example\", \"subject\": \"Exciting Times at Resona Labs!\", \"body\": \"Hey Maya, I noticed you're hiring for a senior TypeScript engineering role. That’s an exciting step for scaling your AI voice analytics platform! Last time we chatted, I mentioned our CRM that streamlines your outbound efforts. Should we find a time to explore how we can support your growth?\", \"cites\": [\"58e1970e-eb20-4e1a-a26b-14eade2509b7\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Forge Robotics",
+      "run": 1,
+      "input_tokens": 1155,
+      "output_tokens": 138,
+      "latency_ms": 6338,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"jules@example.com\", \"subject\": \"Following up on your hiring plans\", \"body\": \"Hey Jules, I saw that Forge is hiring senior engineers in Rust—sounds like an exciting time for your team! Last time we chatted, we discussed how our outbound solution could help with your sales efforts. Let’s catch up soon and see how we can support your growth with the right talent.\", \"cites\": [\"d5dd704b-09cf-4816-b4d9-7fc5737ed9d0\", \"3eeb4439-11ff-4f1b-bf54-f9ef06701032\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Forge Robotics",
+      "run": 2,
+      "input_tokens": 1155,
+      "output_tokens": 142,
+      "latency_ms": 4872,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"jules@forgerobotics.example\", \"subject\": \"Quick follow-up on your team’s hiring\", \"body\": \"Hey Jules, I saw that Forge is hiring senior engineers in Rust. That’s an exciting step forward for you guys! Last time we connected, I mentioned the outbound solution we built. Let me know if you'd like to discuss how it can help streamline your sales as your team scales.\", \"cites\": [\"d5dd704b-09cf-4816-b4d9-7fc5737ed9d0\", \"3eeb4439-11ff-4f1b-bf54-f9ef06701032\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Forge Robotics",
+      "run": 3,
+      "input_tokens": 1155,
+      "output_tokens": 148,
+      "latency_ms": 4197,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"jules@forgerobotics.example\", \"subject\": \"Revisiting Your Hiring Needs\", \"body\": \"Hey Jules, I saw that Forge is hiring senior engineers in Rust—exciting times for the team! Last time we chatted, I shared how our outbound solution could help ramp up sales while you're building your engineering team. Let’s sync up soon; I’d love to hear about your progress and see how we can assist.\", \"cites\": [\"d5dd704b-09cf-4816-b4d9-7fc5737ed9d0\", \"3eeb4439-11ff-4f1b-bf54-f9ef06701032\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Plaintext.so",
+      "run": 1,
+      "input_tokens": 1250,
+      "output_tokens": 141,
+      "latency_ms": 3773,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"\", \"subject\": \"Let's chat about your recent hires\", \"body\": \"Hey there,\\n\\nI noticed that Plaintext.so is hiring senior engineers in Elixir—exciting times for your team! Last time we spoke, we discussed how our CRM could enhance agent workflows for your email-first approach. I'd love to explore how our solution can fit seamlessly into your stack.\\n\\nBest, \\n[Your Name]\", \"cites\": [\"550d4b31-e875-46db-b519-a2d2f10db648\", \"7a1ee157-6544-46a9-a6a9-68869b088dd1\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Plaintext.so",
+      "run": 2,
+      "input_tokens": 1250,
+      "output_tokens": 126,
+      "latency_ms": 3241,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"\", \"subject\": \"Quick follow-up on your hiring for elixir\", \"body\": \"Hi there,\\n\\nLast week we talked about the challenges of building an email-first CRM. I noticed that Plaintext.so is currently hiring senior engineers in Elixir, which could be a great opportunity to level up your stack. Let’s catch up soon—I’d love to show you how our solution can complement your workflows as you grow.\\n\\nBest,\\n[Your Name]\", \"cites\": [\"550d4b31-e875-46db-b519-a2d2f10db648\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Plaintext.so",
+      "run": 3,
+      "input_tokens": 1250,
+      "output_tokens": 115,
+      "latency_ms": 3208,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"info@plaintextso.example\", \"subject\": \"Following up on your hiring plans\", \"body\": \"Hey there! I noticed you're hiring senior engineers in Elixir. That's an exciting step for Plaintext.so as you scale your email-first CRM for indie hackers. Last week, we discussed how our CRM could work seamlessly with your current setup. Let's see how we can help enhance your team's productivity amid your hiring efforts.\", \"cites\": [\"550d4b31-e875-46db-b519-a2d2f10db648\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Halo Health",
+      "run": 1,
+      "input_tokens": 1064,
+      "output_tokens": 149,
+      "latency_ms": 3915,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"priay@halohealth.example\", \"subject\": \"Following up on our last chat\", \"body\": \"Hi Priya,\\n\\nLast time we spoke about Halo scaling pilots—sounds like an exciting time for you all! I noticed you're hiring senior engineers skilled in Ruby, which aligns perfectly with your focus on care coordination. Would love to explore how we can help streamline your outbound efforts as you grow.\\n\\nBest,\\n[Your Name]\", \"cites\": [\"d9a03af5-12d2-46c1-b32a-629c9023b9c9\", \"407eefec-d3bf-4397-a382-63537d9d2de\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Halo Health",
+      "run": 2,
+      "input_tokens": 1064,
+      "output_tokens": 103,
+      "latency_ms": 2523,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"\", \"subject\": \"Exciting times at Halo Health!\", \"body\": \"Hi Priya, I noticed that Halo Health is hiring senior engineers in Ruby—exciting to see the growth! Last time we chatted, we discussed a CRM solution that could streamline your outbound efforts. Let’s reconnect and see how we can support your scaling efforts.\", \"cites\": [\"897f74a1-905c-433f-a308-8f21b4f13f0d\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Halo Health",
+      "run": 3,
+      "input_tokens": 1064,
+      "output_tokens": 143,
+      "latency_ms": 3206,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"<email>\", \"subject\": \"Let’s talk scaling at Halo Health\", \"body\": \"Hey Priya, I noticed that Halo is ramping up on hiring senior engineers in Ruby—exciting times! Last week, we discussed how an agent-driven CRM could help with your outbound efforts as you scale pilots. Let’s dive deeper into how we can aid your growth in the care coordination space.\", \"cites\": [\"d9a03af5-12d2-46c1-b32a-629c9023b9c9\", \"f643cce4-c5f9-412d-ac3e-8c91e08e30b8\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Brightvine",
+      "run": 1,
+      "input_tokens": 981,
+      "output_tokens": 108,
+      "latency_ms": 3609,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"theo@brightvine.example\", \"subject\": \"Quick follow-up on Brightvine\", \"body\": \"Hey Theo, just checking in after our chat about Brightvine launching earlier this year. I really think our AI assistant could fit nicely alongside your tech stack—especially since you’re using Python and React. Let me know if you're up for a quick demo soon!\", \"cites\": [\"9f167851-0b52-4c8b-bd77-2a167243b906\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Brightvine",
+      "run": 2,
+      "input_tokens": 981,
+      "output_tokens": 145,
+      "latency_ms": 4273,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"theo@brightvine.example\", \"subject\": \"Quick Follow-Up on Our Last Chat\", \"body\": \"Hey Theo, I wanted to touch base after our last chat about your AI shopping assistant for wine retailers. It sounds like you're onto something great! I noticed Brightvine launched in Q1, and I think our agent could really complement your efforts as you grow. Let’s grab some time to discuss this further.\", \"cites\": [\"9f167851-0b52-4c8b-bd77-2a167243b906\", \"e89b024b-3457-4781-81b7-28b1d66b66fe\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Brightvine",
+      "run": 3,
+      "input_tokens": 981,
+      "output_tokens": 135,
+      "latency_ms": 4097,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"\", \"subject\": \"Quick follow-up on Brightvine\", \"body\": \"Hey Theo,\\n\\nLast time we chatted, I mentioned our AI shopping assistant for wine retailers, which I think fits your needs pretty well. I saw that Brightvine launched in Q1—exciting times! Let’s catch up soon to see how we can support your growth.\\n\\nBest,\\n\", \"cites\": [\"9f167851-0b52-4c8b-bd77-2a167243b906\", \"c8ec75af-efbc-4ff5-ae54-a768a3448726\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Strand Compute",
+      "run": 1,
+      "input_tokens": 990,
+      "output_tokens": 109,
+      "latency_ms": 2442,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"lior@strandcompute.example\", \"subject\": \"Quick follow-up on our last chat\", \"body\": \"Hey Lior, just following up on our last conversation about building a CRM that runs end-to-end with you in the loop. I really think our GPU spot pricing arbitrage solution could help your ML teams optimize performance. Could we grab those 10 minutes to dive deeper?\", \"cites\": [\"697e5282-860b-4148-9252-0169cb42b86\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Strand Compute",
+      "run": 2,
+      "input_tokens": 990,
+      "output_tokens": 127,
+      "latency_ms": 3659,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"lior@strandcompute.example\", \"subject\": \"Following up on our CRM chat\", \"body\": \"Hey Lior, just circling back on the CRM for Stripe’s infra team. I really think the GPU spot pricing arbitrage for ML teams is right up your alley—let’s explore how we can make this work for you. You mentioned being post-seed and small, so I’m keen to find a time that suits you. Looking forward to your thoughts!\", \"cites\": [\"697e5282-860b-4148-9252-0169cb42b86\"]}"
+    },
+    {
+      "system": "agent-crm",
+      "account": "Strand Compute",
+      "run": 3,
+      "input_tokens": 990,
+      "output_tokens": 110,
+      "latency_ms": 2738,
+      "llm_calls": 1,
+      "api_calls_to_data_store": 5,
+      "decision_text": "{\"to\": \"lior@strandcompute.example\", \"subject\": \"Quick follow-up on CRM for ML teams\", \"body\": \"Hey Lior, I wanted to follow up on our last chat about the CRM I built for infra teams. With your focus on GPU spot pricing arbitrage for ML teams, I believe our tool could really streamline your operations. Let's find 10 minutes to explore this together!\", \"cites\": [\"697e5282-860b-4148-9252-0169cb42b86\"]}"
+    }
+  ],
+  "summary": {
+    "avg_input_tokens": 1083.8333333333333,
+    "avg_output_tokens": 126.44444444444444,
+    "avg_latency_ms": 3756.6666666666665,
+    "avg_llm_calls": 1
+  }
+}

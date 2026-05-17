@@ -829,6 +829,14 @@ Each claim should be:
 
 Use object_text for the value. Confidence: 0.95 explicit, 0.7 implied. Skip lower.
 
+PAIN EXTRACTION (second pass) — separately from the demographic facts above, extract any pain, frustration, complaint, unmet need, manual-toil pattern, or expressed limitation the source describes. Use predicate "pain_observed" and an object_text that captures the pain in concrete terms, preferring the source's own wording where possible. Each pain_observed entry goes in the SAME facts[] array as the demographic facts above and MUST include the confidence field (0.95 directly stated, 0.7 strongly implied) — same JSON schema, no separate section. Examples (these are SHAPES, not a closed list — extract anything that fits regardless of vertical):
+- pain_observed = "founder writing every outbound email personally, no time to scale"
+- pain_observed = "current tooling forces context switches between 4 apps daily"
+- pain_observed = "took 3 weeks to ship last marketing email due to legal review"
+- pain_observed = "considered hiring SDR but couldn't justify the cost at current revenue"
+
+Pain is usually expressed indirectly. Look for: complaints ("we hate / can't / wish"), descriptions of manual work ("we still do X by hand"), references to gaps ("we don't have X yet"), or descriptions of friction ("X takes us Y hours / weeks"). Statements about challenges, constraints, manual workarounds, or what doesn't work today ARE pain — extract them as pain_observed even when stated calmly and factually, not just when emotionally vented. Do not split the same pain across pain_observed and another predicate like has_challenge or seeks_solution; use pain_observed for the pain itself. Skip if the source is purely positive / promotional / announcement-only with no friction language. Confidence 0.95 if directly stated, 0.7 if strongly implied. Do not invent pains that aren't on the page.
+
 REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.
 
 Output strictly valid JSON:

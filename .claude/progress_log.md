@@ -365,3 +365,49 @@ Goal: make the CRM safe for a second customer to adopt without code edits. Audit
 
 - Phase A2: scoring weights, scoring perspectives, action-selector thresholds remain code constants. Move to policy when a real customer needs to retune them.
 - Multi-tenant auth + RLS, per-workspace secrets table, pluggable email/contact providers, per-workspace vocabulary engine.
+
+## 2026-05-17 — Benchmark overhaul + fact ranking + pain extraction
+
+### Realistic drafter benchmark (the headline result)
+- Built `benchmark/runners/agent-crm/run_drafter.ts` — single projection (entity + facts + contacts + past_touch + signals) + one LLM call producing JSON draft
+- Built `benchmark/runners/hubspot/run_drafter.ts` — 4-turn tool loop: real `hubspot_get_company_by_name` API call (default property set, envelope preserved) → stubbed `hubspot_get_associated_contacts` and `hubspot_get_recent_notes` using documented HubSpot v3 response shapes (service key lacks scopes for both; content stubbed to match agent-crm seed)
+- `scripts/seed_drafter_benchmark.ts` — parity seeder: 2 contacts + 1 past touch per account on agent-crm side, same content stubbed for HubSpot via `benchmark/runners/hubspot/stub_data.json`
+- `scripts/demo_drafter_walkthrough.ts` — single-account end-to-end trace, shows turn-by-turn LLM cost growth on the HubSpot side
+- **Result: 4.22× cheaper input tokens, 3.94× fewer LLM calls, 1.41× lower latency.** 18 runs each side, 6 accounts × 3 runs, gpt-4o-mini both. Per-account ratios: 2.6× (low) to 10× (Resona, fact-rich). Full report at `benchmark/report/drafter_cost.md`.
+- Structural reason: HubSpot's companies / contacts / engagements live in separate tables traversed via associations; drafter MUST call 3+ tools; each tool turn re-sends prior context. Can't be closed by reformatting.
+
+### Original 1.28× token-cost claim retired
+- Re-ran the original Workload 1 on current data: agent-crm at 1,225 input tokens, HubSpot floor at 1,082, HubSpot default-setup at 1,224. **The 1.28× advantage flipped.** Single-tool workloads measure serialization format choice, not architecture.
+- Built `benchmark/runners/hubspot/run_default.ts` — secondary HubSpot variant with realistic default property request + no envelope stripping, to verify the flip wasn't an artifact of the hand-tuned floor case.
+- Marked Workload 1a DEPRECATED in `BENCHMARK.md` with the three reasons it collapsed. Replaced headline with Workload 1b (realistic drafter).
+- Bug fixed in the process: `benchmark/runners/agent-crm/run.ts:76` filtered facts with `.is('supersedes', null)`, which returns ORIGINAL facts and excludes the LATEST in any supersede chain. Fixed to match `mirror_seed.ts` logic (build a set of IDs pointed to by other facts' supersedes column, filter those out).
+
+### Score-facts deterministic ranking (shipped)
+- New `packages/tools/src/score_facts.ts` — pure deterministic ranking per fact computed at projection time. Formula: pitch_relevance × recency × confidence × (1 - over_used) × outcome_boost.
+- Scoring target = `workspace.about + workspace.constitution` (canonical pitch content). Falls back to ICP perspective vectors if both empty. Cached on `workspaces.policy.pitch_embedding_cache` keyed by content hash.
+- System facts excluded from candidate pool: `score_*`, `icp_fit*`, predicates ending in `_breakdown`, object_text starting with `{`/`[`, bare numbers.
+- Over-used penalty: per-cite exponential decay (τ=14 days), scoped to THIS account's channel, capped at 1. Pulled from `channel_posts.cites[]`.
+- Outcome boost: Bayesian-smoothed pos-reply rate (k=5 prior weight, α=0.5 max boost). Auto-engages as outcomes accumulate — same code runs day 1 and day 1000.
+- Threshold `min_score: 0.35` — returns empty shortlist when no fact clears the bar instead of surfacing noise.
+- Wired into `inngest/functions/agent_logic.ts`: fact query extended with `observed_at` + `source_event_id`; called only when behavior === 'drafter'; result passed to `buildUserPrompt` as `recommended` block.
+- `buildUserPrompt` extended with RECOMMENDED FACTS block (~60 tokens added to projection).
+- `buildDrafterDecision` (in `packages/tools/src/prompt_builders.ts`) extended with "LEAD-FACT SELECTION" rule — prefer recommended unless past-touch context demands override.
+- Instrumentation event `drafter_shortlist_pick` logged per draft: `recommended_fact_ids`, `recommended_scores` (with components), `actually_cited`, `cited_from_shortlist`, `override:bool`. Validates whether model trusts shortlist once outcome data arrives.
+
+### Pain extraction in enricher (shipped)
+- `buildEnricherDecision` in `inngest/functions/agent_logic.ts` extended with PAIN EXTRACTION second-pass block. Single predicate `pain_observed` with vertical-neutral example shapes. Adds ~150 tokens per enricher run (~$0.00002 at gpt-4o-mini).
+- Two prompt iterations to get right:
+  1. First version split pain across `pain_observed` and `has_challenge` predicates depending on tone. Fixed by adding "Statements about challenges, constraints, manual workarounds, or what doesn't work today ARE pain — extract them as pain_observed even when stated calmly and factually."
+  2. Second version returned pain facts without confidence field. Fixed by adding "Each pain_observed entry goes in the SAME facts[] array... MUST include the confidence field."
+- Validation: `scripts/test_pain_extraction.ts` runs 4 synthetic signal fixtures through the prompt + scoring. 4/4 correctly classified (pain extracted on pain-shaped text, skipped on announcement/promotional). 6 of top 7 ranked facts were pain after extraction.
+- Real-signal yield unmeasured — deferred. Synthetic-only validation.
+
+### Documentation
+- Overwrote `BENCHMARK.md` at root with 4.22× realistic drafter as the headline. Workload 1a (1.28×) marked DEPRECATED transparently. Workloads 3/5/6 (concurrency, provenance, replay) preserved from prior sessions. Added Reproducing section, Deferred section, Recommended pitch language.
+- New `benchmark/report/SESSION_RUNDOWN.md` — scoped to benchmark tests only (Test 1 original, Test 2 default setup, Test 3 realistic drafter, Test 4 Forge walkthrough). Honest about which claims hold vs which collapsed.
+- New `benchmark/report/drafter_cost.md` — detailed report for Workload 1b.
+- `CLAUDE.md` updated: dogfood test case corrected from "Jake's job hunt" to "use agent-crm to sell agent-crm to founders with ≤1 salesperson." Added buyer-profile line.
+
+### Memory updates
+- Banned word list expanded and pinned to top of MEMORY.md: substrate, gates, primitive, wedge, abstraction layer, predicate (as jargon), moat (vaguely). Jake corrected each multiple times — table with replacement words in `feedback_banned_word_substrate.md`.
+- New `project_test_case_dogfood.md` — pinned at top of MEMORY.md. Test case is sell agent-crm to companies, NOT Jake's job hunt. Translation rule: when pulling from progress_log or historical docs that reference job hunt, translate to dogfood frame before quoting.
