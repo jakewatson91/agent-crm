@@ -21,7 +21,7 @@ import { act } from '@agent-crm/primitives';
 import { graphProximity } from './graph.js';
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.js';
 
-const SCORE_MODEL = 'gpt-4o-mini';
+const SCORE_MODEL = 'deepseek/deepseek-v4-flash:free';
 const RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 
@@ -349,11 +349,18 @@ export async function scoreAndAssert(
     { predicate: 'icp_fit', value: score.icp_total }, // backward compat
   ];
   for (const s of subScores) {
+    // Use order+limit+maybeSingle instead of plain maybeSingle: if a prior
+    // run left duplicate active rows (>1 with supersedes=null), maybeSingle
+    // alone errors and falls into the "no existing" branch, which writes
+    // ANOTHER active row — compounding the leak. Picking the newest by
+    // observed_at lets us still supersede something instead of inserting.
     const existing = await supabase.from('facts').select('id, object_text')
       .eq('workspace_id', actor.workspace_id)
       .eq('subject_entity', entity_id)
       .eq('predicate', s.predicate)
       .is('supersedes', null)
+      .order('observed_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
     const newText = s.value.toFixed(2);
     if (existing.data?.object_text === newText) continue; // unchanged; skip write

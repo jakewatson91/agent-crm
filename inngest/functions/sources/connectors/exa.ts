@@ -34,7 +34,7 @@ import { callTool } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
 
-const EXTRACT_MODEL = 'gpt-4o-mini';
+const EXTRACT_MODEL = 'deepseek/deepseek-v4-flash:free';
 const EXA_API = 'https://api.exa.ai/search';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }

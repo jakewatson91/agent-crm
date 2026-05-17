@@ -70,7 +70,8 @@ Gap: nobody has built the *substrate* for agents to operate on. Everyone has bui
 ## Working assumptions
 
 - **Year:** 2026.
-- **Validation order:** dog-food on Jake's job hunt → public-data testbed (GitHub/HN/YC/SEC) → one design partner.
+- **Test case (dogfood):** Use agent-crm to sell agent-crm itself. Target = startups that want to run sales with ≤1 salesperson and would buy an agent to do outbound for them. Every example, flow, pitch, and diagram in this project should use THIS as the running scenario. Do NOT default to Jake's job hunt — that framing is dead.
+- **Buyer profile:** solo / pre-sales-hire founder. Has 5 minutes a day for sales. Wants the agent to do the work end-to-end and to be auditable when it screws up.
 - **Storage v0:** SQLite + MD files with YAML frontmatter (Obsidian readable). Move to Postgres at design partner.
 - **Don't pre-build:** multi-tenant, Kafka, vector DB partitioning. All defer to when volume forces them.
 

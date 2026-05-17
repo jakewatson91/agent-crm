@@ -42,7 +42,7 @@ Output strictly valid JSON: {"icp":{...},"persona":{...},"constitution":"...","k
   const user = `Customer description:\n${about}`;
   try {
     const r = await chatComplete({
-      model: 'gpt-4o-mini',
+      model: 'deepseek/deepseek-v4-flash:free',
       messages: [
         { role: 'system', content: sys },
         { role: 'user', content: user },

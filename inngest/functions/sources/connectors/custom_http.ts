@@ -238,7 +238,7 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
   };
 
   const batchSize = Math.max(1, extractSpec.batch_size ?? 10);
-  const model = extractSpec.model ?? 'gpt-4o-mini';
+  const model = extractSpec.model ?? 'deepseek/deepseek-v4-flash:free';
   const magnitude = signalSpec.magnitude ?? 0.55;
 
   for (let i = 0; i < fresh.length; i += batchSize) {

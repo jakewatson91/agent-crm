@@ -22,7 +22,11 @@ import { chatComplete } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
 
-const DEFAULT_MODEL = 'gpt-4o-mini';
+// Default routing: every behavior except drafter uses Flash:free via OpenRouter.
+// Drafter is the user-visible output — pay for Pro quality. Both are slash-
+// prefixed → chatComplete sends them to OpenRouter (OPENROUTER_API_KEY).
+const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash:free';
+const DRAFTER_MODEL = 'deepseek/deepseek-v4-pro';
 
 type AgentBehavior = 'claim_poster' | 'drafter' | 'enricher';
 
@@ -131,6 +135,9 @@ export async function runAgent(
       if (sub.data.model) model = sub.data.model as string;
     }
   }
+  // If the subscription didn't pin a model and this is a drafter run, lift
+  // to Pro. Drafter output is what the customer reads.
+  if (model === DEFAULT_MODEL && behavior === 'drafter') model = DRAFTER_MODEL;
 
   // 5. Channel.
   const chan = await supabase

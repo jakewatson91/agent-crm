@@ -94,7 +94,7 @@ Generate the connector spec.`;
   };
   try {
     const r = await chatComplete({
-      model: 'gpt-4o-mini',
+      model: 'deepseek/deepseek-v4-flash:free',
       max_tokens: 2000,
       response_format: { type: 'json_object' },
       messages: [
@@ -119,7 +119,7 @@ Generate the connector spec.`;
     extract: {
       system_prompt: derived.extraction_prompt,
       batch_size: derived.batch_size ?? 10,
-      model: 'gpt-4o-mini',
+      model: 'deepseek/deepseek-v4-flash:free',
     },
     signal: {
       type: derived.signal_type ?? 'custom_http',

@@ -5,7 +5,7 @@ import { listConnectors } from '@agent-crm/inngest/functions/sources/registry';
 
 export const runtime = 'nodejs';
 
-const META_MODEL = 'gpt-4o-mini';
+const META_MODEL = 'deepseek/deepseek-v4-flash:free';
 
 interface ParseReq {
   description: string;
