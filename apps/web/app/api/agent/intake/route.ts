@@ -1,18 +1,18 @@
 /**
- * Global chat intake endpoint (5.5b). Stateless — the client passes the full
- * conversation history each turn. Runs a ReAct loop server-side:
+ * Global chat intake endpoint (5.5b) — SSE-streaming ReAct loop.
  *
- *   1. Compose system prompt + history + new user message.
- *   2. Call chatComplete with tools[]. Model emits either tool_calls or text.
- *   3. If tool_calls: execute each (via INTAKE_TOOLS dispatcher), append tool
- *      messages to history, loop.
- *   4. If text + no tool_calls: terminate, return the assistant turn.
+ * The client passes its conversation history each turn; the server runs the
+ * loop and streams each step (assistant text, tool_call, tool_result) as
+ * Server-Sent Events the moment they're produced. Replaces the prior
+ * one-shot JSON response so the user sees the agent thinking step-by-step
+ * instead of staring at "thinking…" for 10-30 seconds.
  *
- * Bounded to MAX_STEPS iterations so the loop can't run forever. The client
- * receives the complete sequence of assistant turns + tool calls + tool
- * results, so the UI can render the full ReAct trace inline.
+ * Event shape (one JSON object per `data:` line):
+ *   { type: 'assistant', message: ChatMessage }
+ *   { type: 'tool_result', message: ChatMessage }
+ *   { type: 'done', steps: number }
+ *   { type: 'error', error: string }
  */
-import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { type ChatMessage } from '@agent-crm/primitives';
 import { chatCompleteForWorkspace } from '@agent-crm/tools';
@@ -26,9 +26,9 @@ const MAX_STEPS = 8;
 
 interface IntakeReq {
   workspace_id: string;
-  conversation_id?: string;          // optional; client tracks it, server doesn't persist yet
-  history: ChatMessage[];            // prior turns excluding the new message
-  message: string;                   // the new user message
+  conversation_id?: string;
+  history: ChatMessage[];
+  message: string;
 }
 
 const SYSTEM_PROMPT = `You are an intake agent for an agent-native CRM. The user pastes free-text observations (tweets, news, notes) about companies or people they want to track. Your job: turn each observation into atomic facts on the right entity, recompute the score, and surface the action selector's recommendation. You DO NOT decide for the user — at each irreversible step (writing facts, triggering a draft), pause and ask.
@@ -57,14 +57,15 @@ DO NOT:
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as IntakeReq | null;
   if (!body?.workspace_id || !body?.message) {
-    return NextResponse.json({ error: 'workspace_id and message required' }, { status: 400 });
+    return new Response(JSON.stringify({ error: 'workspace_id and message required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   const supabase = createServerClient();
   const actor = { workspace_id: body.workspace_id, actor_kind: 'user' as const, actor_id: 'chat_intake' };
   const ctx = { supabase, actor, workspace_id: body.workspace_id };
 
-  // Build initial message list. Trim history if it's getting long; keep last 20 turns.
   const recentHistory = (body.history ?? []).slice(-20);
   const messages: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -72,79 +73,94 @@ export async function POST(req: Request) {
     { role: 'user', content: body.message },
   ];
 
-  // Trace = the new turns we'll send back to the client to render + append to
-  // their history. We DON'T return the system prompt or prior history.
-  const trace: ChatMessage[] = [{ role: 'user', content: body.message }];
-
   const tools = intakeToolSpecs();
-  let steps = 0;
-  let finalText = '';
+  const encoder = new TextEncoder();
 
-  while (steps < MAX_STEPS) {
-    steps++;
-    let res;
-    try {
-      res = await chatCompleteForWorkspace(supabase, body.workspace_id, {
-        model: INTAKE_MODEL,
-        behavior: 'intake',
-        messages,
-        tools,
-        tool_choice: 'auto',
-        max_tokens: 1200,
-        temperature: 0.2,
-      });
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      trace.push({ role: 'assistant', content: `(LLM error: ${errMsg})` });
-      return NextResponse.json({ ok: false, error: errMsg, trace });
-    }
-
-    // If the assistant emitted tool calls, dispatch them and loop.
-    if (res.tool_calls?.length) {
-      const assistantMsg: ChatMessage = {
-        role: 'assistant',
-        content: res.text || '',
-        tool_calls: res.tool_calls.map((c) => ({
-          id: c.id, type: 'function' as const, function: { name: c.name, arguments: c.arguments_json },
-        })),
-      };
-      messages.push(assistantMsg);
-      trace.push(assistantMsg);
-
-      for (const tc of res.tool_calls) {
-        const handler = INTAKE_TOOLS[tc.name];
-        let result: unknown;
-        if (!handler) {
-          result = { error: `unknown tool: ${tc.name}` };
-        } else {
-          try {
-            const parsedArgs = JSON.parse(tc.arguments_json || '{}');
-            result = await handler.run(ctx, parsedArgs);
-          } catch (e) {
-            result = { error: e instanceof Error ? e.message : String(e) };
-          }
-        }
-        const toolMsg: ChatMessage = {
-          role: 'tool',
-          tool_call_id: tc.id,
-          name: tc.name,
-          content: JSON.stringify(result).slice(0, 8000),
-        };
-        messages.push(toolMsg);
-        trace.push(toolMsg);
+  const stream = new ReadableStream({
+    async start(controller) {
+      function send(payload: unknown) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
       }
-      continue;
-    }
 
-    // No tool calls → final response. Stop.
-    finalText = res.text || '(no response)';
-    trace.push({ role: 'assistant', content: finalText });
-    break;
-  }
+      let steps = 0;
+      let finalText = '';
 
-  if (steps >= MAX_STEPS && !finalText) {
-    trace.push({ role: 'assistant', content: `(hit max steps; stopping)` });
-  }
+      try {
+        while (steps < MAX_STEPS) {
+          steps++;
 
-  return NextResponse.json({ ok: true, trace, steps });
+          const res = await chatCompleteForWorkspace(supabase, body.workspace_id, {
+            model: INTAKE_MODEL,
+            behavior: 'intake',
+            messages,
+            tools,
+            tool_choice: 'auto',
+            max_tokens: 1200,
+            temperature: 0.2,
+          });
+
+          if (res.tool_calls?.length) {
+            // Assistant emitted tool calls — push to internal history + stream.
+            const assistantMsg: ChatMessage = {
+              role: 'assistant',
+              content: res.text || '',
+              tool_calls: res.tool_calls.map((c) => ({
+                id: c.id, type: 'function' as const, function: { name: c.name, arguments: c.arguments_json },
+              })),
+            };
+            messages.push(assistantMsg);
+            send({ type: 'assistant', message: assistantMsg });
+
+            // Dispatch tool calls one by one. Stream each result as it lands.
+            for (const tc of res.tool_calls) {
+              const handler = INTAKE_TOOLS[tc.name];
+              let result: unknown;
+              if (!handler) {
+                result = { error: `unknown tool: ${tc.name}` };
+              } else {
+                try {
+                  const parsedArgs = JSON.parse(tc.arguments_json || '{}');
+                  result = await handler.run(ctx, parsedArgs);
+                } catch (e) {
+                  result = { error: e instanceof Error ? e.message : String(e) };
+                }
+              }
+              const toolMsg: ChatMessage = {
+                role: 'tool',
+                tool_call_id: tc.id,
+                name: tc.name,
+                content: JSON.stringify(result).slice(0, 8000),
+              };
+              messages.push(toolMsg);
+              send({ type: 'tool_result', message: toolMsg });
+            }
+            continue;
+          }
+
+          finalText = res.text || '(no response)';
+          const finalMsg: ChatMessage = { role: 'assistant', content: finalText };
+          send({ type: 'assistant', message: finalMsg });
+          break;
+        }
+
+        if (steps >= MAX_STEPS && !finalText) {
+          send({ type: 'assistant', message: { role: 'assistant', content: '(hit max steps; stopping)' } });
+        }
+        send({ type: 'done', steps });
+      } catch (e) {
+        send({ type: 'error', error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',  // tell Render's nginx not to buffer
+    },
+  });
 }

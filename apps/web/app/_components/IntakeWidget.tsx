@@ -3,13 +3,13 @@
 /**
  * Floating chat widget for the global intake action (5.5b).
  *
- * Bottom-right button → expands a side panel with a chat thread.
- * Each message is rendered inline with role-aware styling. Tool calls + tool
- * results render as collapsible cards so the user sees the ReAct trace
- * without it dominating the view.
+ * SSE-streamed ReAct loop: the server emits each step (assistant text,
+ * tool_call, tool_result) as a separate event. The widget renders each
+ * one as it lands so the user sees the agent thinking step-by-step.
  *
- * Stateless from the server's perspective — full conversation history is
- * sent with every message. Trims to last 20 turns server-side.
+ * Tool results render via type-specific renderers (lookup_entity → match
+ * list, extract_facts → fact cards, propose_action → score bars) instead
+ * of generic JSON blobs.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -33,7 +33,6 @@ export function IntakeWidget() {
   const [err, setErr] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Keyboard: ⌘K / Ctrl+K toggles the widget from anywhere.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -50,29 +49,48 @@ export function IntakeWidget() {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [history, busy]);
 
-  if (!ws) return null; // only show inside a workspace
+  if (!ws) return null;
 
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
     setErr(null); setBusy(true);
     setInput('');
-    // Optimistic user echo
+    // History the server will see (without the new user turn we're about to send).
+    const sentHistory = history;
     setHistory((prev) => [...prev, { role: 'user', content: text }]);
+
     try {
       const r = await fetch('/api/agent/intake', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: ws, history, message: text }),
+        body: JSON.stringify({ workspace_id: ws, history: sentHistory, message: text }),
       });
-      const j = await r.json();
-      if (!j.ok) { setErr(j.error ?? 'request failed'); return; }
-      // Server returns the trace including the user echo. Replace the optimistic
-      // turn with the canonical trace so tool calls + results appear inline.
-      setHistory((prev) => {
-        // Drop the optimistic last user message and append the canonical trace.
-        const base = prev.slice(0, -1);
-        return [...base, ...(j.trace as ChatMessage[])];
-      });
+      if (!r.ok || !r.body) { setErr(`request failed: ${r.status}`); return; }
+
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE framing: events separated by \n\n; each "data: <json>\n" line.
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          const line = frame.split('\n').find((l) => l.startsWith('data: '));
+          if (!line) continue;
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.type === 'assistant' || payload.type === 'tool_result') {
+              setHistory((prev) => [...prev, payload.message as ChatMessage]);
+            } else if (payload.type === 'error') {
+              setErr(payload.error ?? 'unknown error');
+            }
+          } catch { /* ignore malformed frame */ }
+        }
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -80,10 +98,7 @@ export function IntakeWidget() {
     }
   }
 
-  function clear() {
-    setHistory([]);
-    setErr(null);
-  }
+  function clear() { setHistory([]); setErr(null); }
 
   // --- styles ---
   const fab: React.CSSProperties = {
@@ -96,7 +111,7 @@ export function IntakeWidget() {
   };
   const panel: React.CSSProperties = {
     position: 'fixed', bottom: 20, right: 20, zIndex: 1000,
-    width: 420, maxWidth: 'calc(100vw - 40px)', height: 'min(640px, calc(100vh - 60px))',
+    width: 440, maxWidth: 'calc(100vw - 40px)', height: 'min(680px, calc(100vh - 60px))',
     background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10,
     boxShadow: '0 12px 40px rgba(0,0,0,0.18)',
     display: 'flex', flexDirection: 'column', overflow: 'hidden',
@@ -125,9 +140,7 @@ export function IntakeWidget() {
   return (
     <>
       {!open && (
-        <button style={fab} onClick={() => setOpen(true)} title="Open intake (⌘K)" aria-label="Open intake">
-          ✦
-        </button>
+        <button style={fab} onClick={() => setOpen(true)} title="Open intake (⌘K)" aria-label="Open intake">✦</button>
       )}
       {open && (
         <div style={panel} role="dialog" aria-label="Intake">
@@ -197,7 +210,7 @@ function MessageView({ m }: { m: ChatMessage }) {
         )}
         {m.tool_calls?.map((c) => (
           <div key={c.id} style={{ alignSelf: 'flex-start', maxWidth: '90%', fontSize: '.7rem', color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>
-            → {c.function.name}({truncate(c.function.arguments, 80)})
+            → {c.function.name}
           </div>
         ))}
       </div>
@@ -205,24 +218,231 @@ function MessageView({ m }: { m: ChatMessage }) {
   }
 
   if (m.role === 'tool') {
-    return (
-      <details style={{ alignSelf: 'flex-start', maxWidth: '90%', fontSize: '.7rem', color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', cursor: 'pointer' }}>
-        <summary>← {m.name} result</summary>
-        <pre style={{ marginTop: '.3rem', padding: '.4rem', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 4, overflow: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-          {tryPrettyJson(m.content)}
-        </pre>
-      </details>
-    );
+    return <ToolResultView name={m.name ?? '?'} content={m.content} />;
   }
 
   return null;
 }
 
-function truncate(s: string, n: number): string {
-  if (!s) return '';
-  return s.length > n ? s.slice(0, n) + '…' : s;
+// ---------------------------------------------------------------
+// Typed tool-result renderers
+// ---------------------------------------------------------------
+
+function ToolResultView({ name, content }: { name: string; content: string }) {
+  let parsed: any = null;
+  try { parsed = JSON.parse(content); } catch { /* fall through */ }
+  if (!parsed) return <RawResult name={name} content={content} />;
+  if (parsed.error) return <ErrorResult name={name} error={parsed.error} />;
+
+  switch (name) {
+    case 'lookup_entity':       return <LookupEntityResult data={parsed} />;
+    case 'get_entity':          return <GetEntityResult data={parsed} />;
+    case 'create_account':      return <CreateAccountResult data={parsed} />;
+    case 'extract_facts':       return <ExtractFactsResult data={parsed} />;
+    case 'assert_facts':        return <AssertFactsResult data={parsed} />;
+    case 'rescore_entity':      return <RescoreResult data={parsed} />;
+    case 'propose_action':      return <ProposeActionResult data={parsed} />;
+    case 'trigger_drafter':     return <TriggerDrafterResult data={parsed} />;
+    default:                    return <RawResult name={name} content={content} />;
+  }
 }
 
-function tryPrettyJson(s: string): string {
+// Shared chrome around every result.
+function ResultCard({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ alignSelf: 'flex-start', maxWidth: '92%', width: '100%', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '.5rem .6rem', fontSize: '.78rem' }}>
+      <div style={{ color: 'var(--text-3)', fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '.35rem', fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function ErrorResult({ name, error }: { name: string; error: string }) {
+  return (
+    <ResultCard label={`${name} · error`}>
+      <div style={{ color: '#c33', fontSize: '.75rem', wordBreak: 'break-word' }}>{error}</div>
+    </ResultCard>
+  );
+}
+
+function RawResult({ name, content }: { name: string; content: string }) {
+  return (
+    <details style={{ alignSelf: 'flex-start', maxWidth: '90%', fontSize: '.7rem', color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', cursor: 'pointer' }}>
+      <summary>← {name} result</summary>
+      <pre style={{ marginTop: '.3rem', padding: '.4rem', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 4, overflow: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        {tryPretty(content)}
+      </pre>
+    </details>
+  );
+}
+
+function LookupEntityResult({ data }: { data: any }) {
+  const matches: Array<{ id: string; name: string; kind?: string; icp_fit?: number }> =
+    Array.isArray(data?.matches) ? data.matches
+    : Array.isArray(data) ? data
+    : [];
+  return (
+    <ResultCard label={`lookup_entity · ${matches.length} match${matches.length === 1 ? '' : 'es'}`}>
+      {matches.length === 0 ? (
+        <div style={{ color: 'var(--text-3)' }}>no match — agent may ask whether to create a new account.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+          {matches.slice(0, 6).map((m) => (
+            <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.78rem' }}>
+              <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-3)', fontSize: '.7rem' }}>{m.id.slice(0, 8)}</span>
+              <span style={{ flex: 1 }}>{m.name}</span>
+              {m.kind && <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{m.kind}</span>}
+              {typeof m.icp_fit === 'number' && <ScoreChip value={m.icp_fit} />}
+            </div>
+          ))}
+        </div>
+      )}
+    </ResultCard>
+  );
+}
+
+function GetEntityResult({ data }: { data: any }) {
+  const e = data?.entity ?? {};
+  const facts: Array<{ predicate: string; object_text: string }> = data?.facts ?? [];
+  return (
+    <ResultCard label={`get_entity · ${e.name ?? '?'}`}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
+        <div style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{e.kind} · {(e.id ?? '').slice(0, 8)}</div>
+        <div style={{ marginTop: '.25rem' }}>
+          {facts.slice(0, 8).map((f, i) => (
+            <div key={i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem' }}>
+              <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>{f.predicate}</span>
+              <span style={{ flex: 1, wordBreak: 'break-word' }}>{f.object_text}</span>
+            </div>
+          ))}
+          {facts.length > 8 && <div style={{ color: 'var(--text-3)', fontSize: '.7rem', marginTop: '.2rem' }}>… +{facts.length - 8} more</div>}
+        </div>
+      </div>
+    </ResultCard>
+  );
+}
+
+function CreateAccountResult({ data }: { data: any }) {
+  return (
+    <ResultCard label="create_account · created">
+      <div>created <strong>{data.name}</strong> <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.7rem' }}>{(data.entity_id ?? '').slice(0, 8)}</span></div>
+    </ResultCard>
+  );
+}
+
+function ExtractFactsResult({ data }: { data: any }) {
+  const facts: Array<{ predicate: string; object_text: string; confidence?: number }> = data?.facts ?? [];
+  return (
+    <ResultCard label={`extract_facts · ${facts.length} proposed`}>
+      {facts.length === 0 ? (
+        <div style={{ color: 'var(--text-3)' }}>nothing new in this observation.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
+          {facts.map((f, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '.5rem', padding: '.3rem .4rem', background: 'var(--panel)', borderRadius: 5, fontSize: '.78rem' }}>
+              <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.7rem', minWidth: 90 }}>{f.predicate}</span>
+              <span style={{ flex: 1, wordBreak: 'break-word' }}>{f.object_text}</span>
+              {typeof f.confidence === 'number' && <span style={{ color: 'var(--text-3)', fontSize: '.65rem' }}>conf {f.confidence.toFixed(2)}</span>}
+            </div>
+          ))}
+          <div style={{ color: 'var(--text-3)', fontSize: '.7rem', marginTop: '.2rem' }}>nothing written yet — confirm to assert.</div>
+        </div>
+      )}
+    </ResultCard>
+  );
+}
+
+function AssertFactsResult({ data }: { data: any }) {
+  return (
+    <ResultCard label="assert_facts · written">
+      <div>asserted <strong>{data.asserted ?? 0}</strong> fact{data.asserted === 1 ? '' : 's'}{data.errors?.length ? ` · ${data.errors.length} error(s)` : ''}</div>
+    </ResultCard>
+  );
+}
+
+function RescoreResult({ data }: { data: any }) {
+  return (
+    <ResultCard label="rescore_entity">
+      <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+        <span>icp_total</span>
+        <ScoreChip value={data.icp_total ?? 0} />
+      </div>
+      {data.breakdown && (
+        <div style={{ marginTop: '.4rem', display: 'flex', flexDirection: 'column', gap: '.15rem' }}>
+          {Object.entries(data.breakdown).filter(([k]) => k !== 'rrf_prefilter').map(([k, v]) => (
+            <ScoreBar key={k} label={k} value={typeof v === 'number' ? v : 0} />
+          ))}
+        </div>
+      )}
+    </ResultCard>
+  );
+}
+
+function ProposeActionResult({ data }: { data: any }) {
+  const d = data?.decision ?? {};
+  const breakdown = data?.breakdown ?? {};
+  const actionColor: Record<string, string> = {
+    draft_outreach: '#48a',
+    watch_only: '#a92',
+    deep_research: '#79a',
+    drop: '#a48',
+    continue: '#888',
+  };
+  return (
+    <ResultCard label="propose_action">
+      <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.35rem' }}>
+        <span style={{ padding: '.15rem .5rem', background: actionColor[d.action] ?? '#888', color: '#fff', borderRadius: 4, fontSize: '.72rem', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>{d.action}</span>
+        <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{d.policy}</span>
+        {d.matched_theme && <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>· theme={d.matched_theme}</span>}
+      </div>
+      <div style={{ fontSize: '.75rem', color: 'var(--text-2)', marginBottom: '.4rem' }}>{d.reason}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+        <span style={{ fontSize: '.7rem', color: 'var(--text-3)' }}>icp_total</span>
+        <ScoreChip value={data.icp_total ?? 0} />
+      </div>
+      {breakdown && (
+        <div style={{ marginTop: '.4rem', display: 'flex', flexDirection: 'column', gap: '.15rem' }}>
+          {Object.entries(breakdown).filter(([k]) => k !== 'rrf_prefilter').map(([k, v]) => (
+            <ScoreBar key={k} label={k} value={typeof v === 'number' ? v : 0} />
+          ))}
+        </div>
+      )}
+    </ResultCard>
+  );
+}
+
+function TriggerDrafterResult({ data }: { data: any }) {
+  return (
+    <ResultCard label="trigger_drafter · fired">
+      <div>drafter agent.run dispatched.</div>
+      <div style={{ color: 'var(--text-3)', fontSize: '.7rem', marginTop: '.2rem' }}>draft will land in Inbox once the agent finishes. signal={(data.signal_id ?? '').slice(0, 8)}</div>
+    </ResultCard>
+  );
+}
+
+function ScoreChip({ value }: { value: number }) {
+  const v = Math.max(0, Math.min(1, value));
+  const color = v >= 0.65 ? '#48a' : v >= 0.5 ? '#79a' : v >= 0.35 ? '#a92' : '#a48';
+  return (
+    <span style={{ padding: '.1rem .35rem', background: color, color: '#fff', borderRadius: 3, fontSize: '.7rem', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+      {v.toFixed(2)}
+    </span>
+  );
+}
+
+function ScoreBar({ label, value }: { label: string; value: number }) {
+  const v = Math.max(0, Math.min(1, value));
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.7rem' }}>
+      <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', minWidth: 110 }}>{label}</span>
+      <div style={{ flex: 1, background: 'var(--panel)', borderRadius: 2, height: 6, overflow: 'hidden' }}>
+        <div style={{ width: `${v * 100}%`, height: '100%', background: 'var(--accent)' }} />
+      </div>
+      <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-2)', minWidth: 36, textAlign: 'right' }}>{v.toFixed(2)}</span>
+    </div>
+  );
+}
+
+function tryPretty(s: string): string {
   try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
 }
