@@ -17,10 +17,15 @@ import { scoreEntity, scoreAndAssert, combineSubScores } from './scoring.js';
 import { selectAction, loadActionContext } from './action_selector.js';
 import { graphProximity } from './graph.js';
 import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.js';
+import { getPolicy, DEFAULT_POLICY, type WorkspacePolicy, type OutreachPolicy, type EnrichmentPolicy, type DrafterPolicy, type ValueTheme } from './policy.js';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
+export { getPolicy, DEFAULT_POLICY };
+export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, ValueTheme };
+export { cronToMinIntervalMinutes } from './cron.js';
+export { hasValueAlignedFact } from './action_selector.js';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
 export { scoreEntity, scoreAndAssert, combineSubScores };

@@ -21,6 +21,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ScoreBreakdown } from './scoring.js';
+import type { ValueTheme } from './policy.js';
 
 export type Action =
   | 'draft_outreach'
@@ -33,6 +34,47 @@ export interface ActionDecision {
   action: Action;
   reason: string;            // 1-line explanation for the decision post
   policy: string;            // short id for analytics / inbox filtering
+  matched_theme?: string | null;  // populated on draft_outreach when a value theme matched
+  matched_evidence?: string | null; // the predicate=value pair that matched
+}
+
+interface ValueMatch {
+  aligned: boolean;
+  theme: string | null;
+  predicate: string | null;
+  evidence: string | null; // "predicate=object_text" for the matched fact
+}
+
+/**
+ * Scan facts for at least one match against the workspace's value-prop themes.
+ * Matching is case-insensitive substring against `predicate object_text`. Empty
+ * themes array short-circuits to aligned=true (gate is off).
+ */
+export function hasValueAlignedFact(
+  facts: Array<{ predicate: string; object_text: string | null }>,
+  themes: ValueTheme[],
+): ValueMatch {
+  if (!themes.length) return { aligned: true, theme: null, predicate: null, evidence: null };
+  for (const theme of themes) {
+    let re: RegExp;
+    try {
+      re = new RegExp(theme.pattern, 'i');
+    } catch {
+      continue; // skip malformed pattern; policy is user input
+    }
+    for (const f of facts) {
+      const haystack = `${f.predicate} ${f.object_text ?? ''}`;
+      if (re.test(haystack)) {
+        return {
+          aligned: true,
+          theme: theme.name,
+          predicate: f.predicate,
+          evidence: `${f.predicate}=${(f.object_text ?? '').slice(0, 80)}`,
+        };
+      }
+    }
+  }
+  return { aligned: false, theme: null, predicate: null, evidence: null };
 }
 
 // ---- thresholds (centralized so they're easy to tune) ----
@@ -62,6 +104,10 @@ interface SelectArgs {
   recent_draft_at: string | null;     // most recent touch_draft created_at, or null
   recent_research_at: string | null;  // most recent deep_research trigger, or null
   dropped_until: string | null;       // dropped_until fact value, or null
+  cooldown_until: string | null;      // outreach_cooldown_until fact value, or null
+  // Substantive facts for value-theme matching. Pass [] to disable the gate.
+  facts: Array<{ predicate: string; object_text: string | null }>;
+  value_themes: ValueTheme[];
 }
 
 export function selectAction(args: SelectArgs): ActionDecision {
@@ -82,7 +128,23 @@ export function selectAction(args: SelectArgs): ActionDecision {
     }
   }
 
-  // 1. Draft if fit, trigger, and evidence all clear the bar.
+  // 0b. Post-send cooldown: a draft was approved and sent, block re-drafting
+  //     until cooldown elapses.
+  if (args.cooldown_until) {
+    const until = Date.parse(args.cooldown_until);
+    if (Number.isFinite(until) && until > now) {
+      const daysLeft = Math.ceil((until - now) / 86400_000);
+      return {
+        action: 'continue',
+        policy: 'outreach_cooldown_active',
+        reason: `Cooldown: outreach sent recently. Re-evaluating after ${new Date(until).toISOString().slice(0, 10)} (${daysLeft}d left).`,
+      };
+    }
+  }
+
+  // 1. Draft if fit, trigger, and evidence all clear the bar AND the entity
+  //    has a fact aligned with a workspace value theme. Without alignment we
+  //    have nothing specific to say — defer to watch_only.
   const draftAge = args.recent_draft_at
     ? (now - Date.parse(args.recent_draft_at)) / 86400_000
     : Infinity;
@@ -92,10 +154,21 @@ export function selectAction(args: SelectArgs): ActionDecision {
     b.evidence_depth >= THRESH.DRAFT_EVIDENCE_DEPTH &&
     draftAge >= THRESH.DRAFT_SUPPRESSION_DAYS
   ) {
+    const match = hasValueAlignedFact(args.facts, args.value_themes);
+    if (match.aligned) {
+      const themeNote = match.theme ? ` Theme: ${match.theme} (${match.evidence}).` : '';
+      return {
+        action: 'draft_outreach',
+        policy: 'qualified_and_triggered',
+        reason: `Drafting: icp_total ${args.icp_total.toFixed(2)}, signal_strength ${b.signal_strength.toFixed(2)}, evidence_depth ${b.evidence_depth.toFixed(2)} all clear the threshold.${themeNote}`,
+        matched_theme: match.theme,
+        matched_evidence: match.evidence,
+      };
+    }
     return {
-      action: 'draft_outreach',
-      policy: 'qualified_and_triggered',
-      reason: `Drafting: icp_total ${args.icp_total.toFixed(2)}, signal_strength ${b.signal_strength.toFixed(2)}, evidence_depth ${b.evidence_depth.toFixed(2)} all clear the threshold.`,
+      action: 'watch_only',
+      policy: 'no_value_aligned_signal',
+      reason: `Thresholds met (icp ${args.icp_total.toFixed(2)}, signal ${b.signal_strength.toFixed(2)}, evidence ${b.evidence_depth.toFixed(2)}) but no fact matches a value theme. Need a hiring / headcount / token-cost / AI-integration signal before drafting.`,
     };
   }
 
@@ -154,6 +227,7 @@ export async function loadActionContext(
   recent_draft_at: string | null;
   recent_research_at: string | null;
   dropped_until: string | null;
+  cooldown_until: string | null;
 }> {
   // Most recent touch_draft in this channel.
   const draft = await supabase
@@ -191,9 +265,22 @@ export async function loadActionContext(
     .limit(1)
     .maybeSingle();
 
+  // outreach_cooldown_until fact — asserted after a send, blocks re-drafting.
+  const cooldown = await supabase
+    .from('facts')
+    .select('object_text')
+    .eq('workspace_id', workspace_id)
+    .eq('subject_entity', entity_id)
+    .eq('predicate', 'outreach_cooldown_until')
+    .is('supersedes', null)
+    .order('observed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   return {
     recent_draft_at: (draft.data?.created_at as string) ?? null,
     recent_research_at: (research.data?.observed_at as string) ?? null,
     dropped_until: (dropped.data?.object_text as string) ?? null,
+    cooldown_until: (cooldown.data?.object_text as string) ?? null,
   };
 }

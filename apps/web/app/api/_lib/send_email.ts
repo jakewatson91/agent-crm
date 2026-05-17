@@ -1,19 +1,22 @@
 /**
  * Resend email send.
  *
- * SAFETY: while dog-fooding, every send is rerouted to `OUTREACH_OVERRIDE_TO`
- * (default `jaws.watson@gmail.com`). To actually send to the intended recipient,
- * explicitly set `OUTREACH_OVERRIDE_TO=` (empty) in env AND review the calling
- * code. The subject is prefixed with `[would-have-sent-to: …]` so the override
- * is visible in the receiving inbox.
+ * Behavior is workspace-scoped: `workspaces.policy.outreach.override_to` reroutes
+ * sends (used while dog-fooding so drafts land in a known inbox); leaving it
+ * null sends to the real recipient. `from_email` and `resend_api_key` also live
+ * on policy. RESEND_API_KEY env stays as a fallback so existing deployments
+ * keep working before backfill.
  *
  * Returns `{ ok, message_id?, error? }`. Never throws.
  */
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { getPolicy } from '@agent-crm/tools';
+
 const RESEND_URL = 'https://api.resend.com/emails';
-const DEFAULT_OVERRIDE_TO = 'jaws.watson@gmail.com';
-const DEFAULT_FROM = 'onboarding@resend.dev';   // no domain verification needed
 
 export interface SendEmailArgs {
+  supabase: SupabaseClient;
+  workspace_id: string;
   intended_to: string | null;        // who the agent thinks the email is for
   subject: string;
   body: string;
@@ -27,18 +30,17 @@ export interface SendEmailResult {
   error?: string;
 }
 
-export async function sendEmail({ intended_to, subject, body }: SendEmailArgs): Promise<SendEmailResult> {
-  const apiKey = process.env.RESEND_API_KEY;
+export async function sendEmail({ supabase, workspace_id, intended_to, subject, body }: SendEmailArgs): Promise<SendEmailResult> {
+  const policy = await getPolicy(supabase, workspace_id);
+  const apiKey = policy.outreach?.resend_api_key ?? process.env.RESEND_API_KEY;
   if (!apiKey) {
-    return { ok: false, effective_to: '', override_active: false, error: 'RESEND_API_KEY not set' };
+    return { ok: false, effective_to: '', override_active: false, error: 'no Resend API key (set on workspace policy or RESEND_API_KEY env)' };
   }
-  const overrideRaw = process.env.OUTREACH_OVERRIDE_TO;
-  // If the env var is undefined, override is on. If it's set to empty string,
-  // override is OFF (explicit opt-out). If it's set to anything else, use that.
-  const override_active = overrideRaw !== '';
-  const effective_to = override_active ? (overrideRaw && overrideRaw.length > 0 ? overrideRaw : DEFAULT_OVERRIDE_TO) : (intended_to ?? '');
+  const override_to = policy.outreach?.override_to;
+  const override_active = !!override_to;
+  const effective_to = override_active ? override_to! : (intended_to ?? '');
   if (!effective_to) {
-    return { ok: false, effective_to: '', override_active, error: 'no effective recipient (intended_to empty and override disabled)' };
+    return { ok: false, effective_to: '', override_active, error: 'no effective recipient (intended_to empty and no override configured)' };
   }
 
   const finalSubject = override_active
@@ -53,7 +55,7 @@ export async function sendEmail({ intended_to, subject, body }: SendEmailArgs): 
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: process.env.RESEND_FROM ?? DEFAULT_FROM,
+        from: policy.outreach?.from_email ?? 'onboarding@resend.dev',
         to: effective_to,
         subject: finalSubject,
         text: body,

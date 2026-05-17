@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { callTool } from '@agent-crm/tools';
+import { callTool, getPolicy } from '@agent-crm/tools';
 import { sendEmail } from '../../_lib/send_email';
 
 export const runtime = 'nodejs';
@@ -56,7 +56,7 @@ export async function POST(req: Request) {
     if (!text) {
       return NextResponse.json({ error: 'gate condition has no body to send' }, { status: 400 });
     }
-    const sendRes = await sendEmail({ intended_to, subject, body: text });
+    const sendRes = await sendEmail({ supabase, workspace_id: body.workspace_id, intended_to, subject, body: text });
     if (!sendRes.ok) {
       return NextResponse.json({ error: `send failed: ${sendRes.error}` }, { status: 502 });
     }
@@ -92,6 +92,17 @@ export async function POST(req: Request) {
           subject_entity: entity_id,
           predicate: 'last_outreach_at',
           object_text: new Date().toISOString(),
+          confidence: 1.0,
+        });
+        // Post-send cooldown: block re-drafting for policy.drafter.cooldown_days.
+        // action_selector reads outreach_cooldown_until before any other gate.
+        const pol = await getPolicy(supabase, body.workspace_id);
+        const cooldownDays = pol.drafter?.cooldown_days ?? 14;
+        const until = new Date(Date.now() + cooldownDays * 86400_000).toISOString();
+        await callTool(supabase, actor, 'assert_fact', {
+          subject_entity: entity_id,
+          predicate: 'outreach_cooldown_until',
+          object_text: until,
           confidence: 1.0,
         });
       }

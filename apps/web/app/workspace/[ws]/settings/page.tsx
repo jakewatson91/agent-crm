@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 
 interface Workspace {
@@ -9,74 +9,55 @@ interface Workspace {
   persona: Record<string, unknown>;
   icp: Record<string, unknown>;
   budget_cents: number;
-  policy: Record<string, unknown>;
+  policy: Record<string, any>;
   constitution: string;
   about: string;
   knowledge_base: string;
 }
 
-const ABOUT_PLACEHOLDER = `What we are: an AI-native CRM optimized for AI workflows.
+type Tab = 'setup' | 'email' | 'integrations' | 'advanced';
 
-Who we replace: legacy row-based CRMs (HubSpot, Salesforce). Truly different from "AI on top of legacy" players (Rox, Day) that still center tables and cards.
-
-How we're different: built for the agent as primary user. Information surfaces to humans only when needed, via chat or notification. No tabs to click through.
-
-Who we sell to: early-stage operators who don't want to inherit legacy patterns. YC-stage founders, solo GTM hires, AI-forward sales teams.`;
-
-const KNOWLEDGE_BASE_PLACEHOLDER = `Format each entry as:
-- TRIGGERS: <phrases prospects might say in their own words>
-  ANGLE: <which of our angles connects to this pain, in 1 sentence>
+const ABOUT_PLACEHOLDER = `What this workspace tracks, who you sell to or want to find, how you want to come across.
 
 Examples:
+- "Find B2B SaaS companies hiring GTM roles, draft outreach to founders."
+- "Track listings under $500k in Boulder; flag new ones to me."
+- "Recruit talent partners for early-stage AI startups."`;
 
-- TRIGGERS: "token bloat", "agent burns through my OpenAI budget", "context window cost"
-  ANGLE: agent-native projection sized for agents not humans — 1.28x token efficiency vs reading raw row dumps from HubSpot
+const CONSTITUTION_PLACEHOLDER = `Voice: how the agent should sound when it writes on your behalf.
 
-- TRIGGERS: "agents overwriting each other", "data silently disappears", "race conditions"
-  ANGLE: append-only event log — 0% data loss in our 50-parallel-writers benchmark vs HubSpot's 96%
-
-- TRIGGERS: "agent hallucinates customer details", "can't trust what the bot says", "no audit trail"
-  ANGLE: every claim has fact_id + source event chain — recipient can verify any sentence in a draft
-
-- TRIGGERS: "managing GTM with 1-2 people and AI", "lean team plus agents", "no time to babysit dashboards"
-  ANGLE: surface info to humans only when policy says so — gates inbox, no dashboards
-
-- TRIGGERS: "Salesforce/HubSpot wasn't built for AI", "bolt-on AI on legacy CRM", "AI on top of tables"
-  ANGLE: ground-up architecture for the agent as primary user — events, facts, projections; no retrofitting`;
-
-const CONSTITUTION_PLACEHOLDER = `Voice: smart friend who knows what they're talking about, not a consultant on a slide deck. Casual and confident, not sloppy. Specific and direct.
-
-Writing rules:
-- No em dashes. EVER.
-- No jargon. If a normal person wouldn't say it out loud, cut it. No "substrate," "primitive," "wedge," "abstraction layer."
-- No preamble unless it earns its place.
-- No broad sweeping claims without specific evidence.
-- Fewer words when fewer will do. Short sentences.
-- If it reads like a template, rewrite it.
-
-Substance:
-- Always specific. Take a stand on things you believe in.
-- Open with the actual signal that prompted reaching out, not a generic intro.
-- Reference one concrete fact about the account that justifies the fit.
-
-Don't:
-- Pitch features. Describe the problem we solve.
-- Send to anyone matching the suppression list.
-
-Hard rules:
-- Daily send cap: 50.
-- Every claim must cite a fact_id from the active facts list.`;
+Hard rules (a few short lines):
+- No em dashes.
+- No jargon. Plain English.
+- Always cite a fact from the active facts list.
+- Don't pitch features. Describe the problem we solve.`;
 
 export default function SettingsPage() {
   const params = useParams<{ ws: string }>();
   const [ws, setWs] = useState<Workspace | null>(null);
+  const [tab, setTab] = useState<Tab>('setup');
+
+  // Setup tab
   const [about, setAbout] = useState('');
   const [constitution, setConstitution] = useState('');
   const [knowledgeBase, setKnowledgeBase] = useState('');
   const [personaText, setPersonaText] = useState('');
   const [icpText, setIcpText] = useState('');
+
+  // Email tab
+  const [overrideTo, setOverrideTo] = useState('');
+  const [fromEmail, setFromEmail] = useState('');
+  const [bannedPhrasesText, setBannedPhrasesText] = useState('');
+  const [resendKey, setResendKey] = useState('');
+  const [resendKeyDirty, setResendKeyDirty] = useState(false);
+
+  // Integrations tab
+  const [contactProvider, setContactProvider] = useState<'none' | 'hunter'>('none');
+
+  // Advanced
   const [policyText, setPolicyText] = useState('');
   const [budget, setBudget] = useState(0);
+
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -85,39 +66,87 @@ export default function SettingsPage() {
     const r = await fetch(`/api/workspace/get?workspace_id=${params.ws}`);
     const j = await r.json();
     if (j.workspace) {
-      setWs(j.workspace);
-      setAbout(j.workspace.about ?? '');
-      setConstitution(j.workspace.constitution ?? '');
-      setKnowledgeBase(j.workspace.knowledge_base ?? '');
-      setPersonaText(JSON.stringify(j.workspace.persona ?? {}, null, 2));
-      setIcpText(JSON.stringify(j.workspace.icp ?? {}, null, 2));
-      setPolicyText(JSON.stringify(j.workspace.policy ?? {}, null, 2));
-      setBudget(j.workspace.budget_cents ?? 0);
+      const w = j.workspace as Workspace;
+      setWs(w);
+      setAbout(w.about ?? '');
+      setConstitution(w.constitution ?? '');
+      setKnowledgeBase(w.knowledge_base ?? '');
+      setPersonaText(JSON.stringify(w.persona ?? {}, null, 2));
+      setIcpText(JSON.stringify(w.icp ?? {}, null, 2));
+      setPolicyText(JSON.stringify(w.policy ?? {}, null, 2));
+      setBudget(w.budget_cents ?? 0);
+      const policy = (w.policy ?? {}) as Record<string, any>;
+      setOverrideTo((policy.outreach?.override_to ?? '') as string);
+      setFromEmail((policy.outreach?.from_email ?? '') as string);
+      setBannedPhrasesText(((policy.outreach?.banned_phrases ?? []) as string[]).join('\n'));
+      setResendKey((policy.outreach?.resend_api_key ?? '') as string);
+      setResendKeyDirty(false);
+      setContactProvider(((policy.enrichment?.contact_provider as 'none' | 'hunter') ?? 'none'));
     }
   }
   useEffect(() => { load(); }, [params.ws]);
+
+  // Build the policy object we'll persist based on the friendly fields, merging
+  // with whatever's currently in the raw policy JSON so unknown keys don't get
+  // dropped.
+  const composedPolicy = useMemo(() => {
+    let base: Record<string, any> = {};
+    try { base = JSON.parse(policyText); } catch { base = (ws?.policy ?? {}) as Record<string, any>; }
+    const banned = bannedPhrasesText.split('\n').map((s) => s.trim()).filter(Boolean);
+    return {
+      ...base,
+      outreach: {
+        ...(base.outreach ?? {}),
+        override_to: overrideTo.trim() === '' ? null : overrideTo.trim(),
+        from_email: fromEmail.trim() || undefined,
+        banned_phrases: banned,
+        ...(resendKeyDirty
+          ? (resendKey.trim() ? { resend_api_key: resendKey.trim() } : { resend_api_key: undefined })
+          : {}),
+      },
+      enrichment: { ...(base.enrichment ?? {}), contact_provider: contactProvider },
+    };
+  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, ws]);
 
   async function save() {
     setErr(null); setMsg(null); setSaving(true);
     let persona: Record<string, unknown>;
     let icp: Record<string, unknown>;
-    let policy: Record<string, unknown>;
     try {
       persona = JSON.parse(personaText);
       icp = JSON.parse(icpText);
-      policy = JSON.parse(policyText);
-      for (const [n, v] of [['persona', persona], ['icp', icp], ['policy', policy]] as const) {
+      for (const [n, v] of [['Tone (persona)', persona], ['Audience (icp)', icp]] as const) {
         if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error(`${n} must be a JSON object`);
       }
     } catch (e) {
-      setErr(`invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
+      setErr(`invalid JSON in Tone/Audience: ${e instanceof Error ? e.message : String(e)}`);
       setSaving(false); return;
     }
+
+    // Policy: prefer the composed (friendly-fields) object, unless the user is on
+    // the Advanced tab and edited the raw JSON.
+    let policy: Record<string, any> = composedPolicy;
+    if (tab === 'advanced') {
+      try {
+        policy = JSON.parse(policyText);
+        if (typeof policy !== 'object' || policy === null || Array.isArray(policy)) {
+          throw new Error('policy must be a JSON object');
+        }
+      } catch (e) {
+        setErr(`invalid policy JSON: ${e instanceof Error ? e.message : String(e)}`);
+        setSaving(false); return;
+      }
+    }
+
     try {
       const r = await fetch('/api/workspace/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: params.ws, about, constitution, knowledge_base: knowledgeBase, persona, icp, policy, budget_cents: budget }),
+        body: JSON.stringify({
+          workspace_id: params.ws,
+          about, constitution, knowledge_base: knowledgeBase,
+          persona, icp, policy, budget_cents: budget,
+        }),
       });
       const j = await r.json();
       if (!r.ok) { setErr(j.error ?? 'save failed'); return; }
@@ -128,104 +157,150 @@ export default function SettingsPage() {
     }
   }
 
-  if (!ws) return <section><h2 style={{ marginTop: 0 }}>Constitution</h2><p style={{ color: '#666' }}>loading…</p></section>;
+  if (!ws) return <section><h2 style={{ marginTop: 0 }}>Settings</h2><p style={{ color: 'var(--text-3)' }}>loading…</p></section>;
 
   const proseStyle: React.CSSProperties = {
-    width: '100%', padding: '.75rem', background: '#0a0a0a', color: '#e5e5e5',
-    border: '1px solid #1f1f1f', fontFamily: 'inherit', fontSize: '.9rem', lineHeight: 1.5,
+    width: '100%', padding: '.75rem', background: 'var(--panel)', color: 'var(--text)',
+    border: '1px solid var(--border)', fontFamily: 'inherit', fontSize: '.9rem', lineHeight: 1.5, borderRadius: 6,
   };
   const jsonStyle: React.CSSProperties = {
-    width: '100%', padding: '.5rem', background: '#0a0a0a', color: '#e5e5e5',
-    border: '1px solid #1f1f1f', fontFamily: 'monospace', fontSize: '.85rem',
+    width: '100%', padding: '.5rem', background: 'var(--panel)', color: 'var(--text)',
+    border: '1px solid var(--border)', fontFamily: 'monospace', fontSize: '.85rem', borderRadius: 6,
   };
-  const labelStyle: React.CSSProperties = { fontSize: '.85rem', color: '#999', marginBottom: '.25rem', display: 'block' };
-  const helpStyle: React.CSSProperties = { fontSize: '.75rem', color: '#666', marginBottom: '.5rem' };
+  const labelStyle: React.CSSProperties = { fontSize: '.85rem', color: 'var(--text-2)', marginBottom: '.25rem', display: 'block', fontWeight: 500 };
+  const helpStyle: React.CSSProperties = { fontSize: '.75rem', color: 'var(--text-3)', marginBottom: '.5rem' };
+
+  function TabButton({ id, label }: { id: Tab; label: string }) {
+    const active = tab === id;
+    return (
+      <button
+        onClick={() => setTab(id)}
+        style={{
+          padding: '.5rem .9rem', fontSize: '.85rem', cursor: 'pointer',
+          background: active ? 'var(--panel-2)' : 'transparent',
+          color: active ? 'var(--text)' : 'var(--text-2)',
+          border: 'none', borderBottom: active ? '2px solid var(--text)' : '2px solid transparent',
+        }}
+      >{label}</button>
+    );
+  }
 
   return (
-    <section style={{ maxWidth: 800 }}>
-      <h2 style={{ marginTop: 0 }}>Constitution</h2>
-      <p style={{ color: '#666', fontSize: '.9rem' }}>
-        Workspace-wide identity and rules of engagement. Every agent reads both fields below before deciding what to do.
-        About is what you are; Constitution is how you operate. Per-agent specifics belong in the agent&apos;s description at creation time, not here.
-      </p>
-
-      <div style={{ marginTop: '1rem', fontSize: '.85rem' }}>
-        <span style={{ color: '#e5e5e5' }}>{ws.name}</span>
-        <span style={{ fontSize: '.75rem', color: '#666', marginLeft: '.75rem', fontFamily: 'monospace' }}>{ws.id.slice(0, 8)}…</span>
+    <section style={{ maxWidth: 820 }}>
+      <h2 style={{ marginTop: 0 }}>Settings</h2>
+      <div style={{ fontSize: '.85rem', color: 'var(--text-2)' }}>
+        <span>{ws.name}</span>
+        <span style={{ fontSize: '.7rem', color: 'var(--text-3)', marginLeft: '.75rem', fontFamily: 'monospace' }}>{ws.id.slice(0, 8)}…</span>
       </div>
 
-      <div style={{ marginTop: '1.5rem' }}>
-        <label style={labelStyle}>About</label>
-        <div style={helpStyle}>What this company is, what it sells, who it sells to, how it&apos;s different. Used by every agent prompt and (optionally, see below) for similarity matching against new entities.</div>
-        <textarea
-          value={about}
-          onChange={(e) => setAbout(e.target.value)}
-          rows={10}
-          placeholder={ABOUT_PLACEHOLDER}
-          style={proseStyle}
-        />
+      <div style={{ display: 'flex', gap: '.25rem', marginTop: '1.25rem', borderBottom: '1px solid var(--border)' }}>
+        <TabButton id="setup" label="Setup" />
+        <TabButton id="email" label="Email" />
+        <TabButton id="integrations" label="Integrations" />
+        <TabButton id="advanced" label="Advanced" />
       </div>
 
-      <div style={{ marginTop: '1.5rem' }}>
-        <label style={labelStyle}>Constitution</label>
-        <div style={helpStyle}>Free-form prose. Voice, do-nots, hard rules. Injected into every agent&apos;s system prompt.</div>
-        <textarea
-          value={constitution}
-          onChange={(e) => setConstitution(e.target.value)}
-          rows={14}
-          placeholder={CONSTITUTION_PLACEHOLDER}
-          style={proseStyle}
-        />
-      </div>
+      {tab === 'setup' && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <div>
+            <label style={labelStyle}>About</label>
+            <div style={helpStyle}>What this workspace does, who you target, what makes you different. Every agent prompt reads this.</div>
+            <textarea value={about} onChange={(e) => setAbout(e.target.value)} rows={8} placeholder={ABOUT_PLACEHOLDER} style={proseStyle} />
+          </div>
 
-      <div style={{ marginTop: '1.5rem' }}>
-        <label style={labelStyle}>Knowledge Base (pain → angle map)</label>
-        <div style={helpStyle}>The translation layer. List the things prospects say (in their words) next to which of our angles maps to it. Drafters and scorers read this to pick the right framing for any given signal.</div>
-        <textarea
-          value={knowledgeBase}
-          onChange={(e) => setKnowledgeBase(e.target.value)}
-          rows={14}
-          placeholder={KNOWLEDGE_BASE_PLACEHOLDER}
-          style={proseStyle}
-        />
-      </div>
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>Writing rules</label>
+            <div style={helpStyle}>Voice, do-nots, hard rules. Plain English. Injected into every agent&apos;s system prompt.</div>
+            <textarea value={constitution} onChange={(e) => setConstitution(e.target.value)} rows={12} placeholder={CONSTITUTION_PLACEHOLDER} style={proseStyle} />
+          </div>
 
-      <details style={{ marginTop: '2rem', padding: '.5rem 0', borderTop: '1px solid #1f1f1f' }}>
-        <summary style={{ cursor: 'pointer', fontSize: '.85rem', color: '#888', padding: '.5rem 0' }}>
-          Structured fields (advanced)
-        </summary>
-        <div style={{ marginTop: '1rem' }}>
-          <p style={{ fontSize: '.75rem', color: '#666' }}>
-            JSON-shaped fields the system uses for machine-readable lookups (e.g. drafter pre-LLM checks read{' '}
-            <code style={{ background: '#1f1f1f', padding: '.1rem .3rem' }}>policy.suppression_list</code> and{' '}
-            <code style={{ background: '#1f1f1f', padding: '.1rem .3rem' }}>policy.daily_send_cap</code> directly without an LLM call). The constitution above is for the LLM; these are for code.
-          </p>
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>Pain → angle map</label>
+            <div style={helpStyle}>Optional. List things your target audience says next to which of your angles maps to it. Drafters pick a framing using this.</div>
+            <textarea value={knowledgeBase} onChange={(e) => setKnowledgeBase(e.target.value)} rows={10} style={proseStyle} />
+          </div>
 
-          <div style={{ marginTop: '1rem' }}>
-            <label style={labelStyle}>persona (jsonb)</label>
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>What kind of accounts (structured)</label>
+            <div style={helpStyle}>Used by the scorer to rank fit. JSON with whatever keys fit your use case (industry, stage, location, size…).</div>
+            <textarea value={icpText} onChange={(e) => setIcpText(e.target.value)} rows={5} style={jsonStyle} />
+          </div>
+
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>Tone (structured)</label>
+            <div style={helpStyle}>Short JSON. {`{"pitch": "..."}`} works fine.</div>
             <textarea value={personaText} onChange={(e) => setPersonaText(e.target.value)} rows={4} style={jsonStyle} />
           </div>
+        </div>
+      )}
 
-          <div style={{ marginTop: '1rem' }}>
-            <label style={labelStyle}>icp (jsonb)</label>
-            <textarea value={icpText} onChange={(e) => setIcpText(e.target.value)} rows={4} style={jsonStyle} />
+      {tab === 'email' && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <div>
+            <label style={labelStyle}>Override recipient</label>
+            <div style={helpStyle}>Reroute every approved send to this address (useful while testing). Leave empty to send to the real recipient.</div>
+            <input value={overrideTo} onChange={(e) => setOverrideTo(e.target.value)} style={{ ...jsonStyle, fontFamily: 'inherit' }} placeholder="e.g. you@example.com" />
           </div>
 
-          <div style={{ marginTop: '1rem', display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1rem' }}>
-            <div>
-              <label style={labelStyle}>daily budget (cents)</label>
-              <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value, 10))} style={{ ...jsonStyle, fontFamily: 'inherit' }} />
-            </div>
-            <div>
-              <label style={labelStyle}>policy (jsonb — suppression_list, daily_send_cap, etc.)</label>
-              <textarea value={policyText} onChange={(e) => setPolicyText(e.target.value)} rows={3} style={jsonStyle} />
-            </div>
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>From address</label>
+            <div style={helpStyle}>Defaults to onboarding@resend.dev (no domain verification needed). Set a verified domain address once you have one.</div>
+            <input value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} style={{ ...jsonStyle, fontFamily: 'inherit' }} placeholder="onboarding@resend.dev" />
+          </div>
+
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>Banned phrases</label>
+            <div style={helpStyle}>One phrase per line. Stripped from every draft before send (case-insensitive). Stacks on top of the universal jargon list.</div>
+            <textarea value={bannedPhrasesText} onChange={(e) => setBannedPhrasesText(e.target.value)} rows={6} style={proseStyle} />
+          </div>
+
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>Resend API key</label>
+            <div style={helpStyle}>Stored on this workspace. If empty, the global RESEND_API_KEY env var is used (single-tenant fallback).</div>
+            <input
+              type="password"
+              value={resendKey}
+              onChange={(e) => { setResendKey(e.target.value); setResendKeyDirty(true); }}
+              style={{ ...jsonStyle, fontFamily: 'inherit' }}
+              placeholder="re_..."
+            />
           </div>
         </div>
-      </details>
+      )}
+
+      {tab === 'integrations' && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <div>
+            <label style={labelStyle}>Contact lookups</label>
+            <div style={helpStyle}>When the enricher finds an account with a domain, should it pull contacts via Hunter? Defaults to none.</div>
+            <select value={contactProvider} onChange={(e) => setContactProvider(e.target.value as 'none' | 'hunter')} style={{ ...jsonStyle, fontFamily: 'inherit' }}>
+              <option value="none">none</option>
+              <option value="hunter">hunter</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {tab === 'advanced' && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <p style={{ fontSize: '.75rem', color: 'var(--text-3)' }}>
+            Raw policy JSON. Edits on this tab take precedence over the friendly fields on Email / Integrations when you save.
+          </p>
+
+          <div style={{ marginTop: '.75rem' }}>
+            <label style={labelStyle}>policy (jsonb)</label>
+            <textarea value={policyText} onChange={(e) => setPolicyText(e.target.value)} rows={14} style={jsonStyle} />
+          </div>
+
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={labelStyle}>daily budget (cents)</label>
+            <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value, 10))} style={{ ...jsonStyle, fontFamily: 'inherit' }} />
+          </div>
+        </div>
+      )}
 
       <div style={{ marginTop: '1.5rem', display: 'flex', alignItems: 'center', gap: '.75rem' }}>
-        <button onClick={save} disabled={saving} style={{ padding: '.5rem 1rem', background: '#9ece6a', color: '#000', border: 'none', cursor: 'pointer', opacity: saving ? 0.4 : 1 }}>
+        <button onClick={save} disabled={saving} style={{ padding: '.5rem 1rem', background: '#9ece6a', color: '#000', border: 'none', borderRadius: 6, cursor: 'pointer', opacity: saving ? 0.4 : 1 }}>
           {saving ? 'saving…' : 'save'}
         </button>
         {msg && <span style={{ color: '#9ece6a', fontSize: '.85rem' }}>✓ {msg}</span>}

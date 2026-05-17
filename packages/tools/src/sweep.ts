@@ -8,6 +8,7 @@
  * so callers can format / threshold however they want.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { cronToMinIntervalMinutes } from './cron.js';
 import { createHash } from 'node:crypto';
 
 export type Severity = 'red' | 'yellow' | 'green';
@@ -30,8 +31,11 @@ export const SWEEP_THRESHOLDS = {
   novelty_overlap_red: 0.30,
   novelty_min_signals: 5,
 
-  cron_stale_h_red: 24,
-  cron_stale_h_yellow: 12,
+  // Stale = ageH exceeds expected interval × this multiplier. Set high enough
+  // to absorb cron jitter + one missed tick. Quarterly sources don't trip
+  // until weeks past schedule.
+  cron_stale_red_mult: 3.0,
+  cron_stale_yellow_mult: 1.5,
 
   cost_ratio_red: 2.0,
 
@@ -182,23 +186,24 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   }
 
   const srcRes = await sb.from('sources')
-    .select('name, connector_type, active, last_run_at, last_run_status')
+    .select('name, connector_type, active, schedule_cron, last_run_at, last_run_status')
     .eq('workspace_id', workspace_id).eq('active', true);
   const sources = (srcRes.data ?? []) as Array<{
-    name: string; connector_type: string; active: boolean;
+    name: string; connector_type: string; active: boolean; schedule_cron: string | null;
     last_run_at: string | null; last_run_status: string | null;
   }>;
   for (const s of sources) {
     const ageH = s.last_run_at ? (now - new Date(s.last_run_at).getTime()) / HOUR : Infinity;
-    const sev: Severity = ageH > T.cron_stale_h_red ? 'red'
-      : ageH > T.cron_stale_h_yellow ? 'yellow' : 'green';
+    const expectedH = cronToMinIntervalMinutes(s.schedule_cron) / 60;
+    const sev: Severity = ageH > expectedH * T.cron_stale_red_mult ? 'red'
+      : ageH > expectedH * T.cron_stale_yellow_mult ? 'yellow' : 'green';
     if (sev === 'green') continue;
     out.push({
       id: `cron_stale:${s.name}`,
       severity: sev,
       metric: `last_run=${ageH === Infinity ? 'never' : ageH.toFixed(1) + 'h ago'}`,
-      threshold: `< ${T.cron_stale_h_red}h`,
-      action: `source "${s.name}" active but not running - check Inngest dashboard for ${s.connector_type}`,
+      threshold: `expected every ${expectedH.toFixed(1)}h (cron=${s.schedule_cron ?? '-'})`,
+      action: `source "${s.name}" overdue vs declared cadence — check Inngest dashboard for ${s.connector_type}`,
     });
   }
 
@@ -312,9 +317,39 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   const scoreRes = await sb.from('facts')
     .select('subject_entity, object_text, observed_at')
     .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit').is('supersedes', null).limit(20000);
-  const scoreRows = ((scoreRes.data ?? []) as Array<{ subject_entity: string; object_text: string | null; observed_at: string }>)
+  let scoreRows = ((scoreRes.data ?? []) as Array<{ subject_entity: string; object_text: string | null; observed_at: string }>)
     .map((r) => ({ entity: r.subject_entity, score: r.object_text ? parseFloat(r.object_text) : NaN, observed_at: r.observed_at }))
     .filter((r) => Number.isFinite(r.score));
+
+  // Exclude entities with zero substantive facts. They land at score=0 by design
+  // (no evidence + RRF prefilter floor), and including them in the distribution
+  // makes the scorer look like it's collapsing values when it's actually behaving
+  // correctly on brand-new entities. Same for dropped entities — they're frozen
+  // at their last score and shouldn't pollute the live shape either.
+  if (scoreRows.length) {
+    const entIds = [...new Set(scoreRows.map((r) => r.entity))];
+    const factsRes = await sb.from('facts')
+      .select('subject_entity, predicate')
+      .in('subject_entity', entIds)
+      .is('supersedes', null)
+      .limit(20000);
+    const ADMIN = new Set([
+      'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
+      'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
+      'research_triggered', 'research_completed', 'no_reply_marked',
+      'outreach_rejected_at', 'replied_at',
+    ]);
+    const substantiveCount = new Map<string, number>();
+    const droppedEnts = new Set<string>();
+    for (const f of (factsRes.data ?? []) as Array<{ subject_entity: string; predicate: string }>) {
+      if (f.predicate === 'dropped_until') droppedEnts.add(f.subject_entity);
+      if (ADMIN.has(f.predicate) || f.predicate.startsWith('score_')) continue;
+      substantiveCount.set(f.subject_entity, (substantiveCount.get(f.subject_entity) ?? 0) + 1);
+    }
+    scoreRows = scoreRows.filter((r) =>
+      !droppedEnts.has(r.entity) && (substantiveCount.get(r.entity) ?? 0) >= 1,
+    );
+  }
 
   if (scoreRows.length >= T.score_min_entities) {
     const deciles = new Array(10).fill(0);

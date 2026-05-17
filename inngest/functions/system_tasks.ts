@@ -1,6 +1,6 @@
 import { createServerClient } from '@agent-crm/db';
 import { gate } from '@agent-crm/primitives';
-import { healthCheck, scoreAndAssert, sweepWorkspace } from '@agent-crm/tools';
+import { healthCheck, scoreAndAssert, sweepWorkspace, callTool } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 // IDs from sweepWorkspace that warrant gating when RED. Tier 2 checks
@@ -232,5 +232,85 @@ export const rescoreOnIcpChange = inngest.createFunction(
     });
 
     return { rescored: candidates.length };
+  },
+);
+
+const SILENCE_DAYS = 7;
+const SILENCE_LIMIT_PER_RUN = 100;
+
+/**
+ * silence-sweep: daily check for entities we emailed N+ days ago that haven't
+ * replied. Posts a `no_reply` outcome to the entity's channel and triggers a
+ * fresh score so action_selector reconsiders. Idempotent via `no_reply_marked`
+ * fact — only the first time we hit silence for a given send.
+ *
+ * Reply ingest (Resend webhook → inbound_email fact) is not wired yet; until
+ * then this cron is the only signal that a send went unanswered.
+ */
+export const silenceSweep = inngest.createFunction(
+  { id: 'silence-sweep' },
+  { cron: '0 12 * * *' }, // daily at noon UTC
+  async ({ step }) => {
+    const candidates = await step.run('scan-silent-entities', async () => {
+      const supabase = createServerClient();
+      const { data: workspaces } = await supabase.from('workspaces').select('id');
+      const wsRows = (workspaces ?? []) as Array<{ id: string }>;
+      const cutoff = new Date(Date.now() - SILENCE_DAYS * 86400_000).toISOString();
+      const out: Array<{ workspace_id: string; entity_id: string; last_outreach_at: string }> = [];
+      for (const ws of wsRows) {
+        // Entities with last_outreach_at older than the cutoff. Active facts only.
+        const sent = await supabase.from('facts')
+          .select('subject_entity, object_text')
+          .eq('workspace_id', ws.id).eq('predicate', 'last_outreach_at')
+          .is('supersedes', null)
+          .lt('object_text', cutoff)
+          .limit(1000);
+        const sentRows = (sent.data ?? []) as Array<{ subject_entity: string; object_text: string }>;
+        if (!sentRows.length) continue;
+
+        // Pull all replied_at and no_reply_marked facts in one round-trip;
+        // filter in memory to avoid N queries.
+        const ids = sentRows.map((r) => r.subject_entity);
+        const followups = await supabase.from('facts')
+          .select('subject_entity, predicate')
+          .eq('workspace_id', ws.id)
+          .in('subject_entity', ids)
+          .in('predicate', ['replied_at', 'no_reply_marked'])
+          .is('supersedes', null);
+        const skip = new Set<string>(((followups.data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity));
+
+        for (const r of sentRows) {
+          if (skip.has(r.subject_entity)) continue;
+          out.push({ workspace_id: ws.id, entity_id: r.subject_entity, last_outreach_at: r.object_text });
+          if (out.length >= SILENCE_LIMIT_PER_RUN) break;
+        }
+        if (out.length >= SILENCE_LIMIT_PER_RUN) break;
+      }
+      return out;
+    });
+
+    if (!candidates.length) return { silent: 0 };
+
+    await step.run('mark-and-rescore', async () => {
+      const supabase = createServerClient();
+      for (const c of candidates) {
+        const actor = { workspace_id: c.workspace_id, actor_kind: 'system' as const, actor_id: 'silence_sweep' };
+        try {
+          // Idempotent marker so we don't re-process this send next cron tick.
+          // Drives the action_selector via score_signal_strength=0 on next score run.
+          await callTool(supabase, actor, 'assert_fact', {
+            subject_entity: c.entity_id,
+            predicate: 'no_reply_marked',
+            object_text: new Date().toISOString(),
+            confidence: 1.0,
+          });
+          // Best-effort score recompute. Failures here are non-fatal —
+          // next rescore-on-icp-change tick catches anything we miss.
+          try { await scoreAndAssert(supabase, actor, c.entity_id); } catch { /* skip */ }
+        } catch { /* per-entity failure shouldn't stop the batch */ }
+      }
+    });
+
+    return { silent: candidates.length };
   },
 );

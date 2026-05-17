@@ -13,6 +13,7 @@ import {
   rescoreOnIcpChange,
   researchRunner,
   entityResearchDispatcher,
+  silenceSweep,
 } from '@agent-crm/inngest/functions';
 
 // Vercel: source runs + agent enrichment can take >10s. Pro plans allow 300; Hobby caps at 60.
@@ -34,5 +35,6 @@ export const { GET, POST, PUT } = serve({
     rescoreOnIcpChange,
     researchRunner,
     entityResearchDispatcher,
+    silenceSweep,
   ],
 });

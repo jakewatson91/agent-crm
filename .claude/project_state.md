@@ -1,6 +1,6 @@
 # Project State
 
-Last Update: 2026-05-15 EDT
+Last Update: 2026-05-15 EDT (evening)
 
 ## Direction
 
@@ -58,9 +58,12 @@ Agent-first CRM. Primary user is the agent; humans intervene only at exception g
 - Writes: create_workspace, create_account, create_contact, assert_fact, supersede_fact, create_signal, create_subscription, post_to_channel, request_gate, decide_gate
 - Enrichment: find_contacts (Hunter.io), link_contact_to_account, score_entity (ICP-anchored), query, cite
 
-### Pipeline (end-to-end live as of 2026-05-10, scoring v2 layered 2026-05-15)
-- Hourly source-dispatcher cron fans out source.run events. Honors per-source `schedule_cron` (YC + PH daily, Exa/web/api_call every 6h, HN hourly, github every 30 min).
+### Pipeline (end-to-end live as of 2026-05-10, scoring v2 layered 2026-05-15, sweep + source-quality push 2026-05-15 PM)
+- Hourly source-dispatcher cron fans out source.run events. Honors per-source `schedule_cron` (YC quarterly, Exa/web every 6h, HN hourly).
 - 15 active sources (YC × 3, Exa × 9, web/RSS × 3). Auto-deactivates sources with 0 signals over 7d.
+- YC connector emits `yc_directory_update` ONLY when a tracked field changes (team_size, status, isHiring, batch, stage, top_company, one_liner). Snapshot hash stored in `entity.attributes.yc_snapshot_hash`. Kills the 90% duplicate-signal problem at source.
+- HN connector: when `watch_entities` is empty, defaults to every workspace account. New entities discovered by Exa/web/yc get watched automatically.
+- Exa + Web extraction prompts enforce completeness (every input id must land in `companies` or `rejected` with a structured reason code: `topic_only_no_subject`, `podcast_or_community`, `doesnt_match_filter`, etc.). Listicles/comparisons extract the FIRST 1-2 companies instead of bailing with "ambiguous". Connector surfaces silent LLM drops as errors. Exa extraction rate lifted from ~30% to ~75% average on the same fetches.
 - Signals → signal.created (vault-backed pg_net) → match-signal → fan-out
 - Enricher: dedupes by signal_body_hash + entity_id (7d window) → asserts facts → auto-links Hunter contacts (negative-cache via `contact_lookup_attempted` fact, 30d TTL) → scoring v2.
 - Scoring v2: multi-dim rubric (industry_match, stage_match, signal_strength — LLM) + deterministic (evidence_depth, recency, graph_proximity) + RRF pre-filter via 4-perspective embeddings (default/pain/stack/vertical). Each sub-score asserted as its own `score_*` fact. `icp_fit` kept as alias for backward compat.
@@ -71,6 +74,17 @@ Agent-first CRM. Primary user is the agent; humans intervene only at exception g
 - Decision posts on every draft + enrichment (full audit chain)
 - Outcome posts when gates decided
 - Fact-triggered subscriptions architecture in place (subscriptions.fact_filter column + match_fact RPC + match-fact Inngest function); no fact-triggered subs created yet but infra is live
+
+### Portability foundation (2026-05-15 PM)
+- Customer-varying values moved to `workspaces.policy` jsonb. New `packages/tools/src/policy.ts` exposes `WorkspacePolicy` types, `DEFAULT_POLICY`, `getPolicy(supabase, ws_id)`.
+- Outreach config (`override_to`, `from_email`, `banned_phrases`, `resend_api_key`) and enrichment toggle (`contact_provider: 'none' | 'hunter'`) live on policy — no more env vars for behavior toggles.
+- `sendEmail()` rewritten to take supabase + workspace_id, reads policy at send time. `OUTREACH_OVERRIDE_TO` env removed; `RESEND_API_KEY` env kept as single-tenant fallback.
+- agent_logic.ts: workspace-scoped `sanitize()` closure stacks `policy.outreach.banned_phrases` on top of code defaults. Hunter gate becomes `policy.enrichment.contact_provider === 'hunter' && HUNTER_API_KEY` — default `'none'` means new workspaces don't make surprise Hunter calls.
+- `scripts/backfill_policy.ts` (idempotent): writes `override_to=jaws.watson@gmail.com`, current banned phrases, `contact_provider='hunter'` to existing workspaces. Must be run once to preserve dog-food behavior.
+- Onboarding wizard at `/workspace/new`: name + one plain-English "what should the agent help with" textarea + optional first source + optional Resend key. `POST /api/workspaces/create` does the workspace insert, runs a vertical-neutral LLM derive for `icp/persona/constitution/knowledge_base`, optional starter source — all in one call.
+- Home page: 0 workspaces → wizard, 1 → that one, 2+ → picker.
+- Settings page reorganized into 4 tabs: Setup / Email / Integrations / Advanced. Plain-language labels ("Writing rules", "What kind of accounts", "Tone"). Friendly fields write back to `policy.outreach.*` and `policy.enrichment.*`; Advanced tab keeps raw-JSON escape hatch.
+- New CLAUDE.md section "Portability test": before merging any feature, ask whether a customer can configure it via settings without a code change. Bans hardcoded customer-varying values, new env vars for behavior, and vertical-specific defaults.
 
 ### UX surfaces (audit-only) — light pastel theme as of 2026-05-15
 - Theme: warm off-white (`#fbfaf6`), soft pastel accents, Inter + JetBrains Mono. CSS variables in `apps/web/app/globals.css`. 3-section sidebar (Main / Configure / Audit).
@@ -87,24 +101,27 @@ Agent-first CRM. Primary user is the agent; humans intervene only at exception g
 - token_summary MCP tool + /api/admin/health exposes tokens_24h + tokens_7d, cache_rate, action_distribution (draft/watch/research/drop/continue counts), tokens_per_drafted_touch, tokens_per_scored_account
 - Per-source signals_7d in `sources.last_run_summary` for yield tracking
 - No pricing tables (per user direction): raw token counts only
+- **Sweep** (`pnpm sweep`): 10 deterministic SQL checks across 4 tiers (signal diversity / silence / cost / scoring health) with RED/YELLOW/GREEN output and deterministic ACTION templates. Same `sweepWorkspace()` function in `@agent-crm/tools` is called from:
+  - SessionStart hook in `.claude/settings.json` — red flags surface at the top of every session automatically
+  - hourly `systemHealthMonitor` cron — RED on tier-1/3/4 checks opens a gate (with 12h cooldown). Tier 2 (cron staleness, agent silence) skipped here to avoid double-alerts with existing `healthCheck`
+- Debug tools: `scripts/debug_extraction.ts --type=exa|web` runs the extraction pipeline against a real source without writing signals, dumps LLM input + output + rejection reasons. `scripts/inspect_sources.ts` lists all sources + last_run_summary. `scripts/trigger_exa_runs.ts` forces immediate dispatch of `source.run` events for a given connector_type
 - Diagnostic scripts fixed against real schema (events.created_at not .ts; signal_source under structured_tags; channel_posts joined via channels; gates.decided_at not .status)
 - check_stuck.ts, audit_state.ts, audit_subscriptions.ts, sample_recent_posts.ts, check_processing.ts, probe_matcher.ts, dismiss_operational_gates.ts — operator diagnostics
 
 ## Known issues (deferred)
 
-- Exa account out of credits ($32/mo projected at hourly cadence; now $5/mo with schedule_cron enforcement) — user needs to top up to unblock 9 sources
-- RSS false-positive entity creation: tightened in 2026-05-10 push, still imperfect
+- IndieHackers RSS feed returns 0 raw items (feed URL or content-type changed). Lenny's and TechCrunch parse fine.
+- RSS false-positive entity creation: tightened again in 2026-05-15 prompt push, still imperfect
 - Render auto-deploy webhook broken — user reconnecting GitHub App; manual redeploys for now
-- HN sources are watch-mode only; misconfigured ones deactivated. Discover-mode HN connector not built.
 - A handful of accounts have `.example` placeholder domains and can't get Hunter contacts
 - No sending pipeline — drafts stay in Inbox forever; human copy-pastes manually
 - Auto-mode classifier blocks `git push origin main` and bulk DB updates even after explicit AskUserQuestion approval; user has to run those manually
 
 ## Plan File
 
-`/Users/jakewatson/.claude/plans/quirky-mapping-pinwheel.md` — twice in this session. First pass: credit-efficiency (Hunter neg cache, Exa schedule_cron, prompt-cache fix, source yield, attribution metrics, diagnostic-script fixes). Second pass: Scoring v2 (multi-dim rubric, RRF pre-filter, graph features, action selector, research handler) + UI overhaul (light pastel theme, unified Feed, click-to-expand drafts, replay summary redesign, entity search).
+Most recent: `zany-bouncing-pascal.md` — Portability foundation. Phase A (policy.ts + send_email + agent_logic + backfill_policy.ts), Phase B (wizard + /api/workspaces/create + home routing + tabbed Settings), Phase C (Portability test in CLAUDE.md). Shipped end-to-end; backfill must be run once.
 
-Prior: `mellow-finding-noodle.md` (drafter consolidation, fact-triggered subs, ICP rescore, token obs).
+Prior: no formal plan for the sweep PM session — design generated inline (10 checks across 4 tiers). Earlier: `quirky-mapping-pinwheel.md` (Scoring v2 + UI overhaul); `mellow-finding-noodle.md` (drafter consolidation, fact-triggered subs, ICP rescore, token obs).
 
 ## Open Questions
 

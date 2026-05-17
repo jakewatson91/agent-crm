@@ -1,32 +1,7 @@
 import { createServerClient } from '@agent-crm/db';
+import { cronToMinIntervalMinutes } from '@agent-crm/tools';
 import { inngest } from '../../client.js';
 import { getConnector } from './registry.js';
-
-/**
- * Map the cron strings we use across connectors to a minimum-interval-in-minutes.
- * Not a full cron parser — only the patterns the registry actually emits:
- *
- *   `*\/N * * * *`   → every N minutes
- *   `0 *\/N * * *`   → every N hours
- *   `0 * * * *`      → hourly (fixed minute, wildcard hour)
- *   `0 H * * *`      → daily at hour H (both fixed)
- *
- * A 10% slack window is applied at the call site to avoid edge-timing skips
- * when the dispatcher itself fires slightly off the minute boundary.
- */
-function cronToMinIntervalMinutes(cron: string): number {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return 60;
-  const min = parts[0]!;
-  const hour = parts[1]!;
-  const everyNMin = min.match(/^\*\/(\d+)$/);
-  if (everyNMin && hour === '*') return Math.max(1, parseInt(everyNMin[1]!, 10));
-  const everyNHour = hour.match(/^\*\/(\d+)$/);
-  if (everyNHour) return Math.max(1, parseInt(everyNHour[1]!, 10)) * 60;
-  if (/^\d+$/.test(min) && hour === '*') return 60;
-  if (/^\d+$/.test(min) && /^\d+$/.test(hour)) return 1440;
-  return 60;
-}
 
 /**
  * source-dispatcher: hourly tick that fans out a `source.run` event for each

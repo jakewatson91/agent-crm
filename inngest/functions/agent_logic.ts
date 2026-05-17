@@ -17,7 +17,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, loadActionContext } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, loadActionContext, type WorkspacePolicy } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
@@ -48,12 +48,6 @@ export interface AgentRunResult {
   llm_provider?: string;
   llm_model?: string;
   behavior?: AgentBehavior;
-}
-
-interface WorkspacePolicy {
-  suppression_list?: string[];
-  daily_send_cap?: number;
-  notify_channels?: string[];
 }
 
 export async function runAgent(
@@ -116,6 +110,9 @@ export async function runAgent(
   const policy = (ws.data.policy ?? {}) as WorkspacePolicy;
   const constitution = ((ws.data.constitution as string) ?? '').trim();
   const about = ((ws.data.about as string) ?? '').trim();
+  // Per-workspace banned phrases stack on top of the code-level defaults.
+  const extraBanned = (policy.outreach?.banned_phrases ?? []).filter((s) => typeof s === 'string' && s.trim().length > 0);
+  const sanitize = (s: string) => sanitizeText(s, extraBanned);
 
   // 4. Subscription metadata + behavior + model.
   let subName = '(unknown)';
@@ -195,6 +192,10 @@ export async function runAgent(
     }
   }
 
+  // Value-theme match info from action_selector — hoisted so the drafter
+  // prompt below can read it after the action_selector block scope closes.
+  let matchedTheme: string | null = null;
+  let matchedEvidence: string | null = null;
   if (behavior === 'drafter') {
     // Workspace policy: hard suppression-list match. Orthogonal to scoring, so
     // it still lives here, not in action_selector.
@@ -267,6 +268,24 @@ export async function runAgent(
     const icpTotal = readScoreFact('score_total', readScoreFact('icp_fit'));
 
     const ctx = await loadActionContext(supabase, payload.workspace_id, ent.data.id, channel_id);
+    // Strip admin / score / lookup-cache / source-bookkeeping facts before
+    // passing to action_selector — value-theme matching should see real claims
+    // about the entity, not connector breadcrumbs. The Exa pipeline asserts
+    // facts like `query=...`, `intent=discover`, `item_url=...` which are the
+    // search context that surfaced the entity, not facts about it.
+    const ADMIN_FOR_THEMES = new Set([
+      'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
+      'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
+      'research_triggered', 'research_completed', 'score_total',
+      'no_reply_marked', 'outreach_rejected_at', 'replied_at',
+      // Source bookkeeping — value statements about the SEARCH, not the entity:
+      'query', 'intent', 'item_url', 'published_at', 'matched_alias',
+      'topic', 'source_url', 'source_title',
+    ]);
+    const substantiveFacts = activeFacts
+      .filter((f) => !ADMIN_FOR_THEMES.has(f.predicate) && !f.predicate.startsWith('score_'))
+      .map((f) => ({ predicate: f.predicate, object_text: f.object_text }));
+    const valueThemes = policy.drafter?.value_themes ?? [];
     const decision = selectAction({
       workspace_id: payload.workspace_id,
       entity_id: ent.data.id,
@@ -275,7 +294,12 @@ export async function runAgent(
       recent_draft_at: ctx.recent_draft_at,
       recent_research_at: ctx.recent_research_at,
       dropped_until: ctx.dropped_until,
+      cooldown_until: ctx.cooldown_until,
+      facts: substantiveFacts,
+      value_themes: valueThemes,
     });
+    matchedTheme = (decision as { matched_theme?: string | null }).matched_theme ?? null;
+    matchedEvidence = (decision as { matched_evidence?: string | null }).matched_evidence ?? null;
 
     if (decision.action !== 'draft_outreach') {
       // Only post state-changing actions to the channel. watch_only and continue
@@ -391,7 +415,10 @@ export async function runAgent(
   }
 
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp);
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts);
+  // matched_theme / matched_evidence come from action_selector. When set, the
+  // drafter prompt below uses them as PRIMARY_ANGLE so the LLM leads with the
+  // value-prop theme instead of grabbing the first fact in the list.
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, matchedTheme, matchedEvidence);
 
   let llm;
   try {
@@ -456,15 +483,15 @@ export async function runAgent(
   // ============================================================
   if (decision.action === 'post_claim' && behavior === 'claim_poster') {
     const r = await callTool(supabase, actor, 'post_to_channel', {
-      channel_id, kind: 'claim', body: sanitizeText(decision.body ?? ''), cites: validCites,
+      channel_id, kind: 'claim', body: sanitize(decision.body ?? ''), cites: validCites,
     }, meta);
     if (!r.ok) return { ok: false, action: 'skip', reason: r.error, behavior, ...tokens };
     return { ok: true, action: 'post_claim', channel_post_id: r.target_id, behavior, ...tokens };
   }
 
   if (decision.action === 'post_touch_draft' && behavior === 'drafter') {
-    const subject = sanitizeText((decision.subject as string) ?? '');
-    const body = sanitizeText((decision.body as string) ?? '');
+    const subject = sanitize((decision.subject as string) ?? '');
+    const body = sanitize((decision.body as string) ?? '');
     const toEmail = ((decision as { to_email?: string | null }).to_email ?? '').toString().trim();
     const toLine = toEmail ? `To: ${toEmail}\n` : '';
     const composed = subject ? `${toLine}Subject: ${subject}\n\n${body}` : `${toLine}${body}`;
@@ -489,7 +516,7 @@ export async function runAgent(
     }, meta);
     // Auditable decision post explaining why we drafted. Cites the same facts so the
     // provenance walk works from either the draft or the decision.
-    const reasoning = sanitizeText(((decision as { reasoning?: string }).reasoning ?? '').toString());
+    const reasoning = sanitize(((decision as { reasoning?: string }).reasoning ?? '').toString());
     if (reasoning) {
       await callTool(supabase, actor, 'post_to_channel', {
         channel_id, kind: 'decision', body: reasoning, cites: validCites, parent_post_id: r.target_id,
@@ -504,7 +531,7 @@ export async function runAgent(
     // irreversible actions only.)
     const policy = (decision.policy ?? 'low_confidence') as string;
     const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-      `[${policy}] ${sanitizeText(decision.body ?? '')}`, validCites);
+      `[${policy}] ${sanitize(decision.body ?? '')}`, validCites);
     return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: policy, behavior, ...tokens };
   }
 
@@ -531,11 +558,11 @@ export async function runAgent(
     // output if needed for debugging — it's just not surfaced as a "claim."
     let post: { ok: boolean; target_id?: string; error?: string } = { ok: false };
     if (asserted > 0) {
-      const summary = sanitizeText((decision.summary as string) ?? `Extracted ${asserted} fact${asserted === 1 ? '' : 's'}.`);
+      const summary = sanitize((decision.summary as string) ?? `Extracted ${asserted} fact${asserted === 1 ? '' : 's'}.`);
       post = await callTool(supabase, actor, 'post_to_channel', {
         channel_id, kind: 'claim', body: summary, cites: assertedIds,
       }, meta);
-      const reasoning = sanitizeText(((decision as { reasoning?: string }).reasoning ?? '').toString());
+      const reasoning = sanitize(((decision as { reasoning?: string }).reasoning ?? '').toString());
       if (reasoning && post.ok) {
         await callTool(supabase, actor, 'post_to_channel', {
           channel_id, kind: 'decision', body: reasoning, cites: assertedIds, parent_post_id: post.target_id,
@@ -551,15 +578,16 @@ export async function runAgent(
         target_id: ent.data.id,
         payload: {
           signal_id: payload.signal_id ?? null,
-          summary: sanitizeText((decision.summary as string) ?? 'No new facts extracted'),
+          summary: sanitize((decision.summary as string) ?? 'No new facts extracted'),
         },
         parent_event_id: payload.parent_event_id ?? null,
       });
     }
     // Auto-fetch contacts if the entity has a domain and no contacts yet.
-    // Runs once per entity (idempotent on email). Skips silently if HUNTER_API_KEY
-    // is not set or the entity has no domain.
-    if (process.env.HUNTER_API_KEY) {
+    // Runs once per entity (idempotent on email). Customer opts in by setting
+    // policy.enrichment.contact_provider = 'hunter'; default 'none' means a
+    // brand-new workspace doesn't make surprise Hunter calls.
+    if (policy.enrichment?.contact_provider === 'hunter' && process.env.HUNTER_API_KEY) {
       const linked = await maybeLinkContactsForEntity(supabase, actor, ent.data.id, channel_id, meta);
       if (linked > 0) {
         await callTool(supabase, actor, 'post_to_channel', {
@@ -747,6 +775,8 @@ function buildUserPrompt(
   activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number }>,
   pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [],
   contacts: Array<{ name: string; email: string; role: string }> = [],
+  matchedTheme: string | null = null,
+  matchedEvidence: string | null = null,
 ): string {
   // Strip embedding from signal (massive vector adds nothing for the LLM and burns tokens).
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
@@ -762,6 +792,10 @@ function buildUserPrompt(
     ? `\nCONTACTS (linked to this account — pick the best fit for the role you're targeting):\n${contacts.map((c) => `  ${c.name} <${c.email}>${c.role ? ` — ${c.role}` : ''}`).join('\n')}\n`
     : '';
 
+  const angleBlock = matchedTheme
+    ? `\nPRIMARY ANGLE (locked by upstream action_selector — your draft MUST lead with this):\n  theme: ${matchedTheme}\n  evidence: ${matchedEvidence ?? '(see active facts)'}\nDo not pivot to a different angle. The first paragraph of the body should reference this specific fact.\n`
+    : '';
+
   return `AGENT: ${agentId}
 FILTER RULE: "${subName}" — semantic intent: "${subSemantic}"
 
@@ -774,7 +808,7 @@ ${JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}
-${pastOutcomesBlock}${contactsBlock}
+${pastOutcomesBlock}${contactsBlock}${angleBlock}
 Decide.`;
 }
 
@@ -819,13 +853,20 @@ const BANNED_PHRASES: Array<{ re: RegExp; replace: string }> = [
 ];
 
 /** Strip em/en dashes, tidy spacing, and excise corporate-template phrases the
- *  constitution forbids. Sanitize is the last gate before output. */
-function sanitizeText(s: string): string {
+ *  constitution forbids. Sanitize is the last gate before output. The optional
+ *  second arg stacks per-workspace banned phrases on top of the code defaults
+ *  (case-insensitive substring excise — phrases come from workspace policy, so
+ *  we don't trust them to be regex). */
+function sanitizeText(s: string, extraBanned: string[] = []): string {
   let out = s
     .replace(/\s*—\s*/g, ', ')
     .replace(/\s*–\s*/g, ', ');
   for (const { re, replace } of BANNED_PHRASES) {
     out = out.replace(re, replace);
+  }
+  for (const phrase of extraBanned) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(escaped, 'gi'), '');
   }
   return out
     .replace(/\s{2,}/g, ' ')                                // collapse double spaces from removals

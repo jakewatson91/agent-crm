@@ -313,6 +313,25 @@ export async function scoreAndAssert(
   actor: { workspace_id: string; actor_kind: 'agent' | 'user' | 'system'; actor_id: string },
   entity_id: string,
 ): Promise<EntityScore | null> {
+  // Respect active dropped_until: re-scoring a dropped entity wastes LLM calls,
+  // pollutes the score_distribution sweep, and gives the operator a fresh
+  // score that contradicts the drop decision. action_selector already
+  // short-circuits at the action layer; this is the same check, earlier.
+  const dropRes = await supabase.from('facts')
+    .select('object_text')
+    .eq('workspace_id', actor.workspace_id)
+    .eq('subject_entity', entity_id)
+    .eq('predicate', 'dropped_until')
+    .is('supersedes', null)
+    .order('observed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const dropUntil = (dropRes.data?.object_text as string | null) ?? null;
+  if (dropUntil) {
+    const t = Date.parse(dropUntil);
+    if (Number.isFinite(t) && t > Date.now()) return null;
+  }
+
   const score = await scoreEntity(supabase, actor.workspace_id, entity_id);
   if (!score) return null;
 

@@ -35,6 +35,19 @@ Wedge is **interface-as-category**, not algorithm. The substrate is commodity (P
 
 When in doubt: build the agent capability first, audit surface second, never a "human dashboard."
 
+## Portability test
+
+Before merging any new feature, answer: *can a customer enable / configure / disable this via workspace settings, without a code change?*
+
+If no, restructure. The thing must either be:
+- a substrate primitive (events / facts / gates / scoring framework / dispatcher) — fine to be code, same for every customer
+- or a config knob — must live on `workspaces.policy` (or `sources.config` if it's a connector setting)
+
+Specific bans:
+- No hardcoded values that vary by customer (email addresses, brand names, banned phrases, scoring thresholds, vertical-specific defaults).
+- No new env vars for behavior toggles (only API keys / secrets are env-acceptable).
+- Wizard / settings defaults must be vertical-neutral. "B2B SaaS" is not a default; "no default" is the default.
+
 ## Competition (snapshot, May 2026)
 
 - **Rox** ($1.2B valuation) — Agent Swarm on top of Salesforce/HubSpot. Reactive monitoring, not proactive.

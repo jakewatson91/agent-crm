@@ -61,7 +61,7 @@ async function main() {
   const workspaces = ((wsRes.data ?? []) as Array<{ id: string; name: string }>);
 
   console.log(`SWEEP  ${new Date().toISOString()}  (${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'})`);
-  console.log(`  thresholds: diversity<${T.diversity_red} src_share>${T.source_share_red} novelty>${T.novelty_overlap_red} cron>${T.cron_stale_h_red}h decile>${T.score_decile_red} coupling<${T.coupling_red}`);
+  console.log(`  thresholds: diversity<${T.diversity_red} src_share>${T.source_share_red} novelty>${T.novelty_overlap_red} cron>${T.cron_stale_red_mult}×expected decile>${T.score_decile_red} coupling<${T.coupling_red}`);
 
   let totalRed = 0; let totalYellow = 0;
   for (const ws of workspaces) {
