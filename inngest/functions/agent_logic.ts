@@ -17,7 +17,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, chatCompleteForWorkspace, buildDrafterDecision, type WorkspacePolicy } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, chatCompleteForWorkspace, buildDrafterDecision, scoreFacts, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
@@ -98,10 +98,10 @@ export async function runAgent(
   // 2. Active facts.
   const allFacts = await supabase
     .from('facts')
-    .select('id, predicate, object_text, confidence, supersedes, created_at')
+    .select('id, predicate, object_text, confidence, supersedes, created_at, observed_at, source_event_id')
     .eq('subject_entity', ent.data.id);
   if (allFacts.error) return { ok: false, action: 'skip', reason: `facts query failed: ${allFacts.error.message}` };
-  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string }>;
+  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string; observed_at: string; source_event_id: number | null }>;
   const supersededIds = new Set(factRows.map((f) => f.supersedes).filter((x): x is string => !!x));
   const activeFacts = factRows.filter((f) => !supersededIds.has(f.id));
 
@@ -436,10 +436,27 @@ export async function runAgent(
     // forbidden_phrases in the PROMPT (post-LLM sanitize is separate, via banned_phrases).
     forbidden_phrases: policy.outreach?.banned_phrases ?? [],
   });
+  // Compute the deterministic shortlist for drafters. ~30 token addition; the
+  // drafter prompt is told to prefer these but can override when context demands.
+  // Skipped for non-drafter behaviors (claim_poster/enricher don't pick angles).
+  let recommended: FactScore[] = [];
+  if (behavior === 'drafter') {
+    try {
+      recommended = await scoreFacts(supabase, {
+        workspace_id: payload.workspace_id,
+        account_entity_id: ent.data.id,
+        facts: activeFacts.map((f) => ({
+          id: f.id, predicate: f.predicate, object_text: f.object_text,
+          confidence: f.confidence, observed_at: f.observed_at, source_event_id: f.source_event_id,
+        })),
+        config: (policy as Record<string, unknown>).fact_ranking as Record<string, unknown> | undefined,
+      });
+    } catch { /* non-fatal */ }
+  }
   // matched_theme / matched_evidence come from action_selector. When set, the
   // drafter prompt below uses them as PRIMARY_ANGLE so the LLM leads with the
   // value-prop theme instead of grabbing the first fact in the list.
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, matchedTheme, matchedEvidence);
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, matchedTheme, matchedEvidence, recommended);
 
   let llm;
   try {
@@ -544,6 +561,32 @@ export async function runAgent(
         channel_id, kind: 'decision', body: reasoning, cites: validCites, parent_post_id: r.target_id,
       }, meta);
     }
+    // Shortlist instrumentation: every draft records what the formula recommended vs
+    // what the model picked. Later joined with outcomes to validate the ranking.
+    try {
+      const recommendedIds = recommended.map((f) => f.id);
+      const recommendedSet = new Set(recommendedIds);
+      const citedFromShortlist = validCites.filter((c) => recommendedSet.has(c));
+      await supabase.from('events').insert({
+        workspace_id: payload.workspace_id,
+        actor_kind: actor.actor_kind,
+        actor_id: actor.actor_id,
+        action: 'drafter_shortlist_pick',
+        target_kind: 'channel_post',
+        target_id: r.target_id,
+        payload: {
+          entity_id: ent.data.id,
+          channel_post_id: r.target_id,
+          recommended_fact_ids: recommendedIds,
+          recommended_scores: recommended.map((f) => ({ id: f.id, score: Number(f.score.toFixed(3)), components: f.components })),
+          actually_cited: validCites,
+          cited_from_shortlist: citedFromShortlist,
+          override: recommendedIds.length > 0 && citedFromShortlist.length === 0,
+        },
+        prompt_hash: promptHash,
+        parent_event_id: payload.parent_event_id ?? null,
+      });
+    } catch { /* non-fatal */ }
     return { ok: true, action: 'post_touch_draft', channel_post_id: r.target_id, behavior, ...tokens };
   }
 
@@ -805,6 +848,7 @@ function buildUserPrompt(
   contacts: Array<{ name: string; email: string; role: string }> = [],
   matchedTheme: string | null = null,
   matchedEvidence: string | null = null,
+  recommended: FactScore[] = [],
 ): string {
   // Strip embedding from signal (massive vector adds nothing for the LLM and burns tokens).
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
@@ -824,6 +868,10 @@ function buildUserPrompt(
     ? `\nPRIMARY ANGLE (locked by upstream action_selector — your draft MUST lead with this):\n  theme: ${matchedTheme}\n  evidence: ${matchedEvidence ?? '(see active facts)'}\nDo not pivot to a different angle. The first paragraph of the body should reference this specific fact.\n`
     : '';
 
+  const recommendedBlock = recommended.length
+    ? `\nRECOMMENDED FACTS (deterministic shortlist — prefer one of these as your lead unless the past_touch context demands otherwise):\n${recommended.map((r) => `  ${r.id} (score=${r.score.toFixed(2)}): ${r.why}`).join('\n')}\n`
+    : '';
+
   return `AGENT: ${agentId}
 FILTER RULE: "${subName}" — semantic intent: "${subSemantic}"
 
@@ -836,7 +884,7 @@ ${JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}
-${pastOutcomesBlock}${contactsBlock}${angleBlock}
+${pastOutcomesBlock}${contactsBlock}${recommendedBlock}${angleBlock}
 Decide.`;
 }
 

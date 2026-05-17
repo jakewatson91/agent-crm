@@ -65,6 +65,8 @@ EMAIL FORMULA — in this order, body broken into roughly ${paraCount} short par
 ${forbiddenBlock}
 
 5. ${askBlock}
+
+LEAD-FACT SELECTION — the user message may include a RECOMMENDED FACTS block (a deterministic shortlist scored on ICP match, recency, confidence, prior over-use, and outcome history). When present, prefer one of those facts as your anchor for the problem statement. Override only if the past_touch context demands it — e.g., the prior touch already led with the top recommended fact and you'd be repeating yourself, or the recommended fact conflicts with how the prior touch was framed.
 ${toneBlock}
 RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle. Echo the chosen email in the output's "to_email" field. If no CONTACTS, set "to_email" to null.
 

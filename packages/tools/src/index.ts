@@ -28,6 +28,7 @@ export { cronToMinIntervalMinutes } from './cron.js';
 export { hasValueAlignedFact } from './action_selector.js';
 export { chatCompleteForWorkspace, type ChatForWorkspaceArgs } from './chat_workspace.js';
 export { buildDrafterDecision, type DrafterDecisionOpts } from './prompt_builders.js';
+export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.js';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
 export { scoreEntity, scoreAndAssert, combineSubScores };
