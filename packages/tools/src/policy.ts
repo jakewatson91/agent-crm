@@ -17,6 +17,17 @@ export interface OutreachPolicy {
 
 export interface EnrichmentPolicy {
   contact_provider?: 'none' | 'hunter';
+  /**
+   * Vertical-specific extraction examples. Inserted into the enricher prompt
+   * so the LLM extracts predicates relevant to THIS workspace's use case.
+   * Empty array = use a vertical-neutral default in the prompt builder.
+   */
+  example_facts?: Array<{ predicate: string; object_text: string }>;
+  /**
+   * Predicates the enricher must never assert (e.g. "is_company", "exists").
+   * Stacks on top of the code-level default ban list.
+   */
+  banned_predicates?: string[];
 }
 
 /**

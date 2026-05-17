@@ -22,6 +22,20 @@ const DOGFOOD_BANNED_PHRASES = [
   'next-gen',
 ];
 
+// Enricher examples for the dog-food workspace (selling agent-crm to founders
+// running sales with ≤1 person). These shape what the LLM looks for when
+// reading incoming signals. Editable per-workspace.
+const DOGFOOD_ENRICHER_EXAMPLES: Array<{ predicate: string; object_text: string }> = [
+  { predicate: 'hiring_for',           object_text: 'SDR / AE / RevOps role being filled' },
+  { predicate: 'headcount',            object_text: 'team size — e.g. "3 people"' },
+  { predicate: 'sales_motion',         object_text: 'founder-led / inbound / outbound / partner-led' },
+  { predicate: 'raised_round',         object_text: 'Series A $12M led by Sequoia' },
+  { predicate: 'launched_product',     object_text: 'specific product or feature' },
+  { predicate: 'target_market',        object_text: 'who they sell to' },
+  { predicate: 'using_ai',             object_text: 'how AI is integrated into their workflow' },
+  { predicate: 'token_burn',           object_text: 'mention of inference / LLM costs being a pain' },
+];
+
 // Value-prop themes for the dog-food workspace. action_selector only lets a
 // draft through when at least one substantive fact matches one of these.
 // Patterns are JS regex sources, matched case-insensitive against
@@ -63,6 +77,7 @@ async function main() {
       },
       enrichment: {
         contact_provider: 'hunter',
+        example_facts: DOGFOOD_ENRICHER_EXAMPLES,
         ...(existing.enrichment ?? {}),
       },
       drafter: {

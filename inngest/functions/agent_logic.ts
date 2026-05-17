@@ -421,7 +421,10 @@ export async function runAgent(
     } catch { /* non-fatal */ }
   }
 
-  const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp);
+  const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp, {
+    examples: (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>,
+    banned: (policy.enrichment?.banned_predicates ?? []) as string[],
+  });
   // matched_theme / matched_evidence come from action_selector. When set, the
   // drafter prompt below uses them as PRIMARY_ANGLE so the LLM leads with the
   // value-prop theme instead of grabbing the first fact in the list.
@@ -667,6 +670,7 @@ function buildSystemPrompt(
   constitution: string,
   persona: unknown,
   icp: unknown,
+  enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[] },
 ): string {
   const identity = behavior === 'drafter'
     ? 'You are an outbound-email drafter for an agent-native CRM.'
@@ -682,8 +686,13 @@ function buildSystemPrompt(
     ? `\n\nWORKSPACE CONSTITUTION (applies to every action — voice, do-nots, brand rules):\n${constitution}`
     : '';
 
+  const enricherDecision = buildEnricherDecision({
+    examples: enricherPolicy?.examples ?? [],
+    banned: enricherPolicy?.banned ?? [],
+  });
+
   const decisionBlock = behavior === 'drafter' ? DRAFTER_DECISION
-    : behavior === 'enricher' ? ENRICHER_DECISION
+    : behavior === 'enricher' ? enricherDecision
     : POSTER_DECISION;
 
   // Order matters: preamble (stable, cacheable) → identity (stable) → about
@@ -745,21 +754,46 @@ REASONING — every post_touch_draft output MUST include a "reasoning" field: 1-
 Output strictly valid JSON, no preamble:
 {"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<which facts you anchored to, 1-2 sentences>","to_email":"<picked contact email or null>"}`;
 
-const ENRICHER_DECISION = `A new signal arrived about the account in the user message. Extract atomic factual claims about THIS entity that are supported by the signal AND that the system doesn't already know.
+/**
+ * Vertical-neutral default examples. Used when the workspace hasn't seeded
+ * its own. They're broad enough to be a starting nudge without forcing a
+ * B2B-SaaS taxonomy onto a non-SaaS use case.
+ */
+const DEFAULT_ENRICHER_EXAMPLES: Array<{ predicate: string; object_text: string }> = [
+  { predicate: 'target_market',  object_text: '<who this entity sells to / serves>' },
+  { predicate: 'recent_event',   object_text: '<launched / hired / raised / changed / etc.>' },
+];
+
+/**
+ * Always-banned predicates (low-info, never useful). Stacks with
+ * policy.enrichment.banned_predicates on top.
+ */
+const DEFAULT_BANNED_PREDICATES = new Set(['is_company', 'is_real', 'exists', 'is_in_tech', 'is_business']);
+
+function buildEnricherDecision(opts: {
+  examples: Array<{ predicate: string; object_text: string }>;
+  banned: string[];
+}): string {
+  const examples = (opts.examples.length ? opts.examples : DEFAULT_ENRICHER_EXAMPLES)
+    .slice(0, 8)
+    .map((f) => `- ${f.predicate}=${f.object_text}`)
+    .join('\n');
+  const bannedAll = [...new Set([...DEFAULT_BANNED_PREDICATES, ...opts.banned])];
+  const bannedLine = bannedAll.length
+    ? `\n- Never assert these predicates: ${bannedAll.join(', ')}.`
+    : '';
+
+  return `A new signal arrived about the account in the user message. Extract atomic factual claims about THIS entity that are supported by the signal AND that the system doesn't already know.
 
 DO NOT extract:
 - Anything already present in the entity's ATTRIBUTES (the JSON object in the user message). The values there are authoritative; re-asserting them as facts is noise.
 - Anything already present in the ACTIVE FACTS list. Those exist; don't duplicate.
-- Generic descriptors that are obvious from the entity name or industry ("is a company", "is in tech").
+- Generic descriptors that are obvious from the entity name or category.${bannedLine}
 
-DO extract claims that ARE in the signal AND aren't already in attributes/active facts:
-- New hiring intent (specific role, department, location): "hiring_senior_typescript_engineer", "hiring_for=GTM"
-- Technology mentions not already in attributes: integrations, partnerships, customer references
-- Funding events: "raised_round=Series A 12M led by Sequoia"
-- Product events: "launched_product=X", "deprecated_product=Y"
-- Strategic positioning: "target_market=mid_market_fintech"
-- Personnel: new hires, departures, founder activities
-- Customer/partner mentions: "customer_of=Acme", "integrates_with=Snowflake"
+DO extract specific claims grounded in the signal. The kinds of facts that matter for THIS workspace look like:
+${examples}
+
+(These are the workspace's example shapes — extract anything that fits the same level of specificity, not literally these only.)
 
 Each claim should be:
 - ATOMIC: one predicate, one object. Not "uses postgres and redis."
@@ -770,9 +804,10 @@ Use object_text for the value. Confidence: 0.95 explicit, 0.7 implied. Skip lowe
 REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.
 
 Output strictly valid JSON:
-{"facts":[{"predicate":"<verb>","object_text":"<value>","confidence":0.0-1.0},...],"summary":"<1 sentence>","reasoning":"<why these facts, 1-2 sentences>"}
+{"facts":[{"predicate":"<verb_or_attribute>","object_text":"<value>","confidence":0.0-1.0},...],"summary":"<1 sentence>","reasoning":"<why these facts, 1-2 sentences>"}
 
 If nothing genuinely new is extractable, output {"facts":[],"summary":"No new facts; data already known or signal too vague.","reasoning":"<why nothing new>"}`;
+}
 
 function buildUserPrompt(
   agentId: string,

@@ -53,6 +53,8 @@ export default function SettingsPage() {
 
   // Integrations tab
   const [contactProvider, setContactProvider] = useState<'none' | 'hunter'>('none');
+  const [exampleFactsText, setExampleFactsText] = useState('');
+  const [bannedPredicatesText, setBannedPredicatesText] = useState('');
 
   // LLM tab
   const [openaiKey, setOpenaiKey] = useState('');
@@ -90,6 +92,9 @@ export default function SettingsPage() {
       setResendKey((policy.outreach?.resend_api_key ?? '') as string);
       setResendKeyDirty(false);
       setContactProvider(((policy.enrichment?.contact_provider as 'none' | 'hunter') ?? 'none'));
+      const examples = (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>;
+      setExampleFactsText(examples.map((f) => `${f.predicate} | ${f.object_text}`).join('\n'));
+      setBannedPredicatesText(((policy.enrichment?.banned_predicates ?? []) as string[]).join('\n'));
       setOpenaiKey((policy.llm?.openai_api_key ?? '') as string);
       setOpenrouterKey((policy.llm?.openrouter_api_key ?? '') as string);
       setOpenaiKeyDirty(false);
@@ -118,7 +123,24 @@ export default function SettingsPage() {
           ? (resendKey.trim() ? { resend_api_key: resendKey.trim() } : { resend_api_key: undefined })
           : {}),
       },
-      enrichment: { ...(base.enrichment ?? {}), contact_provider: contactProvider },
+      enrichment: {
+        ...(base.enrichment ?? {}),
+        contact_provider: contactProvider,
+        example_facts: exampleFactsText
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const idx = line.indexOf('|');
+            if (idx < 0) return null;
+            const predicate = line.slice(0, idx).trim();
+            const object_text = line.slice(idx + 1).trim();
+            if (!predicate || !object_text) return null;
+            return { predicate, object_text };
+          })
+          .filter((x): x is { predicate: string; object_text: string } => x !== null),
+        banned_predicates: bannedPredicatesText.split('\n').map((s) => s.trim()).filter(Boolean),
+      },
       llm: {
         ...(base.llm ?? {}),
         ...(openaiKeyDirty
@@ -131,7 +153,7 @@ export default function SettingsPage() {
         drafter_model: drafterModel.trim() || undefined,
       },
     };
-  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, ws]);
+  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, exampleFactsText, bannedPredicatesText, ws]);
 
   async function save() {
     setErr(null); setMsg(null); setSaving(true);
@@ -308,6 +330,29 @@ export default function SettingsPage() {
             <label style={labelStyle}>Custom connectors</label>
             <div style={helpStyle}>Wire a new HTTP source by URL + a plain-English description of what to extract. The agent runs it on a schedule and the LLM does the extraction — no code.</div>
             <a href={`/workspace/${params.ws}/connectors/new`} style={{ display: 'inline-block', marginTop: '.5rem', padding: '.5rem .9rem', background: 'var(--accent)', color: 'var(--accent-fg)', borderRadius: 6, textDecoration: 'none', fontSize: '.85rem', fontWeight: 500 }}>+ Add connector</a>
+          </div>
+
+          <div>
+            <label style={labelStyle}>Enricher examples</label>
+            <div style={helpStyle}>What kinds of facts should the agent look for when reading signals about an entity? One per line in the form <code>predicate | example value</code>. The LLM uses these as exemplars — extracted facts don't have to match exactly. Leave empty for vertical-neutral defaults.</div>
+            <textarea
+              value={exampleFactsText}
+              onChange={(e) => setExampleFactsText(e.target.value)}
+              rows={8}
+              placeholder={'hiring_for | SDR / AE / RevOps role being filled\nraised_round | Series A $12M led by Sequoia\nlaunched_product | specific product or feature'}
+              style={proseStyle}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Banned enricher predicates</label>
+            <div style={helpStyle}>Predicates the enricher must NEVER assert (e.g. low-info or noisy ones). One per line. Stacks on top of the always-banned list (<code>is_company</code>, <code>exists</code>, etc.).</div>
+            <textarea
+              value={bannedPredicatesText}
+              onChange={(e) => setBannedPredicatesText(e.target.value)}
+              rows={4}
+              style={proseStyle}
+            />
           </div>
         </div>
       )}
