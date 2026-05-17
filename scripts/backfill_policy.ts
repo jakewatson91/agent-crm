@@ -36,6 +36,24 @@ const DOGFOOD_ENRICHER_EXAMPLES: Array<{ predicate: string; object_text: string 
   { predicate: 'token_burn',           object_text: 'mention of inference / LLM costs being a pain' },
 ];
 
+// Drafter formula for the dog-food workspace (selling agent-crm to founders
+// running sales with ≤1 person). These shape the cold email — pains the
+// product solves, value props the drafter can cite, voice keywords.
+const DOGFOOD_PAIN_POINTS = [
+  'Running GTM with 1-2 people plus agents on top of HubSpot/Salesforce, bolt-on systems built for humans',
+  'Token bloat: agents reading raw row dumps from legacy CRMs eat 5-10x the tokens they need to',
+  'Last-write-wins on shared accounts: when multiple agents update the same row, data silently disappears',
+  'No provenance: agents make claims your customer can\'t verify',
+];
+const DOGFOOD_VALUE_PROPS = [
+  'When 3 of your agents update the same account at once, all 3 writes land. We benchmarked HubSpot losing 96%.',
+  'Every line in this email cites a fact you can trace back to the signal it came from.',
+  'Agents read 1.28x fewer tokens because the system projects rows for agents, not for humans clicking through tabs.',
+  'The default home screen is empty. You see things only when policy says you should.',
+];
+const DOGFOOD_TONE_KEYWORDS = ['casual', 'concrete', 'no-jargon', 'short-sentences'];
+const DOGFOOD_ASK_EXAMPLES = ['Worth exploring?', 'Open to a 15-min chat?', 'Want to see it run?'];
+
 // Value-prop themes for the dog-food workspace. action_selector only lets a
 // draft through when at least one substantive fact matches one of these.
 // Patterns are JS regex sources, matched case-insensitive against
@@ -83,6 +101,12 @@ async function main() {
       drafter: {
         value_themes: DOGFOOD_VALUE_THEMES,
         cooldown_days: 14,
+        subject_style: 'one_word',
+        paragraph_count: 4,
+        pain_points: DOGFOOD_PAIN_POINTS,
+        value_props: DOGFOOD_VALUE_PROPS,
+        tone_keywords: DOGFOOD_TONE_KEYWORDS,
+        ask_examples: DOGFOOD_ASK_EXAMPLES,
         ...(existing.drafter ?? {}),
       },
     };

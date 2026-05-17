@@ -50,6 +50,31 @@ export interface ValueTheme {
 export interface DrafterPolicy {
   value_themes?: ValueTheme[];
   cooldown_days?: number;
+
+  // ---- email formula (new in Phase 3) ----
+  /** How the subject line looks. Default 'one_word'. */
+  subject_style?: 'one_word' | 'short_phrase' | 'question';
+  /** Target paragraph count for the body. Default 4. */
+  paragraph_count?: number;
+  /**
+   * Workspace-specific pains the product addresses. Rendered as bullets in
+   * the prompt's "PROBLEM STATEMENT" section. Drafter picks the one that
+   * fits the prospect; doesn't list them all in the email.
+   */
+  pain_points?: string[];
+  /**
+   * Concrete behaviors / numbers the drafter can cite in the one-liner.
+   * "We benchmarked HubSpot losing 96% of writes under concurrent edits"
+   * is better than "we're agent-native."
+   */
+  value_props?: string[];
+  /** Tone keywords baked into the prompt: ["casual", "direct", "concrete"]. */
+  tone_keywords?: string[];
+  /**
+   * Example ask phrasings. Drafter picks one or rephrases.
+   * ["Worth exploring?", "Open to a 15-min chat?", "Want to see it run?"]
+   */
+  ask_examples?: string[];
 }
 
 /**

@@ -15,7 +15,7 @@ interface Workspace {
   knowledge_base: string;
 }
 
-type Tab = 'setup' | 'email' | 'integrations' | 'llm' | 'advanced';
+type Tab = 'setup' | 'email' | 'drafter' | 'integrations' | 'llm' | 'advanced';
 
 const ABOUT_PLACEHOLDER = `What this workspace tracks, who you sell to or want to find, how you want to come across.
 
@@ -56,6 +56,14 @@ export default function SettingsPage() {
   const [exampleFactsText, setExampleFactsText] = useState('');
   const [bannedPredicatesText, setBannedPredicatesText] = useState('');
 
+  // Drafter tab
+  const [subjectStyle, setSubjectStyle] = useState<'one_word' | 'short_phrase' | 'question'>('one_word');
+  const [paragraphCount, setParagraphCount] = useState<number>(4);
+  const [painPointsText, setPainPointsText] = useState('');
+  const [valuePropsText, setValuePropsText] = useState('');
+  const [toneKeywordsText, setToneKeywordsText] = useState('');
+  const [askExamplesText, setAskExamplesText] = useState('');
+
   // LLM tab
   const [openaiKey, setOpenaiKey] = useState('');
   const [openaiKeyDirty, setOpenaiKeyDirty] = useState(false);
@@ -95,6 +103,13 @@ export default function SettingsPage() {
       const examples = (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>;
       setExampleFactsText(examples.map((f) => `${f.predicate} | ${f.object_text}`).join('\n'));
       setBannedPredicatesText(((policy.enrichment?.banned_predicates ?? []) as string[]).join('\n'));
+      const d = (policy.drafter ?? {}) as Record<string, any>;
+      setSubjectStyle((d.subject_style as 'one_word' | 'short_phrase' | 'question') ?? 'one_word');
+      setParagraphCount(typeof d.paragraph_count === 'number' ? d.paragraph_count : 4);
+      setPainPointsText(((d.pain_points ?? []) as string[]).join('\n'));
+      setValuePropsText(((d.value_props ?? []) as string[]).join('\n'));
+      setToneKeywordsText(((d.tone_keywords ?? []) as string[]).join(', '));
+      setAskExamplesText(((d.ask_examples ?? []) as string[]).join('\n'));
       setOpenaiKey((policy.llm?.openai_api_key ?? '') as string);
       setOpenrouterKey((policy.llm?.openrouter_api_key ?? '') as string);
       setOpenaiKeyDirty(false);
@@ -141,6 +156,15 @@ export default function SettingsPage() {
           .filter((x): x is { predicate: string; object_text: string } => x !== null),
         banned_predicates: bannedPredicatesText.split('\n').map((s) => s.trim()).filter(Boolean),
       },
+      drafter: {
+        ...(base.drafter ?? {}),
+        subject_style: subjectStyle,
+        paragraph_count: paragraphCount,
+        pain_points: painPointsText.split('\n').map((s) => s.trim()).filter(Boolean),
+        value_props: valuePropsText.split('\n').map((s) => s.trim()).filter(Boolean),
+        tone_keywords: toneKeywordsText.split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
+        ask_examples: askExamplesText.split('\n').map((s) => s.trim()).filter(Boolean),
+      },
       llm: {
         ...(base.llm ?? {}),
         ...(openaiKeyDirty
@@ -153,7 +177,7 @@ export default function SettingsPage() {
         drafter_model: drafterModel.trim() || undefined,
       },
     };
-  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, exampleFactsText, bannedPredicatesText, ws]);
+  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, exampleFactsText, bannedPredicatesText, subjectStyle, paragraphCount, painPointsText, valuePropsText, toneKeywordsText, askExamplesText, ws]);
 
   async function save() {
     setErr(null); setMsg(null); setSaving(true);
@@ -243,6 +267,7 @@ export default function SettingsPage() {
       <div style={{ display: 'flex', gap: '.25rem', marginTop: '1.25rem', borderBottom: '1px solid var(--border)' }}>
         <TabButton id="setup" label="Setup" />
         <TabButton id="email" label="Email" />
+        <TabButton id="drafter" label="Drafter" />
         <TabButton id="integrations" label="Integrations" />
         <TabButton id="llm" label="LLM" />
         <TabButton id="advanced" label="Advanced" />
@@ -311,6 +336,84 @@ export default function SettingsPage() {
               onChange={(e) => { setResendKey(e.target.value); setResendKeyDirty(true); }}
               style={{ ...jsonStyle, fontFamily: 'inherit' }}
               placeholder="re_..."
+            />
+          </div>
+        </div>
+      )}
+
+      {tab === 'drafter' && (
+        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5 }}>
+            Shape what the cold-email drafter writes. These fields go directly into the drafter's system prompt — pain points become the bullets it picks from in the problem statement, value props become the one-liner options. Tone keywords steer voice.
+          </p>
+
+          <div>
+            <label style={labelStyle}>Subject style</label>
+            <div style={helpStyle}>How the email subject line is shaped.</div>
+            <select value={subjectStyle} onChange={(e) => setSubjectStyle(e.target.value as 'one_word' | 'short_phrase' | 'question')} style={{ ...jsonStyle, fontFamily: 'inherit' }}>
+              <option value="one_word">One word — concrete noun ("Tokens", "Burn")</option>
+              <option value="short_phrase">Short phrase — 2-5 words</option>
+              <option value="question">Question — short, specific</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={labelStyle}>Body paragraph count</label>
+            <div style={helpStyle}>Roughly how many short paragraphs in the body. The drafter still picks pacing — this is a target, not a hard limit.</div>
+            <input
+              type="number"
+              min={1}
+              max={8}
+              value={paragraphCount}
+              onChange={(e) => setParagraphCount(parseInt(e.target.value, 10) || 4)}
+              style={{ ...jsonStyle, fontFamily: 'inherit', maxWidth: 120 }}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Pain points</label>
+            <div style={helpStyle}>The specific pains your product addresses. One per line. The drafter picks the one that fits each prospect — don't list them all in the email. Use prospect-recognizable language, not internal jargon.</div>
+            <textarea
+              value={painPointsText}
+              onChange={(e) => setPainPointsText(e.target.value)}
+              rows={6}
+              placeholder={'Running GTM with 1-2 people on legacy CRMs built for humans\nToken bloat: agents reading raw rows eat 5-10x the tokens they need to'}
+              style={proseStyle}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Value props (concrete behaviors / numbers)</label>
+            <div style={helpStyle}>One per line. These are the one-liners the drafter can use — concrete, behavioral, ideally with a number. Beats abstract claims every time.</div>
+            <textarea
+              value={valuePropsText}
+              onChange={(e) => setValuePropsText(e.target.value)}
+              rows={6}
+              placeholder={'When 3 of your agents update the same account at once, all 3 writes land. HubSpot loses 96%.\nEvery line in this email cites a fact you can trace back to where it came from.'}
+              style={proseStyle}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Tone keywords</label>
+            <div style={helpStyle}>How the email should sound. Comma- or newline-separated.</div>
+            <input
+              value={toneKeywordsText}
+              onChange={(e) => setToneKeywordsText(e.target.value)}
+              placeholder="casual, concrete, no-jargon, short-sentences"
+              style={{ ...jsonStyle, fontFamily: 'inherit' }}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Ask examples</label>
+            <div style={helpStyle}>One per line. The drafter picks one or rephrases. Short — never a paragraph.</div>
+            <textarea
+              value={askExamplesText}
+              onChange={(e) => setAskExamplesText(e.target.value)}
+              rows={4}
+              placeholder={'Worth exploring?\nOpen to a 15-min chat?\nWant to see it run?'}
+              style={proseStyle}
             />
           </div>
         </div>

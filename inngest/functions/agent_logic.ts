@@ -424,6 +424,15 @@ export async function runAgent(
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp, {
     examples: (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>,
     banned: (policy.enrichment?.banned_predicates ?? []) as string[],
+  }, {
+    subject_style: policy.drafter?.subject_style,
+    paragraph_count: policy.drafter?.paragraph_count,
+    pain_points: policy.drafter?.pain_points,
+    value_props: policy.drafter?.value_props,
+    tone_keywords: policy.drafter?.tone_keywords,
+    ask_examples: policy.drafter?.ask_examples,
+    // forbidden_phrases in the PROMPT (post-LLM sanitize is separate, via banned_phrases).
+    forbidden_phrases: policy.outreach?.banned_phrases ?? [],
   });
   // matched_theme / matched_evidence come from action_selector. When set, the
   // drafter prompt below uses them as PRIMARY_ANGLE so the LLM leads with the
@@ -671,6 +680,15 @@ function buildSystemPrompt(
   persona: unknown,
   icp: unknown,
   enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[] },
+  drafterPolicy?: {
+    subject_style?: 'one_word' | 'short_phrase' | 'question';
+    paragraph_count?: number;
+    pain_points?: string[];
+    value_props?: string[];
+    tone_keywords?: string[];
+    ask_examples?: string[];
+    forbidden_phrases?: string[];
+  },
 ): string {
   const identity = behavior === 'drafter'
     ? 'You are an outbound-email drafter for an agent-native CRM.'
@@ -690,8 +708,17 @@ function buildSystemPrompt(
     examples: enricherPolicy?.examples ?? [],
     banned: enricherPolicy?.banned ?? [],
   });
+  const drafterDecision = buildDrafterDecision({
+    subject_style: drafterPolicy?.subject_style,
+    paragraph_count: drafterPolicy?.paragraph_count,
+    pain_points: drafterPolicy?.pain_points,
+    value_props: drafterPolicy?.value_props,
+    tone_keywords: drafterPolicy?.tone_keywords,
+    ask_examples: drafterPolicy?.ask_examples,
+    forbidden_phrases: drafterPolicy?.forbidden_phrases,
+  });
 
-  const decisionBlock = behavior === 'drafter' ? DRAFTER_DECISION
+  const decisionBlock = behavior === 'drafter' ? drafterDecision
     : behavior === 'enricher' ? enricherDecision
     : POSTER_DECISION;
 
@@ -710,49 +737,81 @@ REQUEST_GATE — when confidence is below 0.6, OR the body would assert somethin
 Output strictly valid JSON, no preamble:
 {"action":"post_claim"|"request_gate","body":"<1-2 sentences>","cites":["<fact_id_uuid>",...],"policy":"<for gate only>","condition":{<for gate only>}}`;
 
-const DRAFTER_DECISION = `A new high-fit signal matched your saved filter rule. Draft an outbound email to the account in the user message, following the formula below exactly.
+/**
+ * Build the drafter "decision" block from workspace policy. Replaces the
+ * old DRAFTER_DECISION constant. Pain points and value props are no longer
+ * baked into TypeScript — they come from policy.drafter so a new vertical
+ * gets its own pitch without a code change.
+ */
+function buildDrafterDecision(opts: {
+  subject_style?: 'one_word' | 'short_phrase' | 'question';
+  paragraph_count?: number;
+  pain_points?: string[];
+  value_props?: string[];
+  tone_keywords?: string[];
+  ask_examples?: string[];
+  forbidden_phrases?: string[];
+}): string {
+  const style = opts.subject_style ?? 'one_word';
+  const paraCount = opts.paragraph_count ?? 4;
+  const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);
+  const values = (opts.value_props ?? []).filter((s) => s.trim().length > 0);
+  const tones = (opts.tone_keywords ?? []).filter((s) => s.trim().length > 0);
+  const asks = (opts.ask_examples ?? ['Worth exploring?', 'Open to a quick chat?']).filter((s) => s.trim().length > 0);
+  const forbidden = (opts.forbidden_phrases ?? []).filter((s) => s.trim().length > 0);
 
-EMAIL FORMULA — 4 parts, in this order, each separated by a blank line:
+  const subjectInstruction = style === 'one_word'
+    ? 'SUBJECT — exactly ONE word. A concrete noun, ideally tied to the specific signal that triggered this. Never vague words like "Hello", "Question", "Quick", "Connect".'
+    : style === 'question'
+    ? 'SUBJECT — phrase as a short, specific question (under 60 chars). Avoid generic openers.'
+    : 'SUBJECT — short phrase, 2-5 words. Concrete and signal-specific. Avoid vague openers like "Quick question" or "Following up".';
 
-1. SUBJECT — exactly ONE word. A concrete noun, ideally tied to the specific signal that triggered this. Examples: "Tokens", "Founding-GTM", "Pricing", "Stack", "Burn". Never vague words like "Hello", "Question", "Quick", "Connect".
+  const painBlock = pains.length
+    ? `PROBLEM STATEMENT — 1-2 sentences naming the specific pain a prospect EXACTLY LIKE THIS ACCOUNT hits. Use the entity's facts/attributes to specialize. The pains your product speaks to (pick what fits, don't list all):\n${pains.map((p) => `   - ${p}`).join('\n')}\n   Tie the problem to a specific fact about THIS account.`
+    : `PROBLEM STATEMENT — 1-2 sentences naming a specific pain a prospect like this account hits, anchored in one of the entity's active facts. Don't generalize.`;
 
-2. ACCUSATION AUDIT — one short sentence acknowledging this is a cold email and disarming. Pick a phrasing that fits the moment, e.g.:
-   - "Hope you don't mind the cold connect."
-   - "You might hate me for the cold email."
-   - "Quick cold note, I'll keep it short."
-   Don't apologize twice. Don't qualify it. One sentence, then move on.
+  const valueBlock = values.length
+    ? `ONE-LINER — exactly 1 sentence. State a CONCRETE FACT about how your product behaves. Pick one that connects to the problem statement:\n${values.map((v) => `   - ${v}`).join('\n')}`
+    : `ONE-LINER — exactly 1 sentence. State a CONCRETE behavior or number about your product. Avoid generic phrases.`;
 
-3. PROBLEM STATEMENT — 1-2 sentences naming the specific pain orgs EXACTLY LIKE THIS ACCOUNT hit. Use the entity's facts/attributes to specialize. The pain space we speak to (pick what fits the prospect, don't list all):
-   - Running GTM with 1-2 people plus agents on top of HubSpot/Salesforce, bolt-on systems built for humans
-   - Token bloat: agents reading raw row dumps from legacy CRMs eat 5-10x the tokens they need to
-   - Last-write-wins on shared accounts: when multiple agents update the same row, data silently disappears
-   - No provenance: agents make claims your customer can't verify
-   Tie the problem to a specific fact about THIS account if you can (small team, recent fundraise, AI-forward stack).
+  const toneBlock = tones.length
+    ? `\nTONE — write in this voice: ${tones.join(', ')}.\n`
+    : '';
 
-4. ONE-LINER on the concrete thing we do — exactly 1 sentence. State a CONCRETE FACT about how the system behaves. Pick one that connects to the problem statement above:
-   - "When 3 of your agents update the same account at once, all 3 writes land. We benchmarked HubSpot losing 96%."
-   - "Every line in this email cites a fact you can trace back to the signal it came from."
-   - "Agents read 1.28x fewer tokens because the system projects rows for agents, not for humans clicking through tabs."
-   - "You see things only when policy says you should. The default home screen is empty when nothing needs you."
+  const askBlock = `ASK — short. ${asks.map((a) => `"${a}"`).join(' or ')}. One sentence.`;
 
-   BANNED PHRASES (do NOT use any variant): "AI-native CRM", "agent-native CRM", "agent-native architecture", "agent-native approach", "optimizes workflows", "optimizes agent workflows", "built for agents", "purpose-built for X", "redefining the way", "reimagining". These are filler. The reader has heard them 100 times this week. Use a concrete behavior or a number instead.
+  const forbiddenBlock = forbidden.length
+    ? `\nFORBIDDEN PHRASES (do NOT use any variant): ${forbidden.map((p) => `"${p}"`).join(', ')}. These are filler. Use a concrete behavior or a number instead.`
+    : '';
 
-5. ASK — short. "Worth exploring?" or "Open to a 15-min chat?" or "Want to see it run?". One sentence.
+  return `A new high-fit signal matched your saved filter rule. Draft an outbound email to the account in the user message, following the formula below exactly.
 
-RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle (founder/CEO for cold outreach to early-stage; RevOps lead or VP Sales for ops-tool pitch; CTO for technical depth). Echo the chosen email in your output's "to_email" field so the audit trail records who this draft is addressed to. If no CONTACTS, set "to_email" to null.
+EMAIL FORMULA — in this order, body broken into roughly ${paraCount} short paragraphs separated by blank lines:
 
-Total: subject is one word; body covers parts 2-5 in order. Single paragraph or split into a few — your call based on what reads naturally. No transitional fluff between parts.
+1. ${subjectInstruction}
 
-Voice and hard rules come from the workspace constitution above. Constitution wins over this formula on tone — if the constitution says "no em dashes" or "no jargon," follow that strictly even if the formula's example uses them.
+2. ACCUSATION AUDIT — one short sentence acknowledging this is a cold email and disarming. Examples: "Hope you don't mind the cold connect." / "Quick cold note, I'll keep it short." / "You might hate me for the cold email." Don't apologize twice. Don't qualify it.
 
-The decision to draft has already been made upstream — a deterministic action selector ran the rubric scores against thresholds before invoking you. You are here because the entity cleared all the bars: icp_total ≥ 0.65, signal_strength ≥ 0.7, evidence_depth ≥ 0.5, no draft in the past 14d. Your job is to WRITE the email, not to second-guess whether it should be written.
+3. ${painBlock}
+
+4. ${valueBlock}
+${forbiddenBlock}
+
+5. ${askBlock}
+${toneBlock}
+RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle. Echo the chosen email in the output's "to_email" field. If no CONTACTS, set "to_email" to null.
+
+Voice and hard rules come from the workspace constitution above. Constitution wins over this formula on tone — if the constitution says "no em dashes" or "no jargon," follow that strictly even if the formula's examples use them.
+
+The decision to draft has already been made upstream — a deterministic action selector ran the scores against thresholds before invoking you. You are here because the entity cleared all the bars. Your job is to WRITE the email, not to second-guess.
 
 If the active facts genuinely don't give you enough to write something concrete (you'd be reaching for generic phrases), output {"action":"request_gate","body":"<one sentence: what specific fact you'd need>","policy":"facts_insufficient_for_draft"} — but that's a rare escape hatch, not the default path.
 
 REASONING — every post_touch_draft output MUST include a "reasoning" field: 1-2 sentences explaining which 2-3 facts you anchored to. This becomes a separate "decision" post in the channel so the human auditor can see why each draft happened.
 
 Output strictly valid JSON, no preamble:
-{"action":"post_touch_draft","subject":"<one word>","body":"<email body, 4 short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<which facts you anchored to, 1-2 sentences>","to_email":"<picked contact email or null>"}`;
+{"action":"post_touch_draft","subject":"<see subject rule>","body":"<email body, ~${paraCount} short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<which facts you anchored to, 1-2 sentences>","to_email":"<picked contact email or null>"}`;
+}
 
 /**
  * Vertical-neutral default examples. Used when the workspace hasn't seeded
