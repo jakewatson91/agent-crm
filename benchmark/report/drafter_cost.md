@@ -4,7 +4,7 @@
 referencing one specific fact about the company AND the prior touch.
 
 This is what the agent does for every account in a real outbound flow. The
-"single tool call to decide yes/no" benchmark in `token_cost.md` measures one
+"single tool call to decide yes/no" benchmark (Workload 1a in `BENCHMARK.md`, now DEPRECATED) measures one
 slice of one decision; this measures what it costs to do a useful piece of work.
 
 **Workload spec:** to be added at `benchmark/workloads/realistic_drafter.yaml`
@@ -117,7 +117,7 @@ JSON response_format enforced.
 
 ## What this number means for the pitch
 
-Use this, not the original `token_cost.md` 1.28× number. That benchmark
+Use this, not the original 1.28× number (Workload 1a in `BENCHMARK.md`, now DEPRECATED). That benchmark
 measured a "decide yes/no" task with a single tool call. It's not what the
 agent actually does.
 

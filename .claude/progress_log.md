@@ -411,3 +411,80 @@ Goal: make the CRM safe for a second customer to adopt without code edits. Audit
 ### Memory updates
 - Banned word list expanded and pinned to top of MEMORY.md: substrate, gates, primitive, wedge, abstraction layer, predicate (as jargon), moat (vaguely). Jake corrected each multiple times — table with replacement words in `feedback_banned_word_substrate.md`.
 - New `project_test_case_dogfood.md` — pinned at top of MEMORY.md. Test case is sell agent-crm to companies, NOT Jake's job hunt. Translation rule: when pulling from progress_log or historical docs that reference job hunt, translate to dogfood frame before quoting.
+
+## 2026-05-17 (PM + evening) — Send-loop fix + architecture-as-product split
+
+Two big-arc pushes in one session. First: close the dog-food send loop (drafts with specific angles, post-send cooldown, sweep accuracy). Second: split every customer-varying value off code onto `workspaces.policy` so a second customer can ship without a TypeScript change. Plans: `soft-twirling-pizza.md`, `architecture-as-product.md`.
+
+### Send-loop fix (`soft-twirling-pizza.md`, Tracks 1-4)
+- **Track 1 — audit:** `scripts/audit_loop.ts` walks 5 checkpoints (pending approvals, action distribution, top entities + facts, pending drafts, sources). Found: 14 legacy drafts with mostly 0 cites + generic angles, zero `outreach_send` approvals ever, action_selector gating everything since the prior push.
+- **Track 2 — value-theme drafter gate:** `policy.drafter.value_themes[]` (name + regex pattern). `action_selector` requires at least one substantive fact matching a theme before `draft_outreach`. matched_theme + matched_evidence threaded into drafter prompt as PRIMARY ANGLE so the LLM leads with it. Source-bookkeeping predicates (query / intent / item_url / etc.) filtered before theme matching — killed the Viasocket-style false positive. Demo seeded with hiring / headcount / token_cost / ai_integration themes.
+- **Track 3 — post-send loop:** `gates/decide/route.ts` asserts `outreach_cooldown_until` (default 14d) after send. action_selector honors it (new `outreach_cooldown_active` policy). New daily `silenceSweep` cron: 7d no-reply → `no_reply_marked` fact + scoreAndAssert recompute. Reply ingest (Resend inbound webhook) deferred — subscription infra already exists.
+- **Track 4 — sweep accuracy:** New shared `packages/tools/src/cron.ts` handles `0 6 1 */3 *` (quarterly) etc. `cron_stale` honors per-source cadence (× 1.5/3.0 multiplier). `scoreAndAssert` short-circuits if active `dropped_until`. `score_distribution` excludes dropped + zero-substantive-fact entities. 4 YELLOW → 1 YELLOW.
+- `scripts/verify_loop.ts` — synthetic action routing against current facts. Apollo → `draft_outreach theme=hiring evidence=hiring_for=RevOps director`. Viasocket → `watch_only no_value_aligned_signal`.
+
+### Architecture-as-product split (`architecture-as-product.md`, Phases 1-5 + 5.5a + 5.5b)
+Five-phase move of every customer-varying value off code constants onto `workspaces.policy`.
+
+**Phase 1 — Connectors as data**
+- `inngest/functions/sources/connectors/custom_http.ts` (new). Declarative spec: `fetch.{url, method, headers, body, response_path}`, `extract.{system_prompt, batch_size, model}`, `signal.{type, magnitude}`, `dedup.{since_hours, item_id_path}`. Engine fetches, batches items through LLM with the workspace's prompt, asserts entities + facts + signals via `callTool`.
+- `/api/connectors/test-fetch` — preview raw response (truncated at 200KB).
+- `/api/connectors/generate-spec` — LLM derives `response_path`, `extraction_prompt`, `signal_type`, `batch_size` from URL + sample JSON + free-text description. Vertical-aware (description tells LLM not to reuse B2B predicates on non-B2B).
+- `/api/connectors/create` — idempotent insert/update into `sources`.
+- 4-step wizard at `/workspace/[ws]/connectors/new`: name+URL+auth → test fetch → describe → preview spec → save with schedule.
+- `scripts/verify_connector.ts` runs the full path against public HN Algolia (OpenAI quota blocked LLM step at the time).
+
+**Phase 2 — Enricher taxonomy on policy**
+- `EnrichmentPolicy.example_facts: Array<{predicate, object_text}>` + `banned_predicates: string[]`. `ENRICHER_DECISION` constant replaced with `buildEnricherDecision({examples, banned})` function. Vertical-neutral fallbacks when empty. Always-banned: `is_company`, `is_real`, `exists`, `is_in_tech`, `is_business`.
+- Wizard derives example_facts from the workspace description.
+- Backfill seeds 8 dog-food predicates: hiring_for, headcount, sales_motion, raised_round, launched_product, target_market, using_ai, token_burn.
+- Settings → Integrations gains enricher examples + banned predicates textareas.
+
+**Phase 3 — Drafter formula on policy**
+- `DrafterPolicy.{subject_style, paragraph_count, pain_points, value_props, tone_keywords, ask_examples}`. Long `DRAFTER_DECISION` constant replaced with `buildDrafterDecision({...policy})` extracted to `packages/tools/src/prompt_builders.ts`. Pain/value bullets come from policy; tone keywords steer voice; forbidden phrases come from `policy.outreach.banned_phrases`.
+- Wizard derives pain_points + value_props + tone_keywords from the description.
+- Backfill seeds dog-food values: 4 pains (legacy CRM bolt-on, token bloat, last-write-wins, no provenance), 4 value props (concurrent-write benchmark, citation trail, 1.28x token reduction, empty home), 4 tones, 3 asks.
+- Settings → Drafter tab.
+
+**Phase 4 — Routing thresholds + scoring weights on policy**
+- `RoutingPolicy` (11 thresholds across draft/research/drop/watch). `ScoringPolicy.weights` (6 sub-score weights) + `rrf_gate`. `selectAction` accepts optional `thresholds`; `combineSubScores` accepts optional `weights`; `scoreEntity` reads policy and threads both. `buildThresholds()` / `buildScoreWeights()` merge partials onto defaults.
+- Backfill seeds explicit copies of all defaults so they're editable in Settings.
+- Settings → Routing tab with `NumRow` helper component for every threshold + weight. Live "sum of weights" display.
+
+**Phase 5 — Settings polish**
+- Reset-to-defaults buttons on Drafter, Routing, Enrichment sections.
+- `/api/admin/preview-prompt` + Drafter-tab "Preview prompt" panel — calls `buildDrafterDecision` with current form values, renders the system prompt the LLM will see.
+- `/api/admin/routing-preview` — runs `selectAction` against top 30 entities with proposed thresholds + weights, returns action distribution + per-entity table (icp_total_now vs icp_total_reweighted with color coding). Routing tab renders it inline.
+
+**5.5a — LLM keys on workspace policy**
+- `LLMPolicy.{openai_api_key, openrouter_api_key, default_chat_model, drafter_model}`. New `chatCompleteForWorkspace(supabase, workspace_id, args)` helper in `@agent-crm/tools`: reads policy, merges with env fallback, delegates to primitives `chatComplete` with `api_keys` override. Behavior-aware (drafter behavior auto-lifts default to Pro).
+- Routed callers: `inngest/functions/agent_logic.ts` (drafter + enricher + claim_poster), `packages/tools/src/scoring.ts` (rubric LLM call), `inngest/functions/sources/connectors/custom_http.ts`, `apps/web/app/api/agent/intake/route.ts`, `apps/web/app/api/agent/intake/tools.ts::extract_facts`.
+- Not routed (env-only): exa/web/api_call connectors, agents/parse, sources/parse, workspaces/create, connectors/generate-spec. Defer until threading supabase+workspace_id through those helper fn sigs pays off.
+- Settings → LLM tab with paste-key forms + model overrides.
+
+**5.5b — Global chat intake widget with ReAct + SSE**
+- Floating ✦ button (⌘K toggle) on every workspace page. `apps/web/app/_components/IntakeWidget.tsx`.
+- `/api/agent/intake` runs a server-side ReAct loop with 8 MCP-backed tools: lookup_entity / get_entity / create_account / extract_facts (inline LLM, no writes) / assert_facts / rescore_entity / propose_action (synthetic selectAction) / trigger_drafter (fires `agent.run` Inngest event).
+- SSE streaming: each step (assistant text, tool_call, tool_result) flushes to the client as a separate event. Client incrementally renders.
+- Per-tool result renderers (instead of JSON blobs): lookup → match list with icp_fit chips; extract_facts → fact preview cards with predicate/value/confidence; rescore → score bars; propose_action → color-coded action badge + reason + sub-score bars; trigger_drafter → "dispatched" callout.
+- `chatComplete` extended to support OpenAI-format `tools[]` + `tool_choice`. ChatMessage gains `tool_calls`, `tool_call_id`, `name`.
+- System prompt enforces confirmation gates on writes — no fact gets asserted without explicit user yes.
+- MAX_STEPS=8, max_tokens=1200 per turn.
+- Deferred: conversation persistence across refresh, mobile responsive <420px, approve/skip buttons on extract_facts cards.
+
+### LLM routing
+- Default chat = `deepseek/deepseek-v4-flash:free` (OpenRouter). Drafter = `deepseek/deepseek-v4-pro`. Fallback on JSON-validation failure stays `gpt-4o-mini` (OpenAI direct) for cross-provider resilience.
+- Embedding stays on OpenAI `text-embedding-3-small` (pgvector dimension compatibility).
+- Required env on Render: `OPENROUTER_API_KEY` + existing `OPENAI_API_KEY`.
+
+### Bug fix
+- **icp_fit supersede leak.** `scoreAndAssert` was using `.maybeSingle()` for the prior-fact lookup; with >1 active row, it errored and fell into the "no existing" branch, inserting yet another active row. Coffee had score_total=0.19 (fresh) + icp_fit=0.70 (152h stale). Fixed: `.order('observed_at desc').limit(1).maybeSingle()`.
+
+### Workflow finding
+- Jake reminded me (correctly): local dev server (`pnpm --filter web dev`) reads prod Supabase via `.env.local` and HMRs UI/API changes. Only need to push for Inngest function changes that run on prod cron. I was over-pushing for UI iterations this session — should have suggested local dev for the Settings tabs / chat widget / preview routes.
+
+### Trade-offs
+- Did NOT migrate embeddings off OpenAI. Cost is ~$0.02/M tokens — basically free. Migration cost (drop pgvector column, change dimension, rebuild HNSW, re-embed everything) doesn't pay back as a money play, only as a provider-independence play. Deferred.
+- Did NOT wire native Anthropic SDK. OpenRouter slash-prefix (`anthropic/claude-sonnet-4-6`) works for Anthropic models. Deferred until Anthropic billing clears at the account level.
+- Did NOT verify architecture-as-product end-to-end against a fresh real-estate workspace. Code path proven via verify_loop on dog-food workspace; second-vertical sanity check is the obvious next deliverable.
+

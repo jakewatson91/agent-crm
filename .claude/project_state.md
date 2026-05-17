@@ -44,7 +44,7 @@ Agent-first CRM. Primary user is the agent; humans intervene only at exception a
 - Hallucination rate per draft (n=1 anecdote suggests HubSpot fabricates more, but no LLM-judge harness to measure systematically)
 - Pain-extraction yield on real production signals (only validated on synthetic fixtures)
 
-Full report: `BENCHMARK.md` at root. Session-specific rundown: `benchmark/report/SESSION_RUNDOWN.md`.
+Full report: `BENCHMARK.md` at root. Detailed drafter result: `benchmark/report/drafter_cost.md`.
 
 ## What's Built
 
@@ -87,6 +87,30 @@ Full report: `BENCHMARK.md` at root. Session-specific rundown: `benchmark/report
 - Decision posts on every draft + enrichment (full audit chain)
 - Outcome posts when approvals decided
 - Fact-triggered subscriptions architecture in place (subscriptions.fact_filter column + match_fact RPC + match-fact Inngest function); no fact-triggered subs created yet but infra is live
+
+### Architecture-as-product split (2026-05-17 PM/evening) — every customer-varying value moved off code, onto workspace.policy
+- **Phase 1 — Connectors as data.** New `custom_http` connector engine in `inngest/functions/sources/connectors/custom_http.ts`: declarative fetch+LLM-extract spec stored in `sources.config`. Three API routes: `/api/connectors/test-fetch` (preview raw response), `/api/connectors/generate-spec` (LLM derives spec from URL + sample + free-text description), `/api/connectors/create` (idempotent save). 4-step wizard at `/workspace/[ws]/connectors/new`. New verticals add data sources by URL + description, no TypeScript.
+- **Phase 2 — Enricher taxonomy on policy.** `policy.enrichment.example_facts[]` + `banned_predicates[]`. Hardcoded `ENRICHER_DECISION` constant replaced with `buildEnricherDecision({examples, banned})` function. Vertical-neutral fallback when policy empty. Wizard auto-derives example_facts from the customer's free-text description; backfill seeds 8 dog-food predicates onto the demo workspace.
+- **Phase 3 — Drafter formula on policy.** `policy.drafter.{subject_style, paragraph_count, pain_points, value_props, tone_keywords, ask_examples}`. Long `DRAFTER_DECISION` constant (B2B-specific pain bullets, "AI-native CRM" forbidden-phrase list) replaced with `buildDrafterDecision({...policy})` extracted to `packages/tools/src/prompt_builders.ts`. Wizard derives drafter formula from the description; backfill seeds dog-food values.
+- **Phase 4 — Routing thresholds + scoring weights on policy.** `policy.routing` (11 thresholds across draft/research/drop/watch) + `policy.scoring.weights` + `rrf_gate`. `selectAction` accepts optional `thresholds`; `combineSubScores` accepts optional `weights`; `scoreEntity` reads policy and threads both. `buildThresholds()` / `buildScoreWeights()` merge partial policies onto defaults.
+- **Phase 5 — Settings polish.** Reset-to-defaults buttons (Drafter / Routing / Enrichment). `/api/admin/preview-prompt` + Drafter-tab Preview panel showing the rendered system prompt. `/api/admin/routing-preview` runs `selectAction` against top 30 entities with proposed thresholds + weights, returns action distribution + per-entity table; Routing tab renders it inline.
+- **5.5a — LLM keys on workspace policy.** `policy.llm.{openai_api_key, openrouter_api_key, default_chat_model, drafter_model}`. New `chatCompleteForWorkspace()` helper in tools merges policy with env fallback. Routed through agent_logic (drafter + enricher), scoring, intake route, custom_http connector. Settings → LLM tab with paste-key forms. Embedding stays on env-OpenAI (pgvector compatibility).
+- **5.5b — Global chat intake widget with ReAct + SSE.** Floating ✦ button (⌘K toggle) on every workspace page. `/api/agent/intake` runs a server-side ReAct loop with 8 MCP-backed tools (lookup_entity / get_entity / create_account / extract_facts / assert_facts / rescore_entity / propose_action / trigger_drafter). SSE-streams each step to the client. Per-tool result renderers (match list, fact cards, score bars, action badge) instead of JSON blobs.
+- Settings page tab structure now: Setup / Email / Drafter / Routing / Integrations / LLM / Advanced. Advanced JSON still wins on save when it edits keys the friendly tabs don't manage.
+
+After this push, a fresh workspace can ship to a second customer with zero code change: wizard derives ICP/persona/constitution/enricher_examples/drafter_formula from one free-text description, customer pastes their own LLM keys, optionally tunes routing/scoring in Settings, wires their own connectors via the URL+description wizard.
+
+### Send-loop fixes (2026-05-17 PM)
+- **Value-theme drafter gate.** `policy.drafter.value_themes[]` = regex patterns. `action_selector` requires at least one substantive fact matching a theme before `draft_outreach` fires — otherwise `watch_only / no_value_aligned_signal`. matched_theme + matched_evidence threaded into drafter prompt as PRIMARY ANGLE. Stops generic "saw you're growing" drafts; demo seeded with hiring / headcount / token_cost / ai_integration themes.
+- **Post-send loop wired.** Approve-and-send asserts `outreach_cooldown_until` (default 14d, configurable). action_selector honors cooldown via new `outreach_cooldown_active` policy. New daily `silenceSweep` cron: 7d no-reply → `no_reply_marked` fact + score recompute. (Reply ingest itself deferred — Resend inbound webhook → `inbound_email` fact is the next step.)
+- **Sweep accuracy.** `cron_stale` now reads each source's `schedule_cron` (quarterly YC sources stop tripping the 24h threshold). `scoreAndAssert` short-circuits if active `dropped_until`. `score_distribution` excludes dropped + zero-substantive-fact entities. Output went 4 YELLOW → 1 YELLOW; remaining is real.
+- **icp_fit supersede leak fixed.** `scoreAndAssert` was using `.maybeSingle()` for the prior-fact lookup; with >1 active row, it errored and silently inserted yet another active row, compounding the leak. Changed to `.order().limit(1).maybeSingle()`.
+
+### LLM routing (2026-05-17 PM)
+- Default chat model = `deepseek/deepseek-v4-flash:free` (OpenRouter). Drafter = `deepseek/deepseek-v4-pro`. Fallback on JSON-validation failure stays `gpt-4o-mini` (OpenAI direct) — cross-provider resilience.
+- Embedding still hits OpenAI `text-embedding-3-small` (pgvector-stored vectors are dimension-locked).
+- Required env: `OPENROUTER_API_KEY` on Render (in addition to existing `OPENAI_API_KEY`).
+- Per-workspace key paste in Settings → LLM tab wins over env when set.
 
 ### Fact ranking + pain extraction (2026-05-17)
 - New `packages/tools/src/score_facts.ts` — deterministic per-fact ranking computed at projection time. Formula: cosine(fact, pitch_content) × recency × confidence × (1 - over_used) × outcome_boost. Top-K shortlist (default 3) surfaced to drafter as `recommended` block in the projection. Threshold `min_score: 0.35` returns empty shortlist when nothing clears the bar (better than surfacing noise).
@@ -148,14 +172,25 @@ Full report: `BENCHMARK.md` at root. Session-specific rundown: `benchmark/report
 - No sending pipeline — drafts stay in Inbox forever; human copy-pastes manually
 - Auto-mode classifier blocks `git push origin main` and bulk DB updates even after explicit approval; user has to run those manually
 - Workspace.constitution + about embedding gives one noise fact (`focuses_on: product development`) score of 0.383 — close to the top pain fact (0.392). Tuning issue, not architectural. Address via tighter `about` text or predicate-aware boost when more outcome data accumulates.
+- **End-to-end verification of architecture-as-product against a fresh real-estate workspace is deferred** — code path proven via verify_loop on dog-food workspace, but no second-vertical sanity check yet. Open question: do the wizard-derived `example_facts` and drafter `pain_points` for a non-B2B vertical actually produce sensible drafts?
+- **Reply ingest** for the post-send loop is not wired. `outreach_cooldown_until` + `silenceSweep` cron are live; an `inbound_email` Resend webhook → fact assertion would close the loop. Subscription infra (fact_filter on `inbound_email` predicate) is already in place.
+- **Embedding doesn't read `policy.llm.openai_api_key` yet** — only chat does. Per-workspace embedding keys would need a thin wrapper around `embed()`; deferred until a customer asks.
+- **Persistence + mobile responsiveness on the intake widget.** Conversation resets on refresh; panel is fixed-width 440px so <460px viewports break. Both deferred.
+- **Native Anthropic SDK.** Anthropic models route via OpenRouter slash-prefix (`anthropic/claude-sonnet-4-6`); no direct API integration. Deferred until Anthropic billing clears.
+- **Per-workspace secrets table.** API keys live on `workspaces.policy` as a stopgap; a real `workspace_secrets` table with envelope encryption is the long-term move.
+- **Connector marketplace / sharing across workspaces.** Today connectors are per-workspace rows in `sources`. No way to share a spec with another customer.
 
 ## Plan File
 
-Most recent: `zany-bouncing-pascal.md` — Portability foundation. Phase A (policy.ts + send_email + agent_logic + backfill_policy.ts), Phase B (wizard + /api/workspaces/create + home routing + tabbed Settings), Phase C (Portability test in CLAUDE.md). Shipped end-to-end; backfill must be run once.
+Most recent: `architecture-as-product.md` — five-phase split moving every customer-varying value off code onto `workspaces.policy`. Phases 1-5 + 5.5a + 5.5b all shipped. Verification end-to-end against a real-estate workspace deferred.
 
-Prior: no formal plan for the sweep PM session — design generated inline (10 checks across 4 tiers). Earlier: `quirky-mapping-pinwheel.md` (Scoring v2 + UI overhaul); `mellow-finding-noodle.md` (drafter consolidation, fact-triggered subs, ICP rescore, token obs).
+Earlier today: `soft-twirling-pizza.md` — five tracks (audit → value-theme drafter gate → post-send loop → sweep accuracy → end-to-end verify). Tracks 1-4 shipped; Track 5 (verify in prod) deferred to user.
 
-2026-05-17 work: no formal plan — design generated inline (realistic drafter benchmark + score_facts ranking + pain extraction + BENCHMARK.md overwrite).
+Prior: `zany-bouncing-pascal.md` — Portability foundation. Phase A (policy.ts + send_email + agent_logic + backfill_policy.ts), Phase B (wizard + /api/workspaces/create + home routing + tabbed Settings), Phase C (Portability test in CLAUDE.md). Shipped end-to-end; backfill must be run once.
+
+Older: `quirky-mapping-pinwheel.md` (Scoring v2 + UI overhaul); `mellow-finding-noodle.md` (drafter consolidation, fact-triggered subs, ICP rescore, token obs).
+
+2026-05-17 daytime benchmark work: no formal plan — design generated inline (realistic drafter benchmark + score_facts ranking + pain extraction + BENCHMARK.md overwrite).
 
 ## Open Questions
 
