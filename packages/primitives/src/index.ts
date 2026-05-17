@@ -5,7 +5,7 @@ export { subscribe } from './subscribe.js';
 export { gate, decideGate } from './gate.js';
 export { query } from './query.js';
 export { cite } from './cite.js';
-export { chatComplete, type ChatCompleteArgs, type ChatCompleteResult, type ChatMessage } from './llm.js';
+export { chatComplete, type ChatCompleteArgs, type ChatCompleteResult, type ChatMessage, type ToolSpec } from './llm.js';
 export {
   relatedToEntity,
   contactsAt,

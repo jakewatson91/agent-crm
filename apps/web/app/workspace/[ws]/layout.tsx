@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { EntitySearch } from '../../_components/EntitySearch';
+import { IntakeWidget } from '../../_components/IntakeWidget';
 
 export default async function WorkspaceLayout({
   children,
@@ -75,6 +76,7 @@ export default async function WorkspaceLayout({
         <Section title="Audit" items={debug} />
       </aside>
       <main style={{ flex: 1, padding: '1.75rem 2rem', maxWidth: 1100 }}>{children}</main>
+      <IntakeWidget />
       <style>{`
         .nav-link:hover { background: var(--panel-2); }
       `}</style>

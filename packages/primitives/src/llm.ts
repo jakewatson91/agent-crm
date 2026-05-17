@@ -11,6 +11,21 @@
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  // For assistant turns that emitted tool calls. Mirrors OpenAI shape.
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  // For tool-result turns. tool_call_id pairs back to the assistant's tool_calls[].id.
+  tool_call_id?: string;
+  // Display name on tool turns (OpenAI optional; we always set it for clarity).
+  name?: string;
+}
+
+export interface ToolSpec {
+  /** Function name the model emits in tool_calls. */
+  name: string;
+  /** One-line description the model reads to decide when to call. */
+  description: string;
+  /** JSON schema for arguments. Use { type:'object', properties:{...}, required:[...] } */
+  parameters: Record<string, unknown>;
 }
 
 export interface ChatCompleteArgs {
@@ -19,10 +34,16 @@ export interface ChatCompleteArgs {
   max_tokens?: number;
   temperature?: number;
   response_format?: { type: 'json_object' | 'text' };
+  /** When set, enables function calling. Each entry becomes a `tools[].function` spec. */
+  tools?: ToolSpec[];
+  /** Force a specific tool call or 'auto' (default) / 'none'. */
+  tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
 }
 
 export interface ChatCompleteResult {
-  text: string;
+  text: string;                      // empty string when the model only emitted tool_calls
+  tool_calls?: Array<{ id: string; name: string; arguments_json: string }>;
+  finish_reason?: string;            // 'stop' | 'tool_calls' | 'length' | ...
   input_tokens: number;
   output_tokens: number;
   cached_input_tokens: number;       // OpenAI: from prompt_tokens_details.cached_tokens (0 if no caching)
@@ -47,13 +68,30 @@ async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
     headers['X-Title'] = 'agent-crm';
   }
 
+  // Re-shape our internal messages into the OpenAI wire format. Tool calls and
+  // tool results need special handling — the API rejects messages where role
+  // and tool_call_id are mismatched.
+  const wireMessages = args.messages.map((m) => {
+    const base: Record<string, unknown> = { role: m.role, content: m.content };
+    if (m.role === 'assistant' && m.tool_calls?.length) base.tool_calls = m.tool_calls;
+    if (m.role === 'tool') {
+      if (m.tool_call_id) base.tool_call_id = m.tool_call_id;
+      if (m.name) base.name = m.name;
+    }
+    return base;
+  });
+
   const body: Record<string, unknown> = {
     model: args.model,
-    messages: args.messages,
+    messages: wireMessages,
   };
   if (args.max_tokens !== undefined) body.max_tokens = args.max_tokens;
   if (args.temperature !== undefined) body.temperature = args.temperature;
   if (args.response_format) body.response_format = args.response_format;
+  if (args.tools?.length) {
+    body.tools = args.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+    if (args.tool_choice) body.tool_choice = args.tool_choice;
+  }
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
@@ -62,7 +100,13 @@ async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   });
   if (!res.ok) throw new Error(`${provider} ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const j = await res.json() as {
-    choices: Array<{ message: { content: string } }>;
+    choices: Array<{
+      message: {
+        content: string | null;
+        tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+      };
+      finish_reason?: string;
+    }>;
     usage: {
       prompt_tokens: number;
       completion_tokens: number;
@@ -70,8 +114,16 @@ async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
     };
   };
 
+  const choice = j.choices[0];
+  const toolCallsRaw = choice?.message.tool_calls ?? [];
+  const tool_calls = toolCallsRaw.length
+    ? toolCallsRaw.map((c) => ({ id: c.id, name: c.function.name, arguments_json: c.function.arguments }))
+    : undefined;
+
   return {
-    text: j.choices[0]?.message.content ?? '',
+    text: choice?.message.content ?? '',
+    tool_calls,
+    finish_reason: choice?.finish_reason,
     input_tokens: j.usage.prompt_tokens,
     output_tokens: j.usage.completion_tokens,
     cached_input_tokens: j.usage.prompt_tokens_details?.cached_tokens ?? 0,
@@ -92,9 +144,12 @@ const FALLBACK_MODEL = 'gpt-4o-mini';
  */
 export async function chatComplete(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   const wantsJson = args.response_format?.type === 'json_object';
+  const usingTools = (args.tools?.length ?? 0) > 0;
 
   let result = await callOnce(args);
-  if (!wantsJson || isValidJson(result.text)) return result;
+  // When tools are wired, the model may return tool_calls with empty content;
+  // that's a valid response, not a parse failure. Skip the JSON retry path.
+  if (usingTools || !wantsJson || isValidJson(result.text)) return result;
 
   // First retry: same model, same prompt.
   result = await callOnce(args);
