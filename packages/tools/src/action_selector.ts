@@ -77,23 +77,69 @@ export function hasValueAlignedFact(
   return { aligned: false, theme: null, predicate: null, evidence: null };
 }
 
-// ---- thresholds (centralized so they're easy to tune) ----
-const THRESH = {
+// ---- threshold defaults (overridable via workspace.policy.routing) ----
+export interface ActionThresholds {
+  DRAFT_ICP_TOTAL: number;
+  DRAFT_SIGNAL_STRENGTH: number;
+  DRAFT_EVIDENCE_DEPTH: number;
+  DRAFT_SUPPRESSION_DAYS: number;
+  RESEARCH_ICP_TOTAL: number;
+  RESEARCH_EVIDENCE_DEPTH: number;
+  RESEARCH_COOLDOWN_DAYS: number;
+  DROP_ICP_TOTAL: number;
+  DROP_EVIDENCE_DEPTH: number;
+  DROP_SUPPRESSION_DAYS: number;
+  WATCH_ICP_TOTAL: number;
+}
+
+export const DEFAULT_THRESHOLDS: ActionThresholds = {
   DRAFT_ICP_TOTAL: 0.65,
   DRAFT_SIGNAL_STRENGTH: 0.7,
   DRAFT_EVIDENCE_DEPTH: 0.5,
   DRAFT_SUPPRESSION_DAYS: 14,
 
   RESEARCH_ICP_TOTAL: 0.5,
-  RESEARCH_EVIDENCE_DEPTH: 0.4,    // below this AND ≥ RESEARCH_ICP_TOTAL → go research
-  RESEARCH_COOLDOWN_DAYS: 7,        // don't trigger Exa more than once a week per entity
+  RESEARCH_EVIDENCE_DEPTH: 0.4,
+  RESEARCH_COOLDOWN_DAYS: 7,
 
   DROP_ICP_TOTAL: 0.35,
-  DROP_EVIDENCE_DEPTH: 0.5,         // need enough evidence to be CONFIDENT it's a miss
+  DROP_EVIDENCE_DEPTH: 0.5,
   DROP_SUPPRESSION_DAYS: 90,
 
-  WATCH_ICP_TOTAL: 0.5,             // fit is real even if trigger is weak
+  WATCH_ICP_TOTAL: 0.5,
 };
+
+/**
+ * Merge workspace routing policy onto defaults. Each field falls back to the
+ * default when unset, so a policy with only one tuned field still works.
+ */
+export function buildThresholds(policy?: {
+  draft_icp_total?: number;
+  draft_signal_strength?: number;
+  draft_evidence_depth?: number;
+  draft_suppression_days?: number;
+  research_icp_total?: number;
+  research_evidence_depth_max?: number;
+  research_cooldown_days?: number;
+  drop_icp_total?: number;
+  drop_evidence_depth_min?: number;
+  drop_suppression_days?: number;
+  watch_icp_total?: number;
+}): ActionThresholds {
+  return {
+    DRAFT_ICP_TOTAL: policy?.draft_icp_total ?? DEFAULT_THRESHOLDS.DRAFT_ICP_TOTAL,
+    DRAFT_SIGNAL_STRENGTH: policy?.draft_signal_strength ?? DEFAULT_THRESHOLDS.DRAFT_SIGNAL_STRENGTH,
+    DRAFT_EVIDENCE_DEPTH: policy?.draft_evidence_depth ?? DEFAULT_THRESHOLDS.DRAFT_EVIDENCE_DEPTH,
+    DRAFT_SUPPRESSION_DAYS: policy?.draft_suppression_days ?? DEFAULT_THRESHOLDS.DRAFT_SUPPRESSION_DAYS,
+    RESEARCH_ICP_TOTAL: policy?.research_icp_total ?? DEFAULT_THRESHOLDS.RESEARCH_ICP_TOTAL,
+    RESEARCH_EVIDENCE_DEPTH: policy?.research_evidence_depth_max ?? DEFAULT_THRESHOLDS.RESEARCH_EVIDENCE_DEPTH,
+    RESEARCH_COOLDOWN_DAYS: policy?.research_cooldown_days ?? DEFAULT_THRESHOLDS.RESEARCH_COOLDOWN_DAYS,
+    DROP_ICP_TOTAL: policy?.drop_icp_total ?? DEFAULT_THRESHOLDS.DROP_ICP_TOTAL,
+    DROP_EVIDENCE_DEPTH: policy?.drop_evidence_depth_min ?? DEFAULT_THRESHOLDS.DROP_EVIDENCE_DEPTH,
+    DROP_SUPPRESSION_DAYS: policy?.drop_suppression_days ?? DEFAULT_THRESHOLDS.DROP_SUPPRESSION_DAYS,
+    WATCH_ICP_TOTAL: policy?.watch_icp_total ?? DEFAULT_THRESHOLDS.WATCH_ICP_TOTAL,
+  };
+}
 
 interface SelectArgs {
   workspace_id: string;
@@ -108,11 +154,14 @@ interface SelectArgs {
   // Substantive facts for value-theme matching. Pass [] to disable the gate.
   facts: Array<{ predicate: string; object_text: string | null }>;
   value_themes: ValueTheme[];
+  /** Per-workspace thresholds. When omitted, DEFAULT_THRESHOLDS apply. */
+  thresholds?: ActionThresholds;
 }
 
 export function selectAction(args: SelectArgs): ActionDecision {
   const b = args.breakdown;
   const now = Date.now();
+  const THRESH = args.thresholds ?? DEFAULT_THRESHOLDS;
 
   // 0. Hard suppression: agent previously dropped this entity, and the
   //    suppression window is still in effect.

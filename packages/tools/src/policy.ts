@@ -98,6 +98,53 @@ export interface LLMPolicy {
   drafter_model?: string;
 }
 
+/**
+ * Action-selector thresholds. Decide when an entity routes to draft / watch /
+ * research / drop. All optional; unset = use code defaults.
+ *
+ * Two main knobs a customer might want:
+ *   - draft_icp_total: bar for "ready to email" (default 0.65). Lower = more
+ *     drafts, more noise. Higher = pickier.
+ *   - drop_icp_total: bar for "give up on this entity for 90 days" (default
+ *     0.35). Lower = give up faster.
+ */
+export interface RoutingPolicy {
+  draft_icp_total?: number;
+  draft_signal_strength?: number;
+  draft_evidence_depth?: number;
+  draft_suppression_days?: number;
+
+  research_icp_total?: number;
+  research_evidence_depth_max?: number;
+  research_cooldown_days?: number;
+
+  drop_icp_total?: number;
+  drop_evidence_depth_min?: number;
+  drop_suppression_days?: number;
+
+  watch_icp_total?: number;
+}
+
+/**
+ * Scoring weights for combineSubScores. Must sum to 1.0 in spirit; if a
+ * customer sets weights that don't, the score gets clamped to [0,1] anyway.
+ *
+ * rrf_gate: if the multi-perspective RRF prefilter score is below this AND
+ * evidence_depth is also low, skip the LLM call entirely and use the RRF
+ * score as a rough proxy. Default 0.3.
+ */
+export interface ScoringPolicy {
+  weights?: {
+    industry_match?: number;
+    stage_match?: number;
+    signal_strength?: number;
+    evidence_depth?: number;
+    recency?: number;
+    graph_proximity?: number;
+  };
+  rrf_gate?: number;
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
@@ -109,9 +156,11 @@ export interface WorkspacePolicy {
   enrichment?: EnrichmentPolicy;
   drafter?: DrafterPolicy;
   llm?: LLMPolicy;
+  routing?: RoutingPolicy;
+  scoring?: ScoringPolicy;
 }
 
-export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrichment' | 'drafter' | 'llm'>> & WorkspacePolicy = {
+export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrichment' | 'drafter' | 'llm' | 'routing' | 'scoring'>> & WorkspacePolicy = {
   outreach: {
     override_to: null,
     from_email: 'onboarding@resend.dev',
@@ -125,6 +174,8 @@ export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrich
     cooldown_days: 14,
   },
   llm: {},
+  routing: {},
+  scoring: {},
 };
 
 /**
@@ -141,5 +192,7 @@ export async function getPolicy(supabase: SupabaseClient, workspace_id: string):
     enrichment: { ...DEFAULT_POLICY.enrichment, ...(raw.enrichment ?? {}) },
     drafter: { ...DEFAULT_POLICY.drafter, ...(raw.drafter ?? {}) },
     llm: { ...DEFAULT_POLICY.llm, ...(raw.llm ?? {}) },
+    routing: { ...DEFAULT_POLICY.routing, ...(raw.routing ?? {}) },
+    scoring: { ...DEFAULT_POLICY.scoring, ...(raw.scoring ?? {}) },
   };
 }

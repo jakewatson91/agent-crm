@@ -23,7 +23,7 @@ import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './i
 import { chatCompleteForWorkspace } from './chat_workspace.js';
 
 const SCORE_MODEL = 'deepseek/deepseek-v4-flash:free';
-const RRF_GATE = 0.3;           // below this, skip LLM
+const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 
 // Predicates that don't count as "substantive" evidence for evidence_depth.
@@ -124,7 +124,7 @@ export async function scoreEntity(
     supabase.from('facts').select('predicate, object_text, confidence, observed_at, created_at')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .is('supersedes', null).order('observed_at', { ascending: false }).limit(40),
-    supabase.from('workspaces').select('icp, about, persona').eq('id', workspace_id).maybeSingle(),
+    supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle(),
     graphProximity(supabase, workspace_id, entity_id),
     getIcpPerspectiveVectors(supabase, workspace_id),
   ]);
@@ -132,7 +132,12 @@ export async function scoreEntity(
   if (!entRes.data) return null;
   const entity = entRes.data as { name: string; kind: string; attributes: Record<string, unknown> };
   const facts = (factsRes.data ?? []) as Array<{ predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string }>;
-  const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown> };
+  const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown>; policy?: Record<string, any> };
+
+  // Policy-driven scoring overrides (Phase 4). Both fall back to code defaults.
+  const scoringPol = (ws.policy?.scoring ?? {}) as { weights?: Partial<ScoreWeights>; rrf_gate?: number };
+  const weights = buildScoreWeights(scoringPol.weights);
+  const rrfGate = typeof scoringPol.rrf_gate === 'number' ? scoringPol.rrf_gate : DEFAULT_RRF_GATE;
 
   // Skip-when-stale guard: if a prior score_total exists and no substantive
   // fact is newer than it, the score can't have changed — bail before the
@@ -184,7 +189,7 @@ export async function scoreEntity(
   // ---- Pre-filter shortcut: when 3 embedding perspectives unanimously
   //      disagree with the ICP, more facts won't flip the answer. Skip the
   //      LLM call regardless of evidence depth.
-  if (rrf_prefilter < RRF_GATE) {
+  if (rrf_prefilter < rrfGate) {
     const breakdown: ScoreBreakdown = {
       industry_match: clamp01(rrf_prefilter),
       stage_match: 0,
@@ -194,7 +199,7 @@ export async function scoreEntity(
       graph_proximity: graph,
       rrf_prefilter,
     };
-    const icp_total = combineSubScores(breakdown);
+    const icp_total = combineSubScores(breakdown, weights);
     return {
       icp_total,
       icp_fit: icp_total,
@@ -283,7 +288,7 @@ Score this account on the three rubric dimensions.`;
     rrf_prefilter,
   };
 
-  const icp_total = combineSubScores(breakdown);
+  const icp_total = combineSubScores(breakdown, weights);
   return {
     icp_total,
     icp_fit: icp_total,
@@ -297,15 +302,41 @@ Score this account on the three rubric dimensions.`;
  * The combine formula is exposed publicly so the UI / audit tools can show
  * the math instead of just the final number.
  */
-export function combineSubScores(b: ScoreBreakdown): number {
+export interface ScoreWeights {
+  industry_match: number;
+  stage_match: number;
+  signal_strength: number;
+  evidence_depth: number;
+  recency: number;
+  graph_proximity: number;
+}
+
+export const DEFAULT_WEIGHTS: ScoreWeights = {
+  industry_match: 0.30,
+  stage_match: 0.20,
+  signal_strength: 0.10,
+  evidence_depth: 0.20,
+  recency: 0.10,
+  graph_proximity: 0.10,
+};
+
+export function combineSubScores(b: ScoreBreakdown, weights: ScoreWeights = DEFAULT_WEIGHTS): number {
   const total =
-    0.30 * b.industry_match +
-    0.20 * b.stage_match +
-    0.20 * b.evidence_depth +
-    0.10 * b.signal_strength +
-    0.10 * b.recency +
-    0.10 * b.graph_proximity;
+    weights.industry_match * b.industry_match +
+    weights.stage_match * b.stage_match +
+    weights.evidence_depth * b.evidence_depth +
+    weights.signal_strength * b.signal_strength +
+    weights.recency * b.recency +
+    weights.graph_proximity * b.graph_proximity;
   return clamp01(total);
+}
+
+/**
+ * Merge a (possibly partial) policy.scoring.weights object onto defaults so
+ * each missing key falls back to the default contribution.
+ */
+export function buildScoreWeights(policy?: Partial<ScoreWeights>): ScoreWeights {
+  return { ...DEFAULT_WEIGHTS, ...(policy ?? {}) };
 }
 
 // ---------- assertion ----------

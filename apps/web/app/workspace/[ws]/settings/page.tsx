@@ -15,7 +15,7 @@ interface Workspace {
   knowledge_base: string;
 }
 
-type Tab = 'setup' | 'email' | 'drafter' | 'integrations' | 'llm' | 'advanced';
+type Tab = 'setup' | 'email' | 'drafter' | 'routing' | 'integrations' | 'llm' | 'advanced';
 
 const ABOUT_PLACEHOLDER = `What this workspace tracks, who you sell to or want to find, how you want to come across.
 
@@ -64,6 +64,26 @@ export default function SettingsPage() {
   const [toneKeywordsText, setToneKeywordsText] = useState('');
   const [askExamplesText, setAskExamplesText] = useState('');
 
+  // Routing tab
+  const [draftIcp, setDraftIcp] = useState(0.65);
+  const [draftSignal, setDraftSignal] = useState(0.7);
+  const [draftEvidence, setDraftEvidence] = useState(0.5);
+  const [draftSuppress, setDraftSuppress] = useState(14);
+  const [researchIcp, setResearchIcp] = useState(0.5);
+  const [researchEvidenceMax, setResearchEvidenceMax] = useState(0.4);
+  const [researchCooldown, setResearchCooldown] = useState(7);
+  const [dropIcp, setDropIcp] = useState(0.35);
+  const [dropEvidenceMin, setDropEvidenceMin] = useState(0.5);
+  const [dropSuppress, setDropSuppress] = useState(90);
+  const [watchIcp, setWatchIcp] = useState(0.5);
+  const [wIndustry, setWIndustry] = useState(0.30);
+  const [wStage, setWStage] = useState(0.20);
+  const [wSignal, setWSignal] = useState(0.10);
+  const [wEvidence, setWEvidence] = useState(0.20);
+  const [wRecency, setWRecency] = useState(0.10);
+  const [wGraph, setWGraph] = useState(0.10);
+  const [rrfGate, setRrfGate] = useState(0.30);
+
   // LLM tab
   const [openaiKey, setOpenaiKey] = useState('');
   const [openaiKeyDirty, setOpenaiKeyDirty] = useState(false);
@@ -110,6 +130,27 @@ export default function SettingsPage() {
       setValuePropsText(((d.value_props ?? []) as string[]).join('\n'));
       setToneKeywordsText(((d.tone_keywords ?? []) as string[]).join(', '));
       setAskExamplesText(((d.ask_examples ?? []) as string[]).join('\n'));
+      const r = (policy.routing ?? {}) as Record<string, any>;
+      setDraftIcp(typeof r.draft_icp_total === 'number' ? r.draft_icp_total : 0.65);
+      setDraftSignal(typeof r.draft_signal_strength === 'number' ? r.draft_signal_strength : 0.7);
+      setDraftEvidence(typeof r.draft_evidence_depth === 'number' ? r.draft_evidence_depth : 0.5);
+      setDraftSuppress(typeof r.draft_suppression_days === 'number' ? r.draft_suppression_days : 14);
+      setResearchIcp(typeof r.research_icp_total === 'number' ? r.research_icp_total : 0.5);
+      setResearchEvidenceMax(typeof r.research_evidence_depth_max === 'number' ? r.research_evidence_depth_max : 0.4);
+      setResearchCooldown(typeof r.research_cooldown_days === 'number' ? r.research_cooldown_days : 7);
+      setDropIcp(typeof r.drop_icp_total === 'number' ? r.drop_icp_total : 0.35);
+      setDropEvidenceMin(typeof r.drop_evidence_depth_min === 'number' ? r.drop_evidence_depth_min : 0.5);
+      setDropSuppress(typeof r.drop_suppression_days === 'number' ? r.drop_suppression_days : 90);
+      setWatchIcp(typeof r.watch_icp_total === 'number' ? r.watch_icp_total : 0.5);
+      const sc = (policy.scoring ?? {}) as Record<string, any>;
+      const wts = (sc.weights ?? {}) as Record<string, any>;
+      setWIndustry(typeof wts.industry_match === 'number' ? wts.industry_match : 0.30);
+      setWStage(typeof wts.stage_match === 'number' ? wts.stage_match : 0.20);
+      setWSignal(typeof wts.signal_strength === 'number' ? wts.signal_strength : 0.10);
+      setWEvidence(typeof wts.evidence_depth === 'number' ? wts.evidence_depth : 0.20);
+      setWRecency(typeof wts.recency === 'number' ? wts.recency : 0.10);
+      setWGraph(typeof wts.graph_proximity === 'number' ? wts.graph_proximity : 0.10);
+      setRrfGate(typeof sc.rrf_gate === 'number' ? sc.rrf_gate : 0.30);
       setOpenaiKey((policy.llm?.openai_api_key ?? '') as string);
       setOpenrouterKey((policy.llm?.openrouter_api_key ?? '') as string);
       setOpenaiKeyDirty(false);
@@ -165,6 +206,32 @@ export default function SettingsPage() {
         tone_keywords: toneKeywordsText.split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
         ask_examples: askExamplesText.split('\n').map((s) => s.trim()).filter(Boolean),
       },
+      routing: {
+        ...(base.routing ?? {}),
+        draft_icp_total: draftIcp,
+        draft_signal_strength: draftSignal,
+        draft_evidence_depth: draftEvidence,
+        draft_suppression_days: draftSuppress,
+        research_icp_total: researchIcp,
+        research_evidence_depth_max: researchEvidenceMax,
+        research_cooldown_days: researchCooldown,
+        drop_icp_total: dropIcp,
+        drop_evidence_depth_min: dropEvidenceMin,
+        drop_suppression_days: dropSuppress,
+        watch_icp_total: watchIcp,
+      },
+      scoring: {
+        ...(base.scoring ?? {}),
+        weights: {
+          industry_match: wIndustry,
+          stage_match: wStage,
+          signal_strength: wSignal,
+          evidence_depth: wEvidence,
+          recency: wRecency,
+          graph_proximity: wGraph,
+        },
+        rrf_gate: rrfGate,
+      },
       llm: {
         ...(base.llm ?? {}),
         ...(openaiKeyDirty
@@ -177,7 +244,7 @@ export default function SettingsPage() {
         drafter_model: drafterModel.trim() || undefined,
       },
     };
-  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, exampleFactsText, bannedPredicatesText, subjectStyle, paragraphCount, painPointsText, valuePropsText, toneKeywordsText, askExamplesText, ws]);
+  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, exampleFactsText, bannedPredicatesText, subjectStyle, paragraphCount, painPointsText, valuePropsText, toneKeywordsText, askExamplesText, draftIcp, draftSignal, draftEvidence, draftSuppress, researchIcp, researchEvidenceMax, researchCooldown, dropIcp, dropEvidenceMin, dropSuppress, watchIcp, wIndustry, wStage, wSignal, wEvidence, wRecency, wGraph, rrfGate, ws]);
 
   async function save() {
     setErr(null); setMsg(null); setSaving(true);
@@ -268,6 +335,7 @@ export default function SettingsPage() {
         <TabButton id="setup" label="Setup" />
         <TabButton id="email" label="Email" />
         <TabButton id="drafter" label="Drafter" />
+        <TabButton id="routing" label="Routing" />
         <TabButton id="integrations" label="Integrations" />
         <TabButton id="llm" label="LLM" />
         <TabButton id="advanced" label="Advanced" />
@@ -419,6 +487,63 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {tab === 'routing' && (
+        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5 }}>
+            Tune when the agent drafts, watches, researches, or drops an entity. Higher draft thresholds = pickier (fewer drafts). Lower drop thresholds = give up on entities faster.
+          </p>
+
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Draft</div>
+            <div style={helpStyle}>Entity gets a draft when ALL of these clear.</div>
+            <NumRow label="icp_total min" value={draftIcp} onChange={setDraftIcp} step={0.05} />
+            <NumRow label="signal_strength min" value={draftSignal} onChange={setDraftSignal} step={0.05} />
+            <NumRow label="evidence_depth min" value={draftEvidence} onChange={setDraftEvidence} step={0.05} />
+            <NumRow label="suppression days (don't re-draft within N days)" value={draftSuppress} onChange={setDraftSuppress} step={1} />
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Deep research</div>
+            <div style={helpStyle}>Entity gets a targeted research pull (Exa) when fit hints exist but evidence is thin.</div>
+            <NumRow label="icp_total min" value={researchIcp} onChange={setResearchIcp} step={0.05} />
+            <NumRow label="evidence_depth max (research if below this)" value={researchEvidenceMax} onChange={setResearchEvidenceMax} step={0.05} />
+            <NumRow label="cooldown days (don't re-research within N days)" value={researchCooldown} onChange={setResearchCooldown} step={1} />
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Drop</div>
+            <div style={helpStyle}>Confidently off-ICP. Suppresses re-evaluation for N days.</div>
+            <NumRow label="icp_total max (drop if below)" value={dropIcp} onChange={setDropIcp} step={0.05} />
+            <NumRow label="evidence_depth min (need enough facts to be sure)" value={dropEvidenceMin} onChange={setDropEvidenceMin} step={0.05} />
+            <NumRow label="suppression days" value={dropSuppress} onChange={setDropSuppress} step={1} />
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Watch</div>
+            <div style={helpStyle}>Fit is real but trigger is weak. Keep enriching, no draft.</div>
+            <NumRow label="icp_total min" value={watchIcp} onChange={setWatchIcp} step={0.05} />
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Scoring weights</div>
+            <div style={helpStyle}>How each sub-score contributes to the final icp_total. Should roughly sum to 1.0 — anything beyond that gets clamped to [0,1] anyway.</div>
+            <NumRow label="industry_match" value={wIndustry} onChange={setWIndustry} step={0.05} />
+            <NumRow label="stage_match" value={wStage} onChange={setWStage} step={0.05} />
+            <NumRow label="signal_strength" value={wSignal} onChange={setWSignal} step={0.05} />
+            <NumRow label="evidence_depth" value={wEvidence} onChange={setWEvidence} step={0.05} />
+            <NumRow label="recency" value={wRecency} onChange={setWRecency} step={0.05} />
+            <NumRow label="graph_proximity" value={wGraph} onChange={setWGraph} step={0.05} />
+            <div style={{ fontSize: '.75rem', color: 'var(--text-3)', marginTop: '.5rem' }}>
+              sum: {(wIndustry + wStage + wSignal + wEvidence + wRecency + wGraph).toFixed(2)}
+            </div>
+          </div>
+
+          <div>
+            <NumRow label="RRF prefilter gate (skip LLM scoring when fused similarity below this)" value={rrfGate} onChange={setRrfGate} step={0.05} />
+          </div>
+        </div>
+      )}
+
       {tab === 'integrations' && (
         <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
           <div>
@@ -542,5 +667,26 @@ export default function SettingsPage() {
         {err && <span style={{ color: '#f7768e', fontSize: '.85rem' }}>✗ {err}</span>}
       </div>
     </section>
+  );
+}
+
+function NumRow({ label, value, onChange, step }: { label: string; value: number; onChange: (v: number) => void; step: number }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '.75rem', padding: '.25rem 0' }}>
+      <input
+        type="number"
+        step={step}
+        value={value}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          if (Number.isFinite(v)) onChange(v);
+        }}
+        style={{
+          width: 90, padding: '.35rem .5rem', background: 'var(--panel)', color: 'var(--text)',
+          border: '1px solid var(--border)', borderRadius: 6, fontFamily: 'JetBrains Mono, monospace', fontSize: '.8rem',
+        }}
+      />
+      <span style={{ fontSize: '.8rem', color: 'var(--text-2)' }}>{label}</span>
+    </div>
   );
 }

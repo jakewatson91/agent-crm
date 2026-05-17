@@ -17,7 +17,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, loadActionContext, chatCompleteForWorkspace, type WorkspacePolicy } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, chatCompleteForWorkspace, type WorkspacePolicy } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
@@ -293,6 +293,7 @@ export async function runAgent(
       .filter((f) => !ADMIN_FOR_THEMES.has(f.predicate) && !f.predicate.startsWith('score_'))
       .map((f) => ({ predicate: f.predicate, object_text: f.object_text }));
     const valueThemes = policy.drafter?.value_themes ?? [];
+    const thresholds = buildThresholds(policy.routing);
     const decision = selectAction({
       workspace_id: payload.workspace_id,
       entity_id: ent.data.id,
@@ -304,6 +305,7 @@ export async function runAgent(
       cooldown_until: ctx.cooldown_until,
       facts: substantiveFacts,
       value_themes: valueThemes,
+      thresholds,
     });
     matchedTheme = (decision as { matched_theme?: string | null }).matched_theme ?? null;
     matchedEvidence = (decision as { matched_evidence?: string | null }).matched_evidence ?? null;

@@ -30,7 +30,8 @@ export { chatCompleteForWorkspace, type ChatForWorkspaceArgs } from './chat_work
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
 export { scoreEntity, scoreAndAssert, combineSubScores };
-export { selectAction, loadActionContext, type Action, type ActionDecision } from './action_selector.js';
+export { selectAction, loadActionContext, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.js';
+export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights } from './scoring.js';
 export { graphProximity, type GraphProximityResult } from './graph.js';
 export type { EntityStatus };
 

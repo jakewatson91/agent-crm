@@ -109,6 +109,33 @@ async function main() {
         ask_examples: DOGFOOD_ASK_EXAMPLES,
         ...(existing.drafter ?? {}),
       },
+      routing: {
+        draft_icp_total: 0.65,
+        draft_signal_strength: 0.7,
+        draft_evidence_depth: 0.5,
+        draft_suppression_days: 14,
+        research_icp_total: 0.5,
+        research_evidence_depth_max: 0.4,
+        research_cooldown_days: 7,
+        drop_icp_total: 0.35,
+        drop_evidence_depth_min: 0.5,
+        drop_suppression_days: 90,
+        watch_icp_total: 0.5,
+        ...(existing.routing ?? {}),
+      },
+      scoring: {
+        weights: {
+          industry_match: 0.30,
+          stage_match: 0.20,
+          signal_strength: 0.10,
+          evidence_depth: 0.20,
+          recency: 0.10,
+          graph_proximity: 0.10,
+          ...(((existing.scoring ?? {}).weights) ?? {}),
+        },
+        rrf_gate: 0.30,
+        ...(existing.scoring ?? {}),
+      },
     };
     const { error: upErr } = await sb.from('workspaces').update({ policy: merged }).eq('id', w.id);
     if (upErr) {

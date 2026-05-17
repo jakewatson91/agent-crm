@@ -12,7 +12,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  callTool, scoreAndAssert, selectAction, loadActionContext,
+  callTool, scoreAndAssert, selectAction, buildThresholds, loadActionContext,
   hasValueAlignedFact, lookupEntity, type ValueTheme, getPolicy,
   chatCompleteForWorkspace,
 } from '@agent-crm/tools';
@@ -279,6 +279,7 @@ const proposeActionTool: ToolHandler = {
       dropped_until: channelCtx.dropped_until,
       cooldown_until: channelCtx.cooldown_until,
       facts: substantive, value_themes: themes,
+      thresholds: buildThresholds(policy.routing),
     });
 
     return {
