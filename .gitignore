@@ -32,6 +32,8 @@ supabase/.temp/
 # benchmark output
 benchmark/metrics/runs/
 benchmark/report/output/
+benchmark/v1/receipts/
+benchmark/v1/results/
 
 # packages/db generated types
 packages/db/src/generated.ts
