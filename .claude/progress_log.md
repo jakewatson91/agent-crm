@@ -1134,3 +1134,33 @@ Explore agent estimated 8 read sites for the kind migration. Real count is ~30 (
 
 ### Files
 Migrations: `0030_auth_and_api_keys.sql`, `0031_kind_as_fact.sql`. New helpers: `apps/web/app/_lib/{auth,supabase-server,supabase-browser}.ts`, `apps/web/middleware.ts`, `packages/tools/src/entity_types.ts`. New routes: `apps/web/app/{login,auth/callback,invite/[token]}/...`, `apps/web/app/api/workspace/{members,invitations,api-keys}/...` (10 routes). New UI: `_components/{MembersSection,ApiKeysSection}.tsx`. New scripts: `scripts/bootstrap_owner.ts`. Infrastructure: `docker-compose.yml`, `apps/web/Dockerfile`. Modified for Phase 2: `packages/tools/src/{scoring,reads,index}.ts`, `apps/web/app/api/entities/index/route.ts`, `apps/web/app/workspace/[ws]/entities/{page,[entity_id]/page}.tsx`. Plan: `enumerated-foraging-spindle.md`.
+
+## 2026-05-24 — Scorer rescue + local-dev perf + account-data cleanup
+
+Started as "loading is slow" and unwound into the scorer being silently dead all day.
+
+### Scorer fixed (was producing nothing)
+- **Dead model.** `SCORE_MODEL = deepseek/deepseek-v4-flash:free` → OpenRouter 402, upstream "Crucible" out of free-tier credits. Every `scoreEntity` LLM call threw; the catch returned null; sweep read `score_signal_coupling=0/58`. Probed all 24 OpenRouter free models live — only ~5 had working upstreams. Switched to `openai/gpt-oss-120b:free` (`scoring.ts:25`). The `:free` suffix forces a subsidized upstream pool, so topping up Jake's own balance would not have fixed it. Logged as memory `project_scorer_model_openrouter`.
+- **Skip-write bug.** `scoreAndAssert` had `if (existing.object_text === newText) continue` — when the rounded score was unchanged it skipped the write, so icp_fit `observed_at` never refreshed and the coupling sweep could never detect a rescore. Removed; the sub-score loop always writes now (8 rows/rescore, no extra LLM cost — `scoreEntity` already ran).
+- **`agent_logic.ts` `meta` used-before-declaration** typecheck bug fixed (deferred backlog item). Pre-LLM Hunter block threads `{parent_event_id}` directly instead of the later-declared `meta`.
+
+### Scorer gated to accounts; contacts cleaned
+- `scoreAndAssert` returns null unless the entity has an `is_a` matching `policy.scorable_types` (default `['account']`). A person has no industry_match/stage_match — ICP fit is account-level.
+- Deleted 1,062 contact scorer facts. Intent scoring for contacts considered and **deferred** — zero contact-level signals exist (only email/works_at/role), so any "intent" number would be hollow until a reply/job-change/engagement source lands.
+
+### Account-data cleanup (demo ws af602fa1)
+- Investigated 1,965 accounts: 86% created by deleted `seed:expand*` scripts (via creating-event `actor_id LIKE 'seed:%'`), 85% empty shells (0 facts). Name quality and dedup were fine — it was seed data, not a bug.
+- Disabled 2 dead-weight sources (`ats_hiring_main`, `hn_u2u2`; 0 fact-yield/7d). Deleted ~1,534 collapsed scorer facts. **Archived 1,663 empty-AND-seed accounts** (conservative: kept seed-with-facts + real-connector-empty). Active accounts 1,965 → 302; real scoreable population = 294.
+
+### Local-dev perf
+- Blanket `WorkspacePrefetch` (4 API calls on every layout mount, regardless of tab) replaced with hover/focus-triggered `NavLinkPrefetch` (prefetches only the route being entered).
+- `gates/list` route: 3 sequential Supabase round-trips → 1 nested PostgREST select. `feed/list`: entity name joined inline + icp_fit facts query parallel to posts.
+
+### Entities tab — audit-bounded controls (constitution call)
+- Added search-by-name + filter-by-type + filter-by-decision-band (draft/watch/no-action/dropped/unscored, mirroring action_selector thresholds) + sort (activity/icp/name). Held the line on NO multi-select/batch actions (the banned triage pattern). Default grouped view unchanged; ⌘J chat context reflects active filters.
+
+### Rescore backfill (carry-over)
+- `rescore_all.ts` now accounts-only + throttled (3.5s/call, `THROTTLE_MS` env override). 27/283 scored before the free-tier daily quota choked. Backlog item 0 — needs ~10 daily runs, idempotent (staleness guard skips done). Distribution healthy: peak decile 4 at ~37%, nothing piled at 0 (was 56% in decile 0 pre-fix).
+
+### Files
+Modified: `packages/tools/src/scoring.ts` (model, skip-write removal, accounts gate), `inngest/functions/agent_logic.ts` (meta fix), `apps/web/app/workspace/[ws]/{layout,entities/page}.tsx`, `apps/web/app/api/{feed,gates}/list/route.ts`. New: `apps/web/app/_components/NavLinkPrefetch.tsx` (replaces deleted `WorkspacePrefetch.tsx`), `scripts/{cleanup_for_new_signal_process,_archive_empty_seed_accounts,_audit_accounts,_check_distribution,_check_thresholds,_check_scoring}.ts`. Memory: `project_scorer_model_openrouter`. Commits: session code already on main; backlog/wrap `fd4b50b`.
