@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
+import { getEntityTypes } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
 
@@ -59,7 +60,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   if (ch.error || !ch.data) return NextResponse.json({ error: 'channel not found' }, { status: 404 });
   const account_id = ch.data.account_entity_id as string;
 
-  const ent = await supabase.from('entities').select('name, attributes, kind').eq('id', account_id).maybeSingle();
+  const ent = await supabase.from('entities').select('name, attributes').eq('id', account_id).maybeSingle();
+  const entKinds = await getEntityTypes(supabase, account_id);
+  const entityWithKind = ent.data ? { ...ent.data, kind: entKinds[0] ?? 'entity', types: entKinds } : null;
 
   const now = Date.now();
   const recentSince = new Date(now - RECENT_WINDOW_DAYS * 86400 * 1000).toISOString();
@@ -137,7 +140,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
 
   return NextResponse.json({
     channel: ch.data,
-    entity: ent.data,
+    entity: entityWithKind,
     recent_activity,
     current_facts: activeFacts,
     history,

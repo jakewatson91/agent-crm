@@ -18,7 +18,7 @@
  * the cooldown even before researchRunner finishes.
  */
 import { createServerClient } from '@agent-crm/db';
-import { callTool } from '@agent-crm/tools';
+import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 const TIER_CADENCE_HOURS = { hot: 24, default: 24 * 7, cold: 24 * 30 } as const;
@@ -55,9 +55,12 @@ export const entityResearchDispatcher = inngest.createFunction(
       let skipped_suppressed = 0;
 
       for (const ws of workspaces) {
-        const acctRes = await supabase
-          .from('entities').select('id, name')
-          .eq('workspace_id', ws.id).eq('kind', 'account').limit(5000);
+        const allAcctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 5000);
+        const acctRes = allAcctIds.length === 0
+          ? { data: [] as Array<{ id: string; name: string }> }
+          : await supabase
+              .from('entities').select('id, name')
+              .in('id', allAcctIds);
         const accounts = (acctRes.data ?? []) as Array<{ id: string; name: string }>;
         if (!accounts.length) continue;
         total_evaluated += accounts.length;

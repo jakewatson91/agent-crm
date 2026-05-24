@@ -51,7 +51,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, chatCompleteForWorkspace } from '@agent-crm/tools';
+import { callTool, chatCompleteForWorkspace, entityIdsOfType } from '@agent-crm/tools';
 // custom_http is per-workspace by construction (sources.workspace_id), so it
 // uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
 // keys and stay on raw chatComplete for now.
@@ -205,9 +205,12 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
   // Entity lookup caches for the batch (same pattern as api_call).
   const entitiesByDomain = new Map<string, { id: string; name: string }>();
   const entitiesByName = new Map<string, { id: string; name: string }>();
-  const ents = await ctx.supabase
-    .from('entities').select('id, name, attributes')
-    .eq('workspace_id', ctx.workspace_id).eq('kind', 'account');
+  const acctIds = await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'account');
+  const ents = acctIds.length === 0
+    ? { data: [] as Array<{ id: string; name: string; attributes: unknown }> }
+    : await ctx.supabase
+        .from('entities').select('id, name, attributes')
+        .in('id', acctIds);
   for (const e of ents.data ?? []) {
     const d = (e.attributes as { domain?: string } | null)?.domain ?? null;
     if (d) entitiesByDomain.set(d.toLowerCase(), { id: e.id as string, name: e.name as string });

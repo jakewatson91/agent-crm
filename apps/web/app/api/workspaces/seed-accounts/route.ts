@@ -20,7 +20,7 @@
  */
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { callTool } from '@agent-crm/tools';
+import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import { fetchYcCandidates, type YcFetchFilter, type YcCandidate } from '@agent-crm/inngest/functions/sources/connectors/yc';
 
 export const runtime = 'nodejs';
@@ -113,11 +113,13 @@ export async function POST(req: Request) {
   }
 
   // Dedup against existing accounts by normalized domain.
-  const existing = await supabase
-    .from('entities')
-    .select('id, attributes')
-    .eq('workspace_id', body.workspace_id)
-    .eq('kind', 'account');
+  const acctIds = await entityIdsOfType(supabase, body.workspace_id, 'account');
+  const existing = acctIds.length === 0
+    ? { data: [] as Array<{ id: string; attributes: unknown }>, error: null as null }
+    : await supabase
+        .from('entities')
+        .select('id, attributes')
+        .in('id', acctIds);
   if (existing.error) {
     return NextResponse.json({ error: `failed to load existing entities: ${existing.error.message}` }, { status: 500 });
   }

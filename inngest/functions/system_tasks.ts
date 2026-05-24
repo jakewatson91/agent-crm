@@ -1,6 +1,6 @@
 import { createServerClient } from '@agent-crm/db';
 import { gate } from '@agent-crm/primitives';
-import { healthCheck, scoreAndAssert, sweepWorkspace, callTool } from '@agent-crm/tools';
+import { healthCheck, scoreAndAssert, sweepWorkspace, callTool, entityIdsOfType } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 // IDs from sweepWorkspace that warrant gating when RED. Tier 2 checks
@@ -200,11 +200,13 @@ export const rescoreOnIcpChange = inngest.createFunction(
           .limit(10000);
         const scoredSet = new Set<string>(((scoredRes.data ?? []) as Array<{ subject_entity: string }>).map((f) => f.subject_entity));
 
-        const allAccts = await supabase.from('entities')
-          .select('id, created_at')
-          .eq('workspace_id', ws.id).eq('kind', 'account')
-          .order('created_at', { ascending: true })
-          .limit(10000);
+        const acctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 10000);
+        const allAccts = acctIds.length === 0
+          ? { data: [] as Array<{ id: string; created_at: string }> }
+          : await supabase.from('entities')
+              .select('id, created_at')
+              .in('id', acctIds)
+              .order('created_at', { ascending: true });
         const unscored = ((allAccts.data ?? []) as Array<{ id: string; created_at: string }>)
           .filter((a) => !scoredSet.has(a.id))
           .slice(0, RESCORE_LIMIT_PER_RUN - out.length);
@@ -340,12 +342,12 @@ export const entityArchiveSweep = inngest.createFunction(
 
       const { data: ents } = await supabase
         .from('entities')
-        .select('id, workspace_id, name, kind, attributes, created_at')
+        .select('id, workspace_id, name, attributes, created_at')
         .lt('created_at', cutoff)
         .is('archived_at', null)
         .limit(ENTITY_SWEEP_LIMIT_PER_RUN * 4);
       const candidates = (ents ?? []) as Array<{
-        id: string; workspace_id: string; name: string; kind: string;
+        id: string; workspace_id: string; name: string;
         attributes: Record<string, unknown>; created_at: string;
       }>;
       if (!candidates.length) return [];
@@ -379,7 +381,7 @@ export const entityArchiveSweep = inngest.createFunction(
       return candidates
         .filter((e) => !hasActivity.has(e.id))
         .slice(0, ENTITY_SWEEP_LIMIT_PER_RUN)
-        .map((e) => ({ id: e.id, workspace_id: e.workspace_id, name: e.name, kind: e.kind }));
+        .map((e) => ({ id: e.id, workspace_id: e.workspace_id, name: e.name }));
     });
 
     if (!toArchive.length) return { archived: 0 };

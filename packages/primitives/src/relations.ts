@@ -15,6 +15,26 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+async function typesForEntities(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  entity_ids: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (entity_ids.length === 0) return out;
+  const { data } = await supabase.from('facts')
+    .select('subject_entity, object_text')
+    .eq('workspace_id', workspace_id)
+    .eq('predicate', 'is_a')
+    .is('supersedes', null)
+    .in('subject_entity', entity_ids);
+  for (const row of (data ?? []) as Array<{ subject_entity: string; object_text: string | null }>) {
+    if (!row.object_text) continue;
+    if (!out.has(row.subject_entity)) out.set(row.subject_entity, row.object_text);
+  }
+  return out;
+}
+
 export interface RelatedEntity {
   entity_id: string;
   name: string;
@@ -73,10 +93,14 @@ export async function relatedToEntity(
   const active = rows.filter((r) => !supersededIds.has(r.id));
   if (active.length === 0) return [];
 
-  const ents = await supabase
-    .from('entities')
-    .select('id, name, kind, attributes')
-    .in('id', Array.from(new Set(active.map((r) => r.subject_entity))));
+  const ids = Array.from(new Set(active.map((r) => r.subject_entity)));
+  const [ents, kindByEntity] = await Promise.all([
+    supabase
+      .from('entities')
+      .select('id, name, attributes')
+      .in('id', ids),
+    typesForEntities(supabase, workspace_id, ids),
+  ]);
   if (ents.error) throw ents.error;
   const byId = new Map((ents.data ?? []).map((e) => [e.id as string, e]));
 
@@ -86,7 +110,7 @@ export async function relatedToEntity(
     return [{
       entity_id: r.subject_entity,
       name: e.name as string,
-      kind: e.kind as string,
+      kind: kindByEntity.get(r.subject_entity) ?? 'entity',
       attributes: (e.attributes ?? {}) as Record<string, unknown>,
       via_predicate: r.predicate,
       via_fact_id: r.id,
@@ -111,10 +135,14 @@ export async function entitiesFromSubject(
   const filtered = predicates?.length ? facts.filter((f) => predicates.includes(f.predicate)) : facts;
   const targetIds = filtered.map((f) => f.object_entity).filter((x): x is string => !!x);
   if (targetIds.length === 0) return [];
-  const ents = await supabase
-    .from('entities')
-    .select('id, name, kind, attributes')
-    .in('id', Array.from(new Set(targetIds)));
+  const uniq = Array.from(new Set(targetIds));
+  const [ents, kindByEntity] = await Promise.all([
+    supabase
+      .from('entities')
+      .select('id, name, attributes')
+      .in('id', uniq),
+    typesForEntities(supabase, workspace_id, uniq),
+  ]);
   if (ents.error) throw ents.error;
   const byId = new Map((ents.data ?? []).map((e) => [e.id as string, e]));
 
@@ -125,7 +153,7 @@ export async function entitiesFromSubject(
     return [{
       entity_id: f.object_entity,
       name: e.name as string,
-      kind: e.kind as string,
+      kind: kindByEntity.get(f.object_entity) ?? 'entity',
       attributes: (e.attributes ?? {}) as Record<string, unknown>,
       via_predicate: f.predicate,
       via_fact_id: f.id,
@@ -167,12 +195,21 @@ export async function findEntityByName(
   name: string,
   kind?: string,
 ): Promise<{ id: string; name: string; kind: string } | null> {
-  let q = supabase
+  const { data: matches } = await supabase
     .from('entities')
-    .select('id, name, kind')
+    .select('id, name')
     .eq('workspace_id', workspace_id)
-    .ilike('name', name);
-  if (kind) q = q.eq('kind', kind);
-  const { data } = await q.maybeSingle();
-  return data ? { id: data.id as string, name: data.name as string, kind: data.kind as string } : null;
+    .ilike('name', name)
+    .limit(kind ? 25 : 1);
+  const rows = (matches ?? []) as Array<{ id: string; name: string }>;
+  if (rows.length === 0) return null;
+  if (!kind) {
+    const kinds = await typesForEntities(supabase, workspace_id, [rows[0]!.id]);
+    return { id: rows[0]!.id, name: rows[0]!.name, kind: kinds.get(rows[0]!.id) ?? 'entity' };
+  }
+  const kinds = await typesForEntities(supabase, workspace_id, rows.map((r) => r.id));
+  for (const r of rows) {
+    if (kinds.get(r.id) === kind) return { id: r.id, name: r.name, kind };
+  }
+  return null;
 }

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed, vectorLiteral } from '@agent-crm/primitives';
+import { entityIdsOfType } from '@agent-crm/tools';
 
 /**
  * Compute and upsert a default-perspective embedding for an entity. Connectors
@@ -90,9 +91,11 @@ export async function getWatchedAccounts(
   workspace_id: string,
   limit = 5000,
 ): Promise<WatchedAccount[]> {
+  const acctIds = (await entityIdsOfType(supabase, workspace_id, 'account')).slice(0, limit);
   const [accountsRes, dropsRes] = await Promise.all([
-    supabase.from('entities').select('id, name, attributes')
-      .eq('workspace_id', workspace_id).eq('kind', 'account').limit(limit),
+    acctIds.length === 0
+      ? Promise.resolve({ data: [] as Array<{ id: string; name: string; attributes: Record<string, unknown> | null }>, error: null as null })
+      : supabase.from('entities').select('id, name, attributes').in('id', acctIds),
     supabase.from('facts').select('subject_entity, object_text')
       .eq('workspace_id', workspace_id).eq('predicate', 'dropped_until').is('supersedes', null),
   ]);

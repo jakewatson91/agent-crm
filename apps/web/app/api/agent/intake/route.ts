@@ -11,7 +11,7 @@
  * it on the message.parts array client-side.
  */
 import { createServerClient } from '@agent-crm/db';
-import { resolveDeepseekKey } from '@agent-crm/tools';
+import { resolveDeepseekKey, getEntityTypesBatch } from '@agent-crm/tools';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import {
   convertToModelMessages,
@@ -355,10 +355,11 @@ async function buildRecentEntityNote(
   }
   if (ids.size === 0) return null;
   const idList = Array.from(ids).slice(0, RECENT_ENTITY_CAP);
-  const { data } = await supabase.from('entities').select('id, name, kind').in('id', idList);
+  const { data } = await supabase.from('entities').select('id, name').in('id', idList);
   if (!data?.length) return null;
-  const lines = (data as Array<{ id: string; name: string; kind: string }>)
-    .map((e) => `  ${e.id}  ${e.kind}  ${e.name}`)
+  const typesById = await getEntityTypesBatch(supabase, idList);
+  const lines = (data as Array<{ id: string; name: string }>)
+    .map((e) => `  ${e.id}  ${(typesById.get(e.id) ?? [])[0] ?? 'entity'}  ${e.name}`)
     .join('\n');
   return `Recently referenced entities in this conversation (use these ids for pronouns like "them" / "the team"):\n${lines}`;
 }

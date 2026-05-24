@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
+import { getEntityTypes } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
 
@@ -26,7 +27,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   const account_id = ch.data.account_entity_id as string;
   const ws_id = ch.data.workspace_id as string;
 
-  const ent = await supabase.from('entities').select('name, attributes, kind').eq('id', account_id).maybeSingle();
+  const ent = await supabase.from('entities').select('name, attributes').eq('id', account_id).maybeSingle();
+  const entKinds = await getEntityTypes(supabase, account_id);
+  const entityWithKind = ent.data ? { ...ent.data, kind: entKinds[0] ?? 'entity', types: entKinds } : null;
 
   const [signals, facts, posts, gates] = await Promise.all([
     supabase.from('signals').select('id, type, magnitude, body_for_embedding, observed_at, structured_tags').eq('entity_id', account_id).order('observed_at', { ascending: false }).limit(50),
@@ -111,7 +114,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
 
   return NextResponse.json({
     channel: ch.data,
-    entity: ent.data,
+    entity: entityWithKind,
     items: items.slice(0, 200),
     counts: {
       signals: signals.data?.length ?? 0,

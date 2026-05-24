@@ -20,7 +20,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool } from '@agent-crm/tools';
+import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { upsertEntityEmbedding } from '../utils.js';
 
@@ -234,11 +234,13 @@ const yc: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
   const sorted = filtered.sort((a, b) => (b.launched_at ?? 0) - (a.launched_at ?? 0)).slice(0, max_per_run);
 
   // Pre-fetch existing entities in this workspace (by domain) for dedup.
-  const existing = await ctx.supabase
-    .from('entities')
-    .select('id, name, attributes')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('kind', 'account');
+  const accountIds = await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'account');
+  const existing = accountIds.length === 0
+    ? { data: [] as Array<{ id: string; name: string; attributes: unknown }>, error: null as null }
+    : await ctx.supabase
+        .from('entities')
+        .select('id, name, attributes')
+        .in('id', accountIds);
   if (existing.error) {
     result.errors.push(`failed to fetch existing entities: ${existing.error.message}`);
     return result;
