@@ -270,9 +270,7 @@ async function main() {
 
   console.log('\n✓ seed complete\n');
   console.log(`  open: http://localhost:3000/workspace/${WS}/gates`);
-  console.log(`  also: http://localhost:3000/workspace/${WS}/activity`);
-  console.log(`        http://localhost:3000/workspace/${WS}/channels`);
-  console.log(`        http://localhost:3000/workspace/${WS}/query`);
+  console.log(`  also: http://localhost:3000/workspace/${WS}/feed`);
   console.log(`        http://localhost:3000/workspace/${WS}/replay`);
   console.log(`\n  to watch a brand-new claim show up live:`);
   console.log(`    WS=${WS} pnpm inject`);

@@ -8,6 +8,7 @@ import yc, { meta as ycMeta } from './connectors/yc.js';
 import github, { meta as githubMeta } from './connectors/github.js';
 import githubTrending, { meta as githubTrendingMeta } from './connectors/github_trending.js';
 import producthunt, { meta as phMeta } from './connectors/producthunt.js';
+import ats, { meta as atsMeta } from './connectors/ats.js';
 
 export type { Connector, ConnectorMeta, ConnectorContext, ConnectorResult } from './types.js';
 
@@ -33,6 +34,7 @@ export const CONNECTORS: Record<string, { run: Connector; meta: ConnectorMeta }>
   github: { run: github, meta: githubMeta },
   github_trending: { run: githubTrending, meta: githubTrendingMeta },
   producthunt: { run: producthunt, meta: phMeta },
+  ats: { run: ats, meta: atsMeta },
 };
 
 export function listConnectors(): ConnectorMeta[] {

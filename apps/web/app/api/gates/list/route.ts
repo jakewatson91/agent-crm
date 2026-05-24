@@ -9,39 +9,45 @@ export async function GET(req: Request) {
   if (!workspace_id) return NextResponse.json({ error: 'workspace_id required' }, { status: 400 });
 
   const supabase = createServerClient();
-  // Fetch pending gates + the channel_post they reference (body, kind, cites, channel_id)
-  // and the entity for that channel (so we can show the account name).
+  // One round trip: gates → channel_post → channel via nested PostgREST select.
   const { data: gates, error } = await supabase
     .from('gates')
-    .select('id, requested_by_agent, channel_post_id, policy, condition, requested_at')
+    .select(`
+      id, requested_by_agent, channel_post_id, policy, condition, requested_at,
+      channel_post:channel_posts(
+        id, kind, body, cites,
+        channel:channels(id, account_entity_id, title)
+      )
+    `)
     .eq('workspace_id', workspace_id)
     .is('decided_at', null)
     .order('requested_at', { ascending: false })
     .limit(50);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const postIds = (gates ?? []).map((g) => g.channel_post_id).filter((x): x is string => !!x);
-  const posts = postIds.length
-    ? (await supabase.from('channel_posts').select('id, channel_id, kind, body, cites').in('id', postIds)).data ?? []
-    : [];
-  const postById = new Map(posts.map((p) => [p.id as string, p]));
+  type GateRow = {
+    id: string;
+    requested_by_agent: string;
+    channel_post_id: string | null;
+    policy: string;
+    condition: Record<string, unknown>;
+    requested_at: string;
+    channel_post: {
+      id: string; kind: string; body: string; cites: string[];
+      channel: { id: string; account_entity_id: string; title: string } | null;
+    } | null;
+  };
 
-  const channelIds = Array.from(new Set(posts.map((p) => p.channel_id as string)));
-  const channels = channelIds.length
-    ? (await supabase.from('channels').select('id, account_entity_id, title').in('id', channelIds)).data ?? []
-    : [];
-  const channelById = new Map(channels.map((c) => [c.id as string, c]));
-
-  const enriched = (gates ?? []).map((g) => {
-    const post = g.channel_post_id ? postById.get(g.channel_post_id as string) : undefined;
-    const channel = post ? channelById.get(post.channel_id as string) : undefined;
+  const enriched = ((gates ?? []) as unknown as GateRow[]).map((g) => {
+    const post = g.channel_post;
+    const channel = post?.channel ?? null;
     return {
-      id: g.id as string,
-      requested_by_agent: g.requested_by_agent as string,
-      policy: g.policy as string,
-      condition: g.condition as Record<string, unknown>,
-      requested_at: g.requested_at as string,
-      channel_post_id: g.channel_post_id as string | null,
+      id: g.id,
+      requested_by_agent: g.requested_by_agent,
+      policy: g.policy,
+      condition: g.condition,
+      requested_at: g.requested_at,
+      channel_post_id: g.channel_post_id,
       post_kind: post?.kind ?? null,
       post_body: post?.body ?? null,
       post_cites: post?.cites ?? [],

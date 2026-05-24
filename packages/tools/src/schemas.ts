@@ -37,6 +37,10 @@ export const AssertFactSchema = z.object({
   object_text: z.string().optional(),
   object_entity: UuidSchema.optional(),
   confidence: z.number().min(0).max(1).default(1.0),
+  // Cite chain v2: bind the fact to the signal that triggered its assertion.
+  // Idempotent — on content-hash dedup, the existing fact's signal_id is
+  // preserved (callTool only sets when currently null).
+  signal_id: UuidSchema.optional(),
 });
 
 export const SupersedeFactSchema = AssertFactSchema.extend({
@@ -74,6 +78,7 @@ export const PostToChannelSchema = z.object({
 export const QuerySchema = z.object({
   nl: z.string().min(1),
   perspective: z.string().optional(),
+  source_id: z.string().optional(),
 });
 
 export const CiteSchema = z.object({
@@ -155,6 +160,21 @@ export const TokenSummarySchema = z.object({
   since_hours: z.number().int().min(1).max(720).default(24),
 });
 
+// Update a source's mutable fields. The L2 curator uses this to deactivate
+// dead sources or rewrite their config. Recorded as an event so the prior
+// state in the payload is what the undo path reads back.
+export const UpdateSourceSchema = z.object({
+  source_id: UuidSchema,
+  active: z.boolean().optional(),
+  config: z.record(z.unknown()).optional(),
+  // Caller must include prior_state so the resulting event row is
+  // self-sufficient for undo. The tool doesn't second-guess what was
+  // before — that's the caller's responsibility because reading prior
+  // state and applying the mutation aren't atomic in PostgREST.
+  prior_state: z.record(z.unknown()),
+  reasoning: z.string().min(1),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -180,6 +200,7 @@ export const TOOL_SCHEMAS = {
   link_contact_to_account: LinkContactToAccountSchema,
   score_entity: ScoreEntitySchema,
   token_summary: TokenSummarySchema,
+  update_source: UpdateSourceSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

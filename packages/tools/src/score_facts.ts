@@ -23,7 +23,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed } from '@agent-crm/primitives';
-import { getIcpPerspectiveVectors, cosine, rrfFuse } from './icp_embeddings.js';
+import { getIcpPerspectiveVectors, cosine, rrfFuse } from './icp_embeddings.ts';
 
 export interface ScoreFactsConfig {
   k: number;              // top-K shortlist size (default 3)

@@ -64,6 +64,11 @@ export async function runAgent(
   // similarly — both describe "what changed about this entity that prompted the run."
   let triggerEntity: string;
   let sigData: { id: string; entity_id: string; type: string; magnitude: number; body_for_embedding: string; observed_at: string; structured_tags: any } | null = null;
+  // signalCreatedEventId: the event id of the signal.created event. Threaded
+  // as parent_event_id into every downstream tool call so the resulting
+  // assert_fact / post_to_channel events chain back to the originating signal.
+  // The audit-side chain/batch routes walk this link to surface the source URL.
+  let signalCreatedEventId: string | null = null;
   if (payload.signal_id) {
     const sig = await supabase
       .from('signals')
@@ -72,6 +77,16 @@ export async function runAgent(
     if (sig.error || !sig.data) return { ok: false, action: 'skip', reason: `signal ${payload.signal_id} not found` };
     sigData = sig.data as unknown as typeof sigData;
     triggerEntity = sig.data.entity_id;
+    const sigEv = await supabase
+      .from('events')
+      .select('id')
+      .eq('workspace_id', payload.workspace_id)
+      .eq('target_kind', 'signal')
+      .eq('target_id', payload.signal_id)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (sigEv.data?.id != null) signalCreatedEventId = String(sigEv.data.id);
   } else {
     // Fact-triggered: synthesize a signal-shaped payload describing the fact change.
     const fact = await supabase.from('facts')
@@ -154,6 +169,45 @@ export async function runAgent(
   // must approve — see CLAUDE.md. Operational rejections by the agent itself
   // are audit-trail entries, not human work.
   // ============================================================
+
+  // Enricher: skip if the entity has an active dropped_until fact. Mirrors the
+  // same short-circuit in scoreAndAssert (packages/tools/src/scoring.ts) so
+  // dropped entities don't burn LLM on either path. The drafter path goes
+  // through action_selector which already respects this; the enricher path
+  // dispatches directly and needs the explicit check here.
+  if (behavior === 'enricher') {
+    const dropRes = await supabase.from('facts')
+      .select('object_text')
+      .eq('workspace_id', payload.workspace_id)
+      .eq('subject_entity', ent.data.id)
+      .eq('predicate', 'dropped_until')
+      .is('supersedes', null)
+      .order('observed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const dropUntil = (dropRes.data?.object_text as string | null) ?? null;
+    if (dropUntil) {
+      const t = Date.parse(dropUntil);
+      if (Number.isFinite(t) && t > Date.now()) {
+        await supabase.from('events').insert({
+          workspace_id: payload.workspace_id,
+          actor_kind: 'agent',
+          actor_id: payload.agent,
+          action: 'enrichment_skipped',
+          target_kind: 'entity',
+          target_id: ent.data.id,
+          payload: {
+            reason: 'entity_dropped',
+            entity_id: ent.data.id,
+            dropped_until: dropUntil,
+            signal_id: payload.signal_id ?? null,
+          },
+          parent_event_id: payload.parent_event_id ?? null,
+        });
+        return { ok: true, action: 'skip', reason: 'entity_dropped', behavior };
+      }
+    }
+  }
 
   // Enricher: skip re-enrichment when the same signal body has already been
   // observed for this entity in the last 7d. Catches YC-directory daily re-emit
@@ -382,6 +436,27 @@ export async function runAgent(
   let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [];
   let contacts: Array<{ name: string; email: string; role: string }> = [];
   if (behavior === 'drafter') {
+    // Hunter pre-flight: fetch contacts here, not during enrichment. The
+    // enricher fires on every signal; the drafter fires only when the agent
+    // already decided to message this account. Looking up contacts at draft
+    // time means we burn Hunter credits ~1 per outbound, not ~1 per fact-yielding
+    // signal. Subject to policy.enrichment.hunter_monthly_cap (enforced inside
+    // maybeLinkContactsForEntity).
+    if (policy.enrichment?.contact_provider === 'hunter' && process.env.HUNTER_API_KEY) {
+      // Pre-LLM, so prompt_hash isn't known yet; thread just parent_event_id for provenance.
+      const preLlmMeta = { parent_event_id: signalCreatedEventId ?? payload.parent_event_id };
+      try {
+        const linked = await maybeLinkContactsForEntity(supabase, actor, ent.data.id, channel_id, preLlmMeta, policy.enrichment?.hunter_monthly_cap);
+        if (linked > 0) {
+          await callTool(supabase, actor, 'post_to_channel', {
+            channel_id, kind: 'system', body: `Linked ${linked} contact${linked === 1 ? '' : 's'} via Hunter.io.`,
+          }, preLlmMeta);
+        }
+      } catch {
+        // Non-fatal — drafter can still produce a draft without contacts; the
+        // gate just won't autofill the To: address.
+      }
+    }
     try {
       const outs = await pastOutcomesFn(supabase, payload.workspace_id, {
         entity_id: ent.data.id, semantic_neighbors: true, limit: 5, since_days: 30,
@@ -481,7 +556,7 @@ export async function runAgent(
   }
 
   const validCites = ((decision.cites ?? []) as string[]).filter((c) => activeFacts.some((f) => f.id === c));
-  const meta = { prompt_hash: promptHash, parent_event_id: payload.parent_event_id };
+  const meta = { prompt_hash: promptHash, parent_event_id: signalCreatedEventId ?? payload.parent_event_id };
   const tokens = {
     llm_input_tokens: llm.input_tokens,
     llm_output_tokens: llm.output_tokens,
@@ -614,6 +689,10 @@ export async function runAgent(
         predicate: f.predicate.toLowerCase().replace(/\s+/g, '_'),
         object_text: f.object_text,
         confidence: conf,
+        // Bind fact to the signal that triggered this enricher run. The cite
+        // chain walker uses this directly; falls back to the parent-event walk
+        // only for legacy facts where signal_id is null.
+        ...(sigData?.id ? { signal_id: sigData.id } : {}),
       }, meta);
       if (r.ok) { asserted++; assertedIds.push(r.target_id); }
       // Per-fact failures don't bubble — the run is still useful with N-1 facts.
@@ -648,18 +727,10 @@ export async function runAgent(
         parent_event_id: payload.parent_event_id ?? null,
       });
     }
-    // Auto-fetch contacts if the entity has a domain and no contacts yet.
-    // Runs once per entity (idempotent on email). Customer opts in by setting
-    // policy.enrichment.contact_provider = 'hunter'; default 'none' means a
-    // brand-new workspace doesn't make surprise Hunter calls.
-    if (policy.enrichment?.contact_provider === 'hunter' && process.env.HUNTER_API_KEY) {
-      const linked = await maybeLinkContactsForEntity(supabase, actor, ent.data.id, channel_id, meta);
-      if (linked > 0) {
-        await callTool(supabase, actor, 'post_to_channel', {
-          channel_id, kind: 'system', body: `Linked ${linked} contact${linked === 1 ? '' : 's'} via Hunter.io.`,
-        }, meta);
-      }
-    }
+    // Contact lookups moved from here to the drafter pre-flight — see the
+    // `behavior === 'drafter'` block above. The enricher fires on every signal,
+    // which used to burn Hunter credits on hundreds of entities we'd never
+    // actually message. Drafter-time lookup ties spend to outbound volume.
     // Auto-score: only re-run when the enricher actually asserted new facts.
     // Score is a pure function of facts; identical facts in = identical score out,
     // so skipping when nothing changed saves the LLM + 4 embedding calls per
@@ -681,6 +752,31 @@ export async function runAgent(
       } catch {
         // Non-fatal: enrichment is still useful without the score.
       }
+    }
+    // Separate from agent_run_metrics (which captures LLM cost at LLM-call time):
+    // this event captures the dispatch outcome and is what source_metrics reads
+    // to compute fact_yield per source. Keyed by signal_id so the join to
+    // signals.structured_tags.source_id is one hop.
+    try {
+      await supabase.from('events').insert({
+        workspace_id: payload.workspace_id,
+        actor_kind: actor.actor_kind,
+        actor_id: actor.actor_id,
+        action: 'agent_dispatch_result',
+        target_kind: 'entity',
+        target_id: ent.data.id,
+        payload: {
+          behavior, agent: payload.agent,
+          signal_id: payload.signal_id ?? null,
+          subscription_id: payload.subscription_id ?? null,
+          ok: true,
+          dispatch_action: 'enrich',
+          facts_asserted: asserted,
+        },
+        parent_event_id: payload.parent_event_id ?? null,
+      });
+    } catch {
+      // Non-fatal — the enrichment itself already landed.
     }
     return {
       ok: true, action: 'enrich',
@@ -836,6 +932,17 @@ PAIN EXTRACTION (second pass) — separately from the demographic facts above, e
 - pain_observed = "considered hiring SDR but couldn't justify the cost at current revenue"
 
 Pain is usually expressed indirectly. Look for: complaints ("we hate / can't / wish"), descriptions of manual work ("we still do X by hand"), references to gaps ("we don't have X yet"), or descriptions of friction ("X takes us Y hours / weeks"). Statements about challenges, constraints, manual workarounds, or what doesn't work today ARE pain — extract them as pain_observed even when stated calmly and factually, not just when emotionally vented. Do not split the same pain across pain_observed and another predicate like has_challenge or seeks_solution; use pain_observed for the pain itself. Skip if the source is purely positive / promotional / announcement-only with no friction language. Confidence 0.95 if directly stated, 0.7 if strongly implied. Do not invent pains that aren't on the page.
+
+HIRING SIGNALS (apply when the signal's structured_tags.kind === "hiring" or signal.type === "hiring_post" — these come from ATS connectors and the signal body contains a job description). In addition to the demographic and pain passes above, extract:
+- hiring_role = "<role family> / <seniority> — <exact title>"   (one fact, e.g. "sales / vp — Head of Sales")
+- hiring_tech_stack = "<technology>"   (one fact per specific technology/tool/language named in the description: e.g. "Salesforce", "Python", "dbt". Generic words like "AI" or "cloud" don't count.)
+- hiring_responsibility = "<one-line responsibility>"   (one fact per major responsibility, up to 3, paraphrased from the description)
+- hiring_salary_range = "$<min>–$<max> <currency>/<period>"   (only when explicit in the description OR signal structured_tags has job_salary_min/max — never invent)
+- hiring_location_mode = "remote" | "hybrid" | "onsite-<city>"   (only when stated)
+- hiring_employment_type = "full_time" | "contract" | "intern" | "<other-as-stated>"   (only when stated)
+- recent_event = "posted <exact title> via <provider>"   (one summary fact, keep this short)
+
+Each of these is its own fact in facts[]. Tech stack and responsibilities expand into multiple facts — don't collapse them. Stick to what the description actually says; if the description is empty or generic, extract only the role + summary and skip the rest. Confidence 0.95 when explicitly stated in the description, 0.7 when strongly implied.
 
 REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.
 
@@ -1033,6 +1140,7 @@ async function maybeLinkContactsForEntity(
   entity_id: string,
   channel_id: string,
   _meta: { prompt_hash?: string; parent_event_id?: string } | undefined,
+  hunterMonthlyCap?: number,
 ): Promise<number> {
   // 1. Already has contacts? Look for any fact predicate=works_at object_entity=entity_id.
   const existing = await supabase.from('facts')
@@ -1044,7 +1152,29 @@ async function maybeLinkContactsForEntity(
     .limit(1);
   if ((existing.data ?? []).length > 0) return 0;
 
-  // 2. Negative-result cache. If a prior Hunter call on this entity returned
+  // 2. Monthly cap. Count `contact_lookup_attempted` asserted this calendar
+  // month and short-circuit if we've already hit the workspace's cap. Done
+  // before the negative-cache check so cap-block costs one extra query but
+  // never an outbound API call.
+  if (hunterMonthlyCap && hunterMonthlyCap > 0) {
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const usage = await supabase.from('facts')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', actor.workspace_id)
+      .eq('predicate', 'contact_lookup_attempted')
+      .gte('observed_at', monthStart);
+    const used = usage.count ?? 0;
+    if (used >= hunterMonthlyCap) {
+      await callTool(supabase, actor, 'post_to_channel', {
+        channel_id, kind: 'system',
+        body: `Hunter cap hit (${used}/${hunterMonthlyCap} this month). Skipping contact lookup for this entity. Raise policy.enrichment.hunter_monthly_cap or wait for the calendar month to roll over.`,
+      });
+      return 0;
+    }
+  }
+
+  // 3. Negative-result cache. If a prior Hunter call on this entity returned
   // zero contacts (or hard-errored), we wrote a `contact_lookup_attempted`
   // fact with a timestamp. Re-calling Hunter is pure waste: same domain →
   // same empty response. Skip for HUNTER_NEGATIVE_CACHE_DAYS.

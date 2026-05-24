@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { callTool } from '@agent-crm/tools';
+import { unmaskEnv } from '../../_lib/secret_mask';
 
 export const runtime = 'nodejs';
 
@@ -25,7 +26,20 @@ export async function POST(req: Request) {
   if (body.persona !== undefined) toolArgs.persona = body.persona;
   if (body.icp !== undefined) toolArgs.icp = body.icp;
   if (body.budget_cents !== undefined) toolArgs.budget_cents = body.budget_cents;
-  if (body.policy !== undefined) toolArgs.policy = body.policy;
+  if (body.policy !== undefined) {
+    // Incoming policy.env may contain MASKED_SENTINEL values for secrets the
+    // client never received in plaintext. Substitute the real existing values
+    // for those keys so saving an untouched secret doesn't clobber it with the
+    // sentinel string.
+    const policy = { ...(body.policy as Record<string, unknown>) };
+    const incomingEnv = (policy.env ?? {}) as Record<string, string>;
+    if (incomingEnv && Object.keys(incomingEnv).length > 0) {
+      const existing = await supabase.from('workspaces').select('policy').eq('id', body.workspace_id).maybeSingle();
+      const existingEnv = ((existing.data?.policy as Record<string, unknown> | null)?.env ?? {}) as Record<string, string>;
+      policy.env = unmaskEnv(incomingEnv, existingEnv);
+    }
+    toolArgs.policy = policy;
+  }
 
   let event_id: string | null = null;
   if (Object.keys(toolArgs).length > 0) {

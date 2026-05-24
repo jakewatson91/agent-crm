@@ -76,7 +76,7 @@ export function EntitySearch({ ws }: { ws: string }) {
   }, [q, ws]);
 
   function navigateTo(m: Match) {
-    if (m.channel_id) router.push(`/workspace/${ws}/channels/${m.channel_id}`);
+    if (m.channel_id) router.push(`/workspace/${ws}/entities/${m.entity_id}`);
     setOpen(false);
     setQ('');
   }

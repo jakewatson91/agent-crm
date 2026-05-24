@@ -4,7 +4,7 @@
  * Lets the Settings UI show exactly what the LLM will be told before save.
  */
 import { NextResponse } from 'next/server';
-import { buildDrafterDecision, type DrafterDecisionOpts } from '@agent-crm/tools';
+import { buildDrafterDecision, type DrafterDecisionOpts } from '@agent-crm/tools/prompt_builders';
 
 export const runtime = 'nodejs';
 

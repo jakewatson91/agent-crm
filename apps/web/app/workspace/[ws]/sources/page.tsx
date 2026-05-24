@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
+import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
 
 interface ConnectorMeta {
   type: string;
@@ -28,9 +30,16 @@ interface Entity { id: string; name: string; kind: string }
 
 export default function SourcesPage() {
   const params = useParams<{ ws: string }>();
-  const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
-  const [entities, setEntities] = useState<Entity[]>([]);
+  // Connectors list never changes at runtime — cache forever.
+  const connRes = useSWR<{ connectors: ConnectorMeta[] }>('/api/sources/connectors', { ...DEFAULT_SWR, revalidateOnFocus: false, revalidateIfStale: false });
+  const sourcesRes = useSWR<{ sources: Source[] }>(`/api/sources/list?workspace_id=${params.ws}`, DEFAULT_SWR);
+  const entitiesRes = useSWR<{ entities: Entity[] }>(`/api/entities/list?workspace_id=${params.ws}`, DEFAULT_SWR);
+  const connectors = connRes.data?.connectors ?? [];
+  const sources = sourcesRes.data?.sources ?? [];
+  const entities = entitiesRes.data?.entities ?? [];
+  async function refetchAfterMutation() {
+    await Promise.all([sourcesRes.mutate(), entitiesRes.mutate()]);
+  }
   const [picked, setPicked] = useState<ConnectorMeta | null>(null);
   const [draftName, setDraftName] = useState('');
   const [draftConfig, setDraftConfig] = useState<Record<string, unknown>>({});
@@ -43,17 +52,24 @@ export default function SourcesPage() {
   const [metaTokens, setMetaTokens] = useState<{ input: number; output: number } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
-  async function loadAll() {
-    const [cRes, sRes, eRes] = await Promise.all([
-      fetch('/api/sources/connectors').then((r) => r.json()),
-      fetch(`/api/sources/list?workspace_id=${params.ws}`).then((r) => r.json()),
-      fetch(`/api/entities/list?workspace_id=${params.ws}`).then((r) => r.json()),
-    ]);
-    setConnectors(cRes.connectors ?? []);
-    setSources(sRes.sources ?? []);
-    setEntities(eRes.entities ?? []);
-  }
-  useEffect(() => { loadAll(); }, [params.ws]);
+  const pageCtx = useMemo<PageContext>(() => {
+    const active = sources.filter((s) => s.active).length;
+    const paused = sources.length - active;
+    const errored = sources.filter((s) => s.last_run_status === 'error').length;
+    const bits = [`${active} active`];
+    if (paused > 0) bits.push(`${paused} paused`);
+    if (errored > 0) bits.push(`${errored} errored`);
+    return {
+      tab: 'sources',
+      summary: bits.join(', '),
+      visible: sources.slice(0, 10).map((s) => ({
+        kind: 'source',
+        id: s.id,
+        label: `${s.name} (${s.connector_type}${!s.active ? ', paused' : ''}${s.last_run_status === 'error' ? ', errored' : ''})`,
+      })),
+    };
+  }, [sources]);
+  useSetPageContext(pageCtx);
 
   function pick(c: ConnectorMeta) {
     setPicked(c);
@@ -107,7 +123,7 @@ export default function SourcesPage() {
       const j = await res.json();
       if (!res.ok) { setError(j.error ?? 'create failed'); return; }
       setPicked(null); setDraftName(''); setDraftConfig({});
-      await loadAll();
+      await refetchAfterMutation();
     } finally {
       setCreating(false);
     }
@@ -122,7 +138,7 @@ export default function SourcesPage() {
       });
       const j = await res.json();
       setLastRunResult({ source_id, ok: j.ok, summary: j.summary ?? j });
-      await loadAll();
+      await refetchAfterMutation();
     } finally {
       setRunning(null);
     }
@@ -167,7 +183,7 @@ export default function SourcesPage() {
           value={nlDescription}
           onChange={(e) => setNlDescription(e.target.value)}
           rows={2}
-          placeholder='e.g. "watch HN for AI CRM mentions" or "the Lenny&apos;s Newsletter Substack"'
+          placeholder='describe what to ingest, e.g. "watch HN for posts about <topic>" or "the <name> Substack feed"'
           style={inputStyle}
         />
         <div style={{ marginTop: '.5rem', display: 'flex', gap: '.5rem', alignItems: 'center' }}>

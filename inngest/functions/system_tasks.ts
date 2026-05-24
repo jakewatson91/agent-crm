@@ -314,3 +314,86 @@ export const silenceSweep = inngest.createFunction(
     return { silent: candidates.length };
   },
 );
+
+// Days an entity must sit with zero downstream activity before sweep archives it.
+// Long enough that a slow-burn signal can still arrive; short enough that
+// connector-noise entities don't accumulate forever.
+const ENTITY_SWEEP_AGE_DAYS = 14;
+const ENTITY_SWEEP_LIMIT_PER_RUN = 500;
+
+/**
+ * entity-archive-sweep: daily, archive entities that connectors created but
+ * which never accumulated any downstream signal — no signals, no facts, no
+ * channel_posts. After ENTITY_SWEEP_AGE_DAYS the row is junk. Soft-delete
+ * via archived_at so audit/replay still reaches the history.
+ *
+ * Decide-and-notify: archiving is reversible (flip archived_at back to null)
+ * so the sweep runs autonomously, no gate.
+ */
+export const entityArchiveSweep = inngest.createFunction(
+  { id: 'entity-archive-sweep' },
+  { cron: '30 12 * * *' }, // daily at 12:30 UTC, after silence-sweep
+  async ({ step }) => {
+    const toArchive = await step.run('scan-low-signal-entities', async () => {
+      const supabase = createServerClient();
+      const cutoff = new Date(Date.now() - ENTITY_SWEEP_AGE_DAYS * 86400_000).toISOString();
+
+      const { data: ents } = await supabase
+        .from('entities')
+        .select('id, workspace_id, name, kind, attributes, created_at')
+        .lt('created_at', cutoff)
+        .is('archived_at', null)
+        .limit(ENTITY_SWEEP_LIMIT_PER_RUN * 4);
+      const candidates = (ents ?? []) as Array<{
+        id: string; workspace_id: string; name: string; kind: string;
+        attributes: Record<string, unknown>; created_at: string;
+      }>;
+      if (!candidates.length) return [];
+
+      const ids = candidates.map((e) => e.id);
+
+      // Three "has activity" queries; any hit disqualifies the entity from sweep.
+      const [factHits, signalHits, postHits] = await Promise.all([
+        supabase.from('facts').select('subject_entity').in('subject_entity', ids).limit(ids.length),
+        supabase.from('signals').select('entity_id').in('entity_id', ids).limit(ids.length),
+        supabase.from('channels').select('id, account_entity_id').in('account_entity_id', ids),
+      ]);
+
+      const hasActivity = new Set<string>();
+      for (const r of (factHits.data ?? []) as Array<{ subject_entity: string }>) hasActivity.add(r.subject_entity);
+      for (const r of (signalHits.data ?? []) as Array<{ entity_id: string }>) hasActivity.add(r.entity_id);
+
+      const channelIds = ((postHits.data ?? []) as Array<{ id: string; account_entity_id: string }>).map((c) => c.id);
+      const channelToEntity = new Map<string, string>(
+        ((postHits.data ?? []) as Array<{ id: string; account_entity_id: string }>)
+          .map((c) => [c.id, c.account_entity_id]),
+      );
+      if (channelIds.length) {
+        const { data: posts } = await supabase.from('channel_posts').select('channel_id').in('channel_id', channelIds);
+        for (const p of (posts ?? []) as Array<{ channel_id: string }>) {
+          const eid = channelToEntity.get(p.channel_id);
+          if (eid) hasActivity.add(eid);
+        }
+      }
+
+      return candidates
+        .filter((e) => !hasActivity.has(e.id))
+        .slice(0, ENTITY_SWEEP_LIMIT_PER_RUN)
+        .map((e) => ({ id: e.id, workspace_id: e.workspace_id, name: e.name, kind: e.kind }));
+    });
+
+    if (!toArchive.length) return { archived: 0 };
+
+    await step.run('flip-archived-at', async () => {
+      const supabase = createServerClient();
+      const now = new Date().toISOString();
+      const { error } = await supabase
+        .from('entities')
+        .update({ archived_at: now })
+        .in('id', toArchive.map((e) => e.id));
+      if (error) throw error;
+    });
+
+    return { archived: toArchive.length, ids: toArchive.map((e) => e.id) };
+  },
+);

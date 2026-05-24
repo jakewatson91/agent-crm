@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { ActArgsSchema, ActorSchema, type Actor, type EventRow } from './types.js';
+import { ActArgsSchema, ActorSchema, type Actor, type EventRow } from './types.ts';
 
 const TARGET_KIND_BY_TOOL: Record<string, string> = {
   create_workspace: 'workspace',
@@ -10,6 +10,7 @@ const TARGET_KIND_BY_TOOL: Record<string, string> = {
   supersede_fact: 'fact',
   create_signal: 'signal',
   create_subscription: 'subscription',
+  update_source: 'source',
   post_to_channel: 'channel_post',
   request_gate: 'gate',
   decide_gate: 'gate',

@@ -1,20 +1,22 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { createServerClient } from '@agent-crm/db';
+import { requireUser } from './_lib/auth';
+import { createUserServerClient } from './_lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Workspace router:
+ * Workspace router (post-auth):
  *   0 workspaces  → wizard
- *   1 workspace   → that one's feed (preserves Jake's single-tenant flow)
+ *   1 workspace   → that one's feed
  *   2+ workspaces → picker
  *
- * Single-tenant deployment: no auth UI yet. When multi-tenant lands, this
- * becomes a workspace picker scoped to the signed-in user.
+ * Listing comes from the user-scoped client so RLS filters to workspaces the
+ * signed-in user is a member of.
  */
 export default async function Home() {
-  const sb = createServerClient();
+  await requireUser('/');
+  const sb = await createUserServerClient();
   const ws = await sb.from('workspaces').select('id, name, created_at')
     .order('created_at', { ascending: false });
   const rows = (ws.data ?? []) as Array<{ id: string; name: string; created_at: string }>;
@@ -23,7 +25,7 @@ export default async function Home() {
     redirect('/workspace/new');
   }
   if (rows.length === 1 && rows[0]) {
-    redirect(`/workspace/${rows[0].id}/channels`);
+    redirect(`/workspace/${rows[0].id}`);
   }
 
   return (
@@ -33,7 +35,7 @@ export default async function Home() {
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {rows.map((w) => (
           <li key={w.id} style={{ marginBottom: '.5rem' }}>
-            <Link href={`/workspace/${w.id}/channels`} style={{ color: 'var(--text)', textDecoration: 'none', display: 'block', padding: '.75rem', border: '1px solid var(--border)', borderRadius: 6 }}>
+            <Link href={`/workspace/${w.id}`} style={{ color: 'var(--text)', textDecoration: 'none', display: 'block', padding: '.75rem', border: '1px solid var(--border)', borderRadius: 6 }}>
               <div style={{ fontWeight: 500 }}>{w.name}</div>
               <div style={{ fontSize: '.75rem', color: 'var(--text-3)', fontFamily: 'monospace' }}>{w.id.slice(0, 8)}…</div>
             </Link>

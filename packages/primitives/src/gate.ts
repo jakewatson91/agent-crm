@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { act } from './act.js';
-import { GateArgsSchema, type Actor, type GateArgs } from './types.js';
+import { act } from './act.ts';
+import { GateArgsSchema, type Actor, type GateArgs } from './types.ts';
 
 /**
  * Open a gate. The only path that interrupts a human. A gate insert fires a `gate.created`

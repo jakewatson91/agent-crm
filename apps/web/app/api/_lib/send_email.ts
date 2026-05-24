@@ -10,7 +10,7 @@
  * Returns `{ ok, message_id?, error? }`. Never throws.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getPolicy } from '@agent-crm/tools';
+import { getPolicy } from '@agent-crm/tools/policy';
 
 const RESEND_URL = 'https://api.resend.com/emails';
 
@@ -32,9 +32,10 @@ export interface SendEmailResult {
 
 export async function sendEmail({ supabase, workspace_id, intended_to, subject, body }: SendEmailArgs): Promise<SendEmailResult> {
   const policy = await getPolicy(supabase, workspace_id);
-  const apiKey = policy.outreach?.resend_api_key ?? process.env.RESEND_API_KEY;
+  // Resolution: policy.env.RESEND_API_KEY → legacy policy.outreach.resend_api_key → process.env.
+  const apiKey = policy.env?.RESEND_API_KEY ?? policy.outreach?.resend_api_key ?? process.env.RESEND_API_KEY;
   if (!apiKey) {
-    return { ok: false, effective_to: '', override_active: false, error: 'no Resend API key (set on workspace policy or RESEND_API_KEY env)' };
+    return { ok: false, effective_to: '', override_active: false, error: 'no Resend API key (set on workspace env vars or RESEND_API_KEY env)' };
   }
   const override_to = policy.outreach?.override_to;
   const override_active = !!override_to;

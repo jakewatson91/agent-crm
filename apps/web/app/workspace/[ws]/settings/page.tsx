@@ -2,6 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { HelpRow } from './_components/HelpRow';
+import { ChipList } from './_components/ChipList';
+import { EnvVarsEditor } from './_components/EnvVarsEditor';
+import { DeveloperView } from './_components/DeveloperView';
+import { ConnectedServices } from './_components/ConnectedServices';
+import { MembersSection } from './_components/MembersSection';
+import { ApiKeysSection } from './_components/ApiKeysSection';
 
 interface Workspace {
   id: string;
@@ -13,61 +20,41 @@ interface Workspace {
   constitution: string;
   about: string;
   knowledge_base: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
-type Tab = 'setup' | 'email' | 'drafter' | 'routing' | 'integrations' | 'llm' | 'advanced';
+type Section = 'about' | 'writing' | 'thresholds' | 'connections' | 'members' | 'api_keys';
 
-const ABOUT_PLACEHOLDER = `What this workspace tracks, who you sell to or want to find, how you want to come across.
+const ABOUT_PLACEHOLDER = `Plain English. What you do, who you sell to, how the agent should come across. Everything structured (ICP, persona, pain points, example facts) is derived from this when you save.
 
-Examples:
-- "Find B2B SaaS companies hiring GTM roles, draft outreach to founders."
-- "Track listings under $500k in Boulder; flag new ones to me."
-- "Recruit talent partners for early-stage AI startups."`;
+Example:
+"We sell an agent-native CRM to founder-led startups doing $0–5M ARR who are running sales with one person or no one. Buyers are usually the founder. They care about: dropping HubSpot/Salesforce, agent reliability, cost per outbound, not training-wheel features. Voice: plainspoken, direct, no marketing jargon, no em dashes, lead with concrete numbers."`;
 
-const CONSTITUTION_PLACEHOLDER = `Voice: how the agent should sound when it writes on your behalf.
+const WRITING_PLACEHOLDER = `Voice and hard rules. Plain English. The agent reads this on every prompt.
 
-Hard rules (a few short lines):
-- No em dashes.
-- No jargon. Plain English.
-- Always cite a fact from the active facts list.
-- Don't pitch features. Describe the problem we solve.`;
+Example:
+- Plainspoken, no jargon, no em dashes.
+- Subjects are short phrases, not questions.
+- Bodies are 2–3 short paragraphs.
+- Always cite a specific fact about the company.
+- Don't pitch features. Describe the problem we solve.
+- Sign off with first name only.`;
 
 export default function SettingsPage() {
   const params = useParams<{ ws: string }>();
   const [ws, setWs] = useState<Workspace | null>(null);
-  const [tab, setTab] = useState<Tab>('setup');
+  const [section, setSection] = useState<Section>('about');
 
-  // Setup tab
+  // About — single prose box
   const [about, setAbout] = useState('');
+  const [aboutAtLoad, setAboutAtLoad] = useState('');
+
+  // Writing style — constitution + banned phrases
   const [constitution, setConstitution] = useState('');
-  const [knowledgeBase, setKnowledgeBase] = useState('');
-  const [personaText, setPersonaText] = useState('');
-  const [icpText, setIcpText] = useState('');
+  const [bannedPhrases, setBannedPhrases] = useState<string[]>([]);
 
-  // Email tab
-  const [overrideTo, setOverrideTo] = useState('');
-  const [fromEmail, setFromEmail] = useState('');
-  const [bannedPhrasesText, setBannedPhrasesText] = useState('');
-  const [resendKey, setResendKey] = useState('');
-  const [resendKeyDirty, setResendKeyDirty] = useState(false);
-
-  // Integrations tab
-  const [contactProvider, setContactProvider] = useState<'none' | 'hunter'>('none');
-  const [exampleFactsText, setExampleFactsText] = useState('');
-  const [bannedPredicatesText, setBannedPredicatesText] = useState('');
-
-  // Drafter tab
-  const [subjectStyle, setSubjectStyle] = useState<'one_word' | 'short_phrase' | 'question'>('one_word');
-  const [paragraphCount, setParagraphCount] = useState<number>(4);
-  const [painPointsText, setPainPointsText] = useState('');
-  const [valuePropsText, setValuePropsText] = useState('');
-  const [toneKeywordsText, setToneKeywordsText] = useState('');
-  const [askExamplesText, setAskExamplesText] = useState('');
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewText, setPreviewText] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-
-  // Routing tab
+  // Thresholds — numeric levers
   const [draftIcp, setDraftIcp] = useState(0.65);
   const [draftSignal, setDraftSignal] = useState(0.7);
   const [draftEvidence, setDraftEvidence] = useState(0.5);
@@ -86,25 +73,25 @@ export default function SettingsPage() {
   const [wRecency, setWRecency] = useState(0.10);
   const [wGraph, setWGraph] = useState(0.10);
   const [rrfGate, setRrfGate] = useState(0.30);
-  const [routingPreviewOpen, setRoutingPreviewOpen] = useState(false);
-  const [routingPreview, setRoutingPreview] = useState<{
-    distribution: Record<string, number>;
-    samples: Array<{ entity_id: string; entity_name: string; icp_total_now: number; icp_total_reweighted: number; action: string; policy: string; matched_theme?: string | null }>;
-    sample_size: number;
-  } | null>(null);
-  const [routingPreviewLoading, setRoutingPreviewLoading] = useState(false);
-
-  // LLM tab
-  const [openaiKey, setOpenaiKey] = useState('');
-  const [openaiKeyDirty, setOpenaiKeyDirty] = useState(false);
-  const [openrouterKey, setOpenrouterKey] = useState('');
-  const [openrouterKeyDirty, setOpenrouterKeyDirty] = useState(false);
-  const [defaultChatModel, setDefaultChatModel] = useState('');
-  const [drafterModel, setDrafterModel] = useState('');
-
-  // Advanced
-  const [policyText, setPolicyText] = useState('');
+  const [contactProvider, setContactProvider] = useState<'none' | 'hunter'>('none');
+  const [hunterCap, setHunterCap] = useState<number>(0);
   const [budget, setBudget] = useState(0);
+
+  // Hiring filter — workspace-wide ATS connector filter on classified role
+  // family / seniority. Empty = include everything (preserves prior behavior).
+  const [hireIncludeFamilies, setHireIncludeFamilies] = useState<string[]>([]);
+  const [hireIncludeSeniorities, setHireIncludeSeniorities] = useState<string[]>([]);
+  const [hireExcludeFamilies, setHireExcludeFamilies] = useState<string[]>([]);
+  const [hireAlwaysExec, setHireAlwaysExec] = useState<boolean>(false);
+
+  // Outbound send addressing (not "writing style" but practical)
+  const [fromEmail, setFromEmail] = useState('');
+  const [overrideTo, setOverrideTo] = useState('');
+
+  // Env vars + developer view
+  const [envVars, setEnvVars] = useState<Record<string, string>>({});
+  const [devUnlocked, setDevUnlocked] = useState(false);
+  const [devPolicy, setDevPolicy] = useState<Record<string, unknown>>({});
 
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -113,108 +100,70 @@ export default function SettingsPage() {
   async function load() {
     const r = await fetch(`/api/workspace/get?workspace_id=${params.ws}`);
     const j = await r.json();
-    if (j.workspace) {
-      const w = j.workspace as Workspace;
-      setWs(w);
-      setAbout(w.about ?? '');
-      setConstitution(w.constitution ?? '');
-      setKnowledgeBase(w.knowledge_base ?? '');
-      setPersonaText(JSON.stringify(w.persona ?? {}, null, 2));
-      setIcpText(JSON.stringify(w.icp ?? {}, null, 2));
-      setPolicyText(JSON.stringify(w.policy ?? {}, null, 2));
-      setBudget(w.budget_cents ?? 0);
-      const policy = (w.policy ?? {}) as Record<string, any>;
-      setOverrideTo((policy.outreach?.override_to ?? '') as string);
-      setFromEmail((policy.outreach?.from_email ?? '') as string);
-      setBannedPhrasesText(((policy.outreach?.banned_phrases ?? []) as string[]).join('\n'));
-      setResendKey((policy.outreach?.resend_api_key ?? '') as string);
-      setResendKeyDirty(false);
-      setContactProvider(((policy.enrichment?.contact_provider as 'none' | 'hunter') ?? 'none'));
-      const examples = (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>;
-      setExampleFactsText(examples.map((f) => `${f.predicate} | ${f.object_text}`).join('\n'));
-      setBannedPredicatesText(((policy.enrichment?.banned_predicates ?? []) as string[]).join('\n'));
-      const d = (policy.drafter ?? {}) as Record<string, any>;
-      setSubjectStyle((d.subject_style as 'one_word' | 'short_phrase' | 'question') ?? 'one_word');
-      setParagraphCount(typeof d.paragraph_count === 'number' ? d.paragraph_count : 4);
-      setPainPointsText(((d.pain_points ?? []) as string[]).join('\n'));
-      setValuePropsText(((d.value_props ?? []) as string[]).join('\n'));
-      setToneKeywordsText(((d.tone_keywords ?? []) as string[]).join(', '));
-      setAskExamplesText(((d.ask_examples ?? []) as string[]).join('\n'));
-      const r = (policy.routing ?? {}) as Record<string, any>;
-      setDraftIcp(typeof r.draft_icp_total === 'number' ? r.draft_icp_total : 0.65);
-      setDraftSignal(typeof r.draft_signal_strength === 'number' ? r.draft_signal_strength : 0.7);
-      setDraftEvidence(typeof r.draft_evidence_depth === 'number' ? r.draft_evidence_depth : 0.5);
-      setDraftSuppress(typeof r.draft_suppression_days === 'number' ? r.draft_suppression_days : 14);
-      setResearchIcp(typeof r.research_icp_total === 'number' ? r.research_icp_total : 0.5);
-      setResearchEvidenceMax(typeof r.research_evidence_depth_max === 'number' ? r.research_evidence_depth_max : 0.4);
-      setResearchCooldown(typeof r.research_cooldown_days === 'number' ? r.research_cooldown_days : 7);
-      setDropIcp(typeof r.drop_icp_total === 'number' ? r.drop_icp_total : 0.35);
-      setDropEvidenceMin(typeof r.drop_evidence_depth_min === 'number' ? r.drop_evidence_depth_min : 0.5);
-      setDropSuppress(typeof r.drop_suppression_days === 'number' ? r.drop_suppression_days : 90);
-      setWatchIcp(typeof r.watch_icp_total === 'number' ? r.watch_icp_total : 0.5);
-      const sc = (policy.scoring ?? {}) as Record<string, any>;
-      const wts = (sc.weights ?? {}) as Record<string, any>;
-      setWIndustry(typeof wts.industry_match === 'number' ? wts.industry_match : 0.30);
-      setWStage(typeof wts.stage_match === 'number' ? wts.stage_match : 0.20);
-      setWSignal(typeof wts.signal_strength === 'number' ? wts.signal_strength : 0.10);
-      setWEvidence(typeof wts.evidence_depth === 'number' ? wts.evidence_depth : 0.20);
-      setWRecency(typeof wts.recency === 'number' ? wts.recency : 0.10);
-      setWGraph(typeof wts.graph_proximity === 'number' ? wts.graph_proximity : 0.10);
-      setRrfGate(typeof sc.rrf_gate === 'number' ? sc.rrf_gate : 0.30);
-      setOpenaiKey((policy.llm?.openai_api_key ?? '') as string);
-      setOpenrouterKey((policy.llm?.openrouter_api_key ?? '') as string);
-      setOpenaiKeyDirty(false);
-      setOpenrouterKeyDirty(false);
-      setDefaultChatModel((policy.llm?.default_chat_model ?? '') as string);
-      setDrafterModel((policy.llm?.drafter_model ?? '') as string);
-    }
+    if (!j.workspace) return;
+    const w = j.workspace as Workspace;
+    setWs(w);
+    setAbout(w.about ?? '');
+    setAboutAtLoad(w.about ?? '');
+    setConstitution(w.constitution ?? '');
+    const policy = (w.policy ?? {}) as Record<string, any>;
+    setDevPolicy(policy);
+    const out = (policy.outreach ?? {}) as Record<string, any>;
+    setOverrideTo((out.override_to ?? '') as string);
+    setFromEmail((out.from_email ?? '') as string);
+    setBannedPhrases(((out.banned_phrases ?? []) as string[]));
+    const enr = (policy.enrichment ?? {}) as Record<string, any>;
+    setContactProvider(((enr.contact_provider as 'none' | 'hunter') ?? 'none'));
+    setHunterCap(typeof enr.hunter_monthly_cap === 'number' ? enr.hunter_monthly_cap : 0);
+    const rt = (policy.routing ?? {}) as Record<string, any>;
+    setDraftIcp(num(rt.draft_icp_total, 0.65));
+    setDraftSignal(num(rt.draft_signal_strength, 0.7));
+    setDraftEvidence(num(rt.draft_evidence_depth, 0.5));
+    setDraftSuppress(num(rt.draft_suppression_days, 14));
+    setResearchIcp(num(rt.research_icp_total, 0.5));
+    setResearchEvidenceMax(num(rt.research_evidence_depth_max, 0.4));
+    setResearchCooldown(num(rt.research_cooldown_days, 7));
+    setDropIcp(num(rt.drop_icp_total, 0.35));
+    setDropEvidenceMin(num(rt.drop_evidence_depth_min, 0.5));
+    setDropSuppress(num(rt.drop_suppression_days, 90));
+    setWatchIcp(num(rt.watch_icp_total, 0.5));
+    const sc = (policy.scoring ?? {}) as Record<string, any>;
+    const wts = (sc.weights ?? {}) as Record<string, any>;
+    setWIndustry(num(wts.industry_match, 0.30));
+    setWStage(num(wts.stage_match, 0.20));
+    setWSignal(num(wts.signal_strength, 0.10));
+    setWEvidence(num(wts.evidence_depth, 0.20));
+    setWRecency(num(wts.recency, 0.10));
+    setWGraph(num(wts.graph_proximity, 0.10));
+    setRrfGate(num(sc.rrf_gate, 0.30));
+    const hf = (policy.hiring_filter ?? {}) as Record<string, any>;
+    setHireIncludeFamilies(Array.isArray(hf.include_families) ? hf.include_families : []);
+    setHireIncludeSeniorities(Array.isArray(hf.include_seniorities) ? hf.include_seniorities : []);
+    setHireExcludeFamilies(Array.isArray(hf.exclude_families) ? hf.exclude_families : []);
+    setHireAlwaysExec(Boolean(hf.always_include_exec));
+    setBudget(w.budget_cents ?? 0);
+    setEnvVars((policy.env ?? {}) as Record<string, string>);
   }
-  useEffect(() => { load(); }, [params.ws]);
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [params.ws]);
 
-  // Build the policy object we'll persist based on the friendly fields, merging
-  // with whatever's currently in the raw policy JSON so unknown keys don't get
-  // dropped.
+  // Compose policy from friendly state OR pass through devPolicy if unlocked.
+  // Derived fields (icp / persona / pain_points / etc.) are NOT computed here —
+  // they come from the auto-derive step at save time when About changes.
   const composedPolicy = useMemo(() => {
-    let base: Record<string, any> = {};
-    try { base = JSON.parse(policyText); } catch { base = (ws?.policy ?? {}) as Record<string, any>; }
-    const banned = bannedPhrasesText.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (devUnlocked) return devPolicy;
+    const base = (ws?.policy ?? {}) as Record<string, any>;
     return {
       ...base,
       outreach: {
         ...(base.outreach ?? {}),
         override_to: overrideTo.trim() === '' ? null : overrideTo.trim(),
         from_email: fromEmail.trim() || undefined,
-        banned_phrases: banned,
-        ...(resendKeyDirty
-          ? (resendKey.trim() ? { resend_api_key: resendKey.trim() } : { resend_api_key: undefined })
-          : {}),
+        banned_phrases: bannedPhrases,
       },
       enrichment: {
         ...(base.enrichment ?? {}),
         contact_provider: contactProvider,
-        example_facts: exampleFactsText
-          .split('\n')
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .map((line) => {
-            const idx = line.indexOf('|');
-            if (idx < 0) return null;
-            const predicate = line.slice(0, idx).trim();
-            const object_text = line.slice(idx + 1).trim();
-            if (!predicate || !object_text) return null;
-            return { predicate, object_text };
-          })
-          .filter((x): x is { predicate: string; object_text: string } => x !== null),
-        banned_predicates: bannedPredicatesText.split('\n').map((s) => s.trim()).filter(Boolean),
-      },
-      drafter: {
-        ...(base.drafter ?? {}),
-        subject_style: subjectStyle,
-        paragraph_count: paragraphCount,
-        pain_points: painPointsText.split('\n').map((s) => s.trim()).filter(Boolean),
-        value_props: valuePropsText.split('\n').map((s) => s.trim()).filter(Boolean),
-        tone_keywords: toneKeywordsText.split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
-        ask_examples: askExamplesText.split('\n').map((s) => s.trim()).filter(Boolean),
+        hunter_monthly_cap: hunterCap > 0 ? hunterCap : undefined,
       },
       routing: {
         ...(base.routing ?? {}),
@@ -233,105 +182,95 @@ export default function SettingsPage() {
       scoring: {
         ...(base.scoring ?? {}),
         weights: {
-          industry_match: wIndustry,
-          stage_match: wStage,
-          signal_strength: wSignal,
-          evidence_depth: wEvidence,
-          recency: wRecency,
-          graph_proximity: wGraph,
+          industry_match: wIndustry, stage_match: wStage, signal_strength: wSignal,
+          evidence_depth: wEvidence, recency: wRecency, graph_proximity: wGraph,
         },
         rrf_gate: rrfGate,
       },
-      llm: {
-        ...(base.llm ?? {}),
-        ...(openaiKeyDirty
-          ? (openaiKey.trim() ? { openai_api_key: openaiKey.trim() } : { openai_api_key: undefined })
-          : {}),
-        ...(openrouterKeyDirty
-          ? (openrouterKey.trim() ? { openrouter_api_key: openrouterKey.trim() } : { openrouter_api_key: undefined })
-          : {}),
-        default_chat_model: defaultChatModel.trim() || undefined,
-        drafter_model: drafterModel.trim() || undefined,
+      hiring_filter: {
+        ...(base.hiring_filter ?? {}),
+        include_families: hireIncludeFamilies,
+        include_seniorities: hireIncludeSeniorities,
+        exclude_families: hireExcludeFamilies,
+        always_include_exec: hireAlwaysExec,
       },
+      env: filterEmpty(envVars),
     };
-  }, [policyText, overrideTo, fromEmail, bannedPhrasesText, contactProvider, resendKey, resendKeyDirty, openaiKey, openaiKeyDirty, openrouterKey, openrouterKeyDirty, defaultChatModel, drafterModel, exampleFactsText, bannedPredicatesText, subjectStyle, paragraphCount, painPointsText, valuePropsText, toneKeywordsText, askExamplesText, draftIcp, draftSignal, draftEvidence, draftSuppress, researchIcp, researchEvidenceMax, researchCooldown, dropIcp, dropEvidenceMin, dropSuppress, watchIcp, wIndustry, wStage, wSignal, wEvidence, wRecency, wGraph, rrfGate, ws]);
+  }, [
+    devUnlocked, devPolicy, ws,
+    overrideTo, fromEmail, bannedPhrases,
+    contactProvider, hunterCap,
+    draftIcp, draftSignal, draftEvidence, draftSuppress,
+    researchIcp, researchEvidenceMax, researchCooldown,
+    dropIcp, dropEvidenceMin, dropSuppress, watchIcp,
+    wIndustry, wStage, wSignal, wEvidence, wRecency, wGraph, rrfGate,
+    hireIncludeFamilies, hireIncludeSeniorities, hireExcludeFamilies, hireAlwaysExec,
+    envVars,
+  ]);
 
   async function save() {
     setErr(null); setMsg(null); setSaving(true);
-    let persona: Record<string, unknown>;
-    let icp: Record<string, unknown>;
     try {
-      persona = JSON.parse(personaText);
-      icp = JSON.parse(icpText);
-      for (const [n, v] of [['Tone (persona)', persona], ['Audience (icp)', icp]] as const) {
-        if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error(`${n} must be a JSON object`);
-      }
-    } catch (e) {
-      setErr(`invalid JSON in Tone/Audience: ${e instanceof Error ? e.message : String(e)}`);
-      setSaving(false); return;
-    }
+      const aboutChanged = !devUnlocked && about.trim() !== aboutAtLoad.trim() && about.trim().length > 0;
 
-    // Policy: prefer the composed (friendly-fields) object, unless the user is on
-    // the Advanced tab and edited the raw JSON.
-    let policy: Record<string, any> = composedPolicy;
-    if (tab === 'advanced') {
-      try {
-        policy = JSON.parse(policyText);
-        if (typeof policy !== 'object' || policy === null || Array.isArray(policy)) {
-          throw new Error('policy must be a JSON object');
+      // Auto-derive on About change. Silent — user doesn't see the wizard step.
+      // The derived fields (icp/persona/pain_points/etc.) update the top-level
+      // workspace columns AND the policy.drafter/enrichment lists.
+      let icp: Record<string, unknown> | undefined;
+      let persona: Record<string, unknown> | undefined;
+      let knowledgeBase: string | undefined;
+      let policyOverride = composedPolicy as Record<string, any>;
+      if (aboutChanged) {
+        const r = await fetch('/api/workspaces/regenerate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspace_id: params.ws, about }),
+        });
+        if (r.ok) {
+          const j = await r.json() as { derived?: any };
+          const d = j.derived ?? {};
+          icp = d.icp;
+          persona = d.persona;
+          knowledgeBase = d.knowledge_base;
+          policyOverride = {
+            ...policyOverride,
+            enrichment: {
+              ...(policyOverride.enrichment ?? {}),
+              example_facts: Array.isArray(d.example_facts) ? d.example_facts : (policyOverride.enrichment?.example_facts ?? []),
+            },
+            drafter: {
+              ...(policyOverride.drafter ?? {}),
+              pain_points: Array.isArray(d.pain_points) ? d.pain_points : (policyOverride.drafter?.pain_points ?? []),
+              value_props: Array.isArray(d.value_props) ? d.value_props : (policyOverride.drafter?.value_props ?? []),
+              tone_keywords: Array.isArray(d.tone_keywords) ? d.tone_keywords : (policyOverride.drafter?.tone_keywords ?? []),
+            },
+          };
         }
-      } catch (e) {
-        setErr(`invalid policy JSON: ${e instanceof Error ? e.message : String(e)}`);
-        setSaving(false); return;
       }
-    }
 
-    try {
       const r = await fetch('/api/workspace/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           workspace_id: params.ws,
-          about, constitution, knowledge_base: knowledgeBase,
-          persona, icp, policy, budget_cents: budget,
+          about, constitution,
+          ...(knowledgeBase !== undefined ? { knowledge_base: knowledgeBase } : {}),
+          ...(icp !== undefined ? { icp } : {}),
+          ...(persona !== undefined ? { persona } : {}),
+          policy: policyOverride,
+          budget_cents: budget,
         }),
       });
       const j = await r.json();
       if (!r.ok) { setErr(j.error ?? 'save failed'); return; }
-      setMsg(`saved at ${new Date().toLocaleTimeString()}`);
+      setMsg(aboutChanged
+        ? `saved + regenerated structured fields at ${new Date().toLocaleTimeString()}`
+        : `saved at ${new Date().toLocaleTimeString()}`);
       await load();
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }
 
   if (!ws) return <section><h2 style={{ marginTop: 0 }}>Settings</h2><p style={{ color: 'var(--text-3)' }}>loading…</p></section>;
-
-  const proseStyle: React.CSSProperties = {
-    width: '100%', padding: '.75rem', background: 'var(--panel)', color: 'var(--text)',
-    border: '1px solid var(--border)', fontFamily: 'inherit', fontSize: '.9rem', lineHeight: 1.5, borderRadius: 6,
-  };
-  const jsonStyle: React.CSSProperties = {
-    width: '100%', padding: '.5rem', background: 'var(--panel)', color: 'var(--text)',
-    border: '1px solid var(--border)', fontFamily: 'monospace', fontSize: '.85rem', borderRadius: 6,
-  };
-  const labelStyle: React.CSSProperties = { fontSize: '.85rem', color: 'var(--text-2)', marginBottom: '.25rem', display: 'block', fontWeight: 500 };
-  const helpStyle: React.CSSProperties = { fontSize: '.75rem', color: 'var(--text-3)', marginBottom: '.5rem' };
-
-  function TabButton({ id, label }: { id: Tab; label: string }) {
-    const active = tab === id;
-    return (
-      <button
-        onClick={() => setTab(id)}
-        style={{
-          padding: '.5rem .9rem', fontSize: '.85rem', cursor: 'pointer',
-          background: active ? 'var(--panel-2)' : 'transparent',
-          color: active ? 'var(--text)' : 'var(--text-2)',
-          border: 'none', borderBottom: active ? '2px solid var(--text)' : '2px solid transparent',
-        }}
-      >{label}</button>
-    );
-  }
 
   return (
     <section style={{ maxWidth: 820 }}>
@@ -341,498 +280,180 @@ export default function SettingsPage() {
         <span style={{ fontSize: '.7rem', color: 'var(--text-3)', marginLeft: '.75rem', fontFamily: 'monospace' }}>{ws.id.slice(0, 8)}…</span>
       </div>
 
+      {devUnlocked && (
+        <div style={{ marginTop: '1rem', padding: '.5rem .75rem', borderRadius: 6, background: '#3a1a1a', color: '#f7c5c5', fontSize: '.78rem' }}>
+          Developer view is unlocked. The forms below are read-only — re-lock at the bottom to edit them.
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: '.25rem', marginTop: '1.25rem', borderBottom: '1px solid var(--border)' }}>
-        <TabButton id="setup" label="Setup" />
-        <TabButton id="email" label="Email" />
-        <TabButton id="drafter" label="Drafter" />
-        <TabButton id="routing" label="Routing" />
-        <TabButton id="integrations" label="Integrations" />
-        <TabButton id="llm" label="LLM" />
-        <TabButton id="advanced" label="Advanced" />
+        <SectionTab id="about" current={section} onClick={setSection} label="About" />
+        <SectionTab id="writing" current={section} onClick={setSection} label="Writing style" />
+        <SectionTab id="thresholds" current={section} onClick={setSection} label="Thresholds" />
+        <SectionTab id="connections" current={section} onClick={setSection} label="Connections" />
+        <SectionTab id="members" current={section} onClick={setSection} label="Members" />
+        <SectionTab id="api_keys" current={section} onClick={setSection} label="API keys" />
       </div>
 
-      {tab === 'setup' && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <div>
-            <label style={labelStyle}>About</label>
-            <div style={helpStyle}>What this workspace does, who you target, what makes you different. Every agent prompt reads this.</div>
-            <textarea value={about} onChange={(e) => setAbout(e.target.value)} rows={8} placeholder={ABOUT_PLACEHOLDER} style={proseStyle} />
+      <fieldset disabled={devUnlocked} style={{ border: 0, padding: 0, margin: 0, opacity: devUnlocked ? 0.5 : 1 }}>
+        {section === 'about' && (
+          <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <HelpRow label="About" help="What you do, who you sell to, how the agent should sound. Plain English. When you save, the agent re-derives the structured fields (ICP, persona, pain points, example facts, tone) from this text automatically.">
+              <textarea value={about} onChange={(e) => setAbout(e.target.value)} rows={18} placeholder={ABOUT_PLACEHOLDER} style={prose} />
+            </HelpRow>
           </div>
+        )}
 
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>Writing rules</label>
-            <div style={helpStyle}>Voice, do-nots, hard rules. Plain English. Injected into every agent&apos;s system prompt.</div>
-            <textarea value={constitution} onChange={(e) => setConstitution(e.target.value)} rows={12} placeholder={CONSTITUTION_PLACEHOLDER} style={proseStyle} />
-          </div>
+        {section === 'writing' && (
+          <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <HelpRow label="Writing style" help="Voice rules + hard do-nots. Plain English. The agent reads this on every prompt. Subject style, paragraph count, ask phrasing, tone — all belong here as prose rather than separate fields.">
+              <textarea value={constitution} onChange={(e) => setConstitution(e.target.value)} rows={14} placeholder={WRITING_PLACEHOLDER} style={prose} />
+            </HelpRow>
 
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>Pain → angle map</label>
-            <div style={helpStyle}>Optional. List things your target audience says next to which of your angles maps to it. Drafters pick a framing using this.</div>
-            <textarea value={knowledgeBase} onChange={(e) => setKnowledgeBase(e.target.value)} rows={10} style={proseStyle} />
-          </div>
+            <HelpRow label="Banned phrases" help="Hard list of phrases the drafter must never produce. Stripped silently before posting. Stacks on top of code-level defaults.">
+              <ChipList values={bannedPhrases} onChange={setBannedPhrases} placeholder="e.g. hope this finds you well" />
+            </HelpRow>
 
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>What kind of accounts (structured)</label>
-            <div style={helpStyle}>Used by the scorer to rank fit. JSON with whatever keys fit your use case (industry, stage, location, size…).</div>
-            <textarea value={icpText} onChange={(e) => setIcpText(e.target.value)} rows={5} style={jsonStyle} />
-          </div>
+            <HelpRow label="From address" help="The address outbound is sent from. Defaults to onboarding@resend.dev (no domain verification needed).">
+              <input value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} placeholder="onboarding@resend.dev" style={textInput} />
+            </HelpRow>
 
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>Tone (structured)</label>
-            <div style={helpStyle}>Short JSON. {`{"pitch": "..."}`} works fine.</div>
-            <textarea value={personaText} onChange={(e) => setPersonaText(e.target.value)} rows={4} style={jsonStyle} />
-          </div>
-        </div>
-      )}
+            <HelpRow label="Override recipient (dev redirect)" help="Reroute every approved send to this address while testing. Leave empty to send to the real recipient.">
+              <input value={overrideTo} onChange={(e) => setOverrideTo(e.target.value)} placeholder="you@example.com" style={textInput} />
+            </HelpRow>
 
-      {tab === 'email' && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <div>
-            <label style={labelStyle}>Override recipient</label>
-            <div style={helpStyle}>Reroute every approved send to this address (useful while testing). Leave empty to send to the real recipient.</div>
-            <input value={overrideTo} onChange={(e) => setOverrideTo(e.target.value)} style={{ ...jsonStyle, fontFamily: 'inherit' }} placeholder="e.g. you@example.com" />
-          </div>
-
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>From address</label>
-            <div style={helpStyle}>Defaults to onboarding@resend.dev (no domain verification needed). Set a verified domain address once you have one.</div>
-            <input value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} style={{ ...jsonStyle, fontFamily: 'inherit' }} placeholder="onboarding@resend.dev" />
-          </div>
-
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>Banned phrases</label>
-            <div style={helpStyle}>One phrase per line. Stripped from every draft before send (case-insensitive). Stacks on top of the universal jargon list.</div>
-            <textarea value={bannedPhrasesText} onChange={(e) => setBannedPhrasesText(e.target.value)} rows={6} style={proseStyle} />
-          </div>
-
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>Resend API key</label>
-            <div style={helpStyle}>Stored on this workspace. If empty, the global RESEND_API_KEY env var is used (single-tenant fallback).</div>
-            <input
-              type="password"
-              value={resendKey}
-              onChange={(e) => { setResendKey(e.target.value); setResendKeyDirty(true); }}
-              style={{ ...jsonStyle, fontFamily: 'inherit' }}
-              placeholder="re_..."
-            />
-          </div>
-        </div>
-      )}
-
-      {tab === 'drafter' && (
-        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
-            <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5, margin: 0, flex: 1 }}>
-              Shape what the cold-email drafter writes. These fields go directly into the drafter's system prompt — pain points become the bullets it picks from in the problem statement, value props become the one-liner options. Tone keywords steer voice.
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                setSubjectStyle('one_word');
-                setParagraphCount(4);
-                setPainPointsText('');
-                setValuePropsText('');
-                setToneKeywordsText('');
-                setAskExamplesText('Worth exploring?\nOpen to a quick chat?');
-              }}
-              style={{ padding: '.35rem .7rem', fontSize: '.75rem', background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
-              title="Revert to vertical-neutral defaults"
-            >
-              Reset to defaults
-            </button>
-          </div>
-
-          <div>
-            <label style={labelStyle}>Subject style</label>
-            <div style={helpStyle}>How the email subject line is shaped.</div>
-            <select value={subjectStyle} onChange={(e) => setSubjectStyle(e.target.value as 'one_word' | 'short_phrase' | 'question')} style={{ ...jsonStyle, fontFamily: 'inherit' }}>
-              <option value="one_word">One word — concrete noun ("Tokens", "Burn")</option>
-              <option value="short_phrase">Short phrase — 2-5 words</option>
-              <option value="question">Question — short, specific</option>
-            </select>
-          </div>
-
-          <div>
-            <label style={labelStyle}>Body paragraph count</label>
-            <div style={helpStyle}>Roughly how many short paragraphs in the body. The drafter still picks pacing — this is a target, not a hard limit.</div>
-            <input
-              type="number"
-              min={1}
-              max={8}
-              value={paragraphCount}
-              onChange={(e) => setParagraphCount(parseInt(e.target.value, 10) || 4)}
-              style={{ ...jsonStyle, fontFamily: 'inherit', maxWidth: 120 }}
-            />
-          </div>
-
-          <div>
-            <label style={labelStyle}>Pain points</label>
-            <div style={helpStyle}>The specific pains your product addresses. One per line. The drafter picks the one that fits each prospect — don't list them all in the email. Use prospect-recognizable language, not internal jargon.</div>
-            <textarea
-              value={painPointsText}
-              onChange={(e) => setPainPointsText(e.target.value)}
-              rows={6}
-              placeholder={'Running GTM with 1-2 people on legacy CRMs built for humans\nToken bloat: agents reading raw rows eat 5-10x the tokens they need to'}
-              style={proseStyle}
-            />
-          </div>
-
-          <div>
-            <label style={labelStyle}>Value props (concrete behaviors / numbers)</label>
-            <div style={helpStyle}>One per line. These are the one-liners the drafter can use — concrete, behavioral, ideally with a number. Beats abstract claims every time.</div>
-            <textarea
-              value={valuePropsText}
-              onChange={(e) => setValuePropsText(e.target.value)}
-              rows={6}
-              placeholder={'When 3 of your agents update the same account at once, all 3 writes land. HubSpot loses 96%.\nEvery line in this email cites a fact you can trace back to where it came from.'}
-              style={proseStyle}
-            />
-          </div>
-
-          <div>
-            <label style={labelStyle}>Tone keywords</label>
-            <div style={helpStyle}>How the email should sound. Comma- or newline-separated.</div>
-            <input
-              value={toneKeywordsText}
-              onChange={(e) => setToneKeywordsText(e.target.value)}
-              placeholder="casual, concrete, no-jargon, short-sentences"
-              style={{ ...jsonStyle, fontFamily: 'inherit' }}
-            />
-          </div>
-
-          <div>
-            <label style={labelStyle}>Ask examples</label>
-            <div style={helpStyle}>One per line. The drafter picks one or rephrases. Short — never a paragraph.</div>
-            <textarea
-              value={askExamplesText}
-              onChange={(e) => setAskExamplesText(e.target.value)}
-              rows={4}
-              placeholder={'Worth exploring?\nOpen to a 15-min chat?\nWant to see it run?'}
-              style={proseStyle}
-            />
-          </div>
-
-          <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
-            <button
-              type="button"
-              onClick={async () => {
-                if (previewOpen && previewText) { setPreviewOpen(false); return; }
-                setPreviewLoading(true);
-                try {
-                  const r = await fetch('/api/admin/preview-prompt', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      subject_style: subjectStyle,
-                      paragraph_count: paragraphCount,
-                      pain_points: painPointsText.split('\n').map((s) => s.trim()).filter(Boolean),
-                      value_props: valuePropsText.split('\n').map((s) => s.trim()).filter(Boolean),
-                      tone_keywords: toneKeywordsText.split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
-                      ask_examples: askExamplesText.split('\n').map((s) => s.trim()).filter(Boolean),
-                      forbidden_phrases: bannedPhrasesText.split('\n').map((s) => s.trim()).filter(Boolean),
-                    }),
-                  });
-                  const j = await r.json();
-                  setPreviewText(j.prompt ?? '(no preview)');
-                  setPreviewOpen(true);
-                } finally { setPreviewLoading(false); }
-              }}
-              style={{ padding: '.45rem .9rem', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: '.85rem' }}
-            >
-              {previewLoading ? 'rendering…' : previewOpen ? 'Hide preview' : 'Preview prompt'}
-            </button>
-            <div style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.35rem' }}>
-              Renders what the drafter LLM will actually be told, with your current form values. Save to make it live.
-            </div>
-            {previewOpen && previewText && (
-              <pre style={{ marginTop: '.75rem', padding: '.75rem', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 6, fontSize: '.75rem', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 480, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace' }}>
-                {previewText}
-              </pre>
-            )}
-          </div>
-        </div>
-      )}
-
-      {tab === 'routing' && (
-        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
-            <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5, margin: 0, flex: 1 }}>
-              Tune when the agent drafts, watches, researches, or drops an entity. Higher draft thresholds = pickier (fewer drafts). Lower drop thresholds = give up on entities faster.
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                setDraftIcp(0.65); setDraftSignal(0.7); setDraftEvidence(0.5); setDraftSuppress(14);
-                setResearchIcp(0.5); setResearchEvidenceMax(0.4); setResearchCooldown(7);
-                setDropIcp(0.35); setDropEvidenceMin(0.5); setDropSuppress(90);
-                setWatchIcp(0.5);
-                setWIndustry(0.30); setWStage(0.20); setWSignal(0.10);
-                setWEvidence(0.20); setWRecency(0.10); setWGraph(0.10);
-                setRrfGate(0.30);
-              }}
-              style={{ padding: '.35rem .7rem', fontSize: '.75rem', background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
-              title="Revert to code defaults"
-            >
-              Reset to defaults
-            </button>
-          </div>
-
-          <div>
-            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Draft</div>
-            <div style={helpStyle}>Entity gets a draft when ALL of these clear.</div>
-            <NumRow label="icp_total min" value={draftIcp} onChange={setDraftIcp} step={0.05} />
-            <NumRow label="signal_strength min" value={draftSignal} onChange={setDraftSignal} step={0.05} />
-            <NumRow label="evidence_depth min" value={draftEvidence} onChange={setDraftEvidence} step={0.05} />
-            <NumRow label="suppression days (don't re-draft within N days)" value={draftSuppress} onChange={setDraftSuppress} step={1} />
-          </div>
-
-          <div>
-            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Deep research</div>
-            <div style={helpStyle}>Entity gets a targeted research pull (Exa) when fit hints exist but evidence is thin.</div>
-            <NumRow label="icp_total min" value={researchIcp} onChange={setResearchIcp} step={0.05} />
-            <NumRow label="evidence_depth max (research if below this)" value={researchEvidenceMax} onChange={setResearchEvidenceMax} step={0.05} />
-            <NumRow label="cooldown days (don't re-research within N days)" value={researchCooldown} onChange={setResearchCooldown} step={1} />
-          </div>
-
-          <div>
-            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Drop</div>
-            <div style={helpStyle}>Confidently off-ICP. Suppresses re-evaluation for N days.</div>
-            <NumRow label="icp_total max (drop if below)" value={dropIcp} onChange={setDropIcp} step={0.05} />
-            <NumRow label="evidence_depth min (need enough facts to be sure)" value={dropEvidenceMin} onChange={setDropEvidenceMin} step={0.05} />
-            <NumRow label="suppression days" value={dropSuppress} onChange={setDropSuppress} step={1} />
-          </div>
-
-          <div>
-            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Watch</div>
-            <div style={helpStyle}>Fit is real but trigger is weak. Keep enriching, no draft.</div>
-            <NumRow label="icp_total min" value={watchIcp} onChange={setWatchIcp} step={0.05} />
-          </div>
-
-          <div>
-            <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.4rem' }}>Scoring weights</div>
-            <div style={helpStyle}>How each sub-score contributes to the final icp_total. Should roughly sum to 1.0 — anything beyond that gets clamped to [0,1] anyway.</div>
-            <NumRow label="industry_match" value={wIndustry} onChange={setWIndustry} step={0.05} />
-            <NumRow label="stage_match" value={wStage} onChange={setWStage} step={0.05} />
-            <NumRow label="signal_strength" value={wSignal} onChange={setWSignal} step={0.05} />
-            <NumRow label="evidence_depth" value={wEvidence} onChange={setWEvidence} step={0.05} />
-            <NumRow label="recency" value={wRecency} onChange={setWRecency} step={0.05} />
-            <NumRow label="graph_proximity" value={wGraph} onChange={setWGraph} step={0.05} />
-            <div style={{ fontSize: '.75rem', color: 'var(--text-3)', marginTop: '.5rem' }}>
-              sum: {(wIndustry + wStage + wSignal + wEvidence + wRecency + wGraph).toFixed(2)}
+            <div style={{ padding: '.5rem .75rem', borderRadius: 6, background: 'var(--panel-2)', fontSize: '.72rem', color: 'var(--text-3)' }}>
+              Your Resend API key lives in <strong>Environment variables</strong> below as <code>RESEND_API_KEY</code>.
             </div>
           </div>
+        )}
 
-          <div>
-            <NumRow label="RRF prefilter gate (skip LLM scoring when fused similarity below this)" value={rrfGate} onChange={setRrfGate} step={0.05} />
-          </div>
-
-          <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
-            <button
-              type="button"
-              onClick={async () => {
-                if (routingPreviewOpen && routingPreview) { setRoutingPreviewOpen(false); return; }
-                setRoutingPreviewLoading(true);
-                try {
-                  const r = await fetch('/api/admin/routing-preview', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      workspace_id: params.ws,
-                      routing: {
-                        draft_icp_total: draftIcp, draft_signal_strength: draftSignal,
-                        draft_evidence_depth: draftEvidence, draft_suppression_days: draftSuppress,
-                        research_icp_total: researchIcp, research_evidence_depth_max: researchEvidenceMax,
-                        research_cooldown_days: researchCooldown,
-                        drop_icp_total: dropIcp, drop_evidence_depth_min: dropEvidenceMin, drop_suppression_days: dropSuppress,
-                        watch_icp_total: watchIcp,
-                      },
-                      scoring: {
-                        weights: { industry_match: wIndustry, stage_match: wStage, signal_strength: wSignal, evidence_depth: wEvidence, recency: wRecency, graph_proximity: wGraph },
-                        rrf_gate: rrfGate,
-                      },
-                      limit: 30,
-                    }),
-                  });
-                  const j = await r.json();
-                  setRoutingPreview(j);
-                  setRoutingPreviewOpen(true);
-                } finally { setRoutingPreviewLoading(false); }
-              }}
-              style={{ padding: '.45rem .9rem', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: '.85rem' }}
-            >
-              {routingPreviewLoading ? 'running…' : routingPreviewOpen ? 'Hide preview' : 'Preview: what would happen?'}
-            </button>
-            <div style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.35rem' }}>
-              Runs the action selector against the top 30 entities with your current thresholds + weights. Read-only — no facts get written.
+        {section === 'thresholds' && (
+          <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div style={{ fontSize: '.72rem', color: 'var(--text-3)' }}>
+              Numeric levers. Defaults are sensible — only touch these if the agent's behavior isn&apos;t matching what you want.
             </div>
 
-            {routingPreviewOpen && routingPreview && (
-              <div style={{ marginTop: '.75rem', display: 'flex', flexDirection: 'column', gap: '.75rem' }}>
-                <div style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap' }}>
-                  {Object.entries(routingPreview.distribution).sort((a, b) => b[1] - a[1]).map(([action, count]) => (
-                    <div key={action} style={{ padding: '.3rem .6rem', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 6, fontSize: '.8rem' }}>
-                      <strong>{count}</strong> <span style={{ color: 'var(--text-3)' }}>{action}</span>
-                    </div>
-                  ))}
-                  <div style={{ padding: '.3rem .6rem', fontSize: '.8rem', color: 'var(--text-3)' }}>
-                    of {routingPreview.sample_size}
-                  </div>
-                </div>
+            <HelpRow label="Score needed to draft outbound" help="An account must reach this composite score before the drafter writes a touch. Range 0–1.">
+              <NumInput value={draftIcp} onChange={setDraftIcp} step={0.05} />
+            </HelpRow>
+            <HelpRow label="Signal strength needed to draft" help="The signal driving the draft must be at least this strong.">
+              <NumInput value={draftSignal} onChange={setDraftSignal} step={0.05} />
+            </HelpRow>
+            <HelpRow label="Evidence depth needed to draft" help="How much fact evidence (cosine to ICP) an account needs before drafting.">
+              <NumInput value={draftEvidence} onChange={setDraftEvidence} step={0.05} />
+            </HelpRow>
+            <HelpRow label="Days to suppress after a draft" help="After we draft to an account, don't draft again for this many days unless something material changes.">
+              <NumInput value={draftSuppress} onChange={setDraftSuppress} step={1} />
+            </HelpRow>
 
-                <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
-                  <table style={{ width: '100%', fontSize: '.75rem', borderCollapse: 'collapse' }}>
-                    <thead style={{ background: 'var(--panel-2)' }}>
-                      <tr>
-                        <th style={{ textAlign: 'left', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>entity</th>
-                        <th style={{ textAlign: 'right', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>now</th>
-                        <th style={{ textAlign: 'right', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>new</th>
-                        <th style={{ textAlign: 'left', padding: '.4rem .6rem', borderBottom: '1px solid var(--border)' }}>action / policy</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {routingPreview.samples.map((s) => (
-                        <tr key={s.entity_id}>
-                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)' }}>{s.entity_name}</td>
-                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)', textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{s.icp_total_now.toFixed(2)}</td>
-                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)', textAlign: 'right', fontFamily: 'JetBrains Mono, monospace', color: s.icp_total_reweighted > s.icp_total_now ? '#48a' : s.icp_total_reweighted < s.icp_total_now ? '#a48' : 'inherit' }}>{s.icp_total_reweighted.toFixed(2)}</td>
-                          <td style={{ padding: '.35rem .6rem', borderBottom: '1px solid var(--border)' }}>
-                            <strong>{s.action}</strong>
-                            <span style={{ color: 'var(--text-3)' }}> · {s.policy}</span>
-                            {s.matched_theme && <span style={{ color: 'var(--text-3)' }}> · theme={s.matched_theme}</span>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+            <HelpRow label="Score needed to spend on research" help="Above this score the agent will run deeper research on the account.">
+              <NumInput value={researchIcp} onChange={setResearchIcp} step={0.05} />
+            </HelpRow>
+            <HelpRow label="Evidence depth ceiling for research" help="Don't research accounts that already have this much evidence.">
+              <NumInput value={researchEvidenceMax} onChange={setResearchEvidenceMax} step={0.05} />
+            </HelpRow>
+            <HelpRow label="Days between research runs" help="Per-entity research cooldown.">
+              <NumInput value={researchCooldown} onChange={setResearchCooldown} step={1} />
+            </HelpRow>
 
-      {tab === 'integrations' && (
-        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div>
-            <label style={labelStyle}>Contact lookups</label>
-            <div style={helpStyle}>When the enricher finds an account with a domain, should it pull contacts via Hunter? Defaults to none.</div>
-            <select value={contactProvider} onChange={(e) => setContactProvider(e.target.value as 'none' | 'hunter')} style={{ ...jsonStyle, fontFamily: 'inherit' }}>
-              <option value="none">none</option>
-              <option value="hunter">hunter</option>
-            </select>
-          </div>
-          <div>
-            <label style={labelStyle}>Custom connectors</label>
-            <div style={helpStyle}>Wire a new HTTP source by URL + a plain-English description of what to extract. The agent runs it on a schedule and the LLM does the extraction — no code.</div>
-            <a href={`/workspace/${params.ws}/connectors/new`} style={{ display: 'inline-block', marginTop: '.5rem', padding: '.5rem .9rem', background: 'var(--accent)', color: 'var(--accent-fg)', borderRadius: 6, textDecoration: 'none', fontSize: '.85rem', fontWeight: 500 }}>+ Add connector</a>
-          </div>
+            <HelpRow label="Score below which we drop the account" help="Accounts below this score get suppressed instead of being kept on watch.">
+              <NumInput value={dropIcp} onChange={setDropIcp} step={0.05} />
+            </HelpRow>
+            <HelpRow label="Evidence floor before we'll drop" help="Don't drop an account until it has at least this much evidence.">
+              <NumInput value={dropEvidenceMin} onChange={setDropEvidenceMin} step={0.05} />
+            </HelpRow>
+            <HelpRow label="Days to suppress dropped accounts" help="How long a dropped account stays quiet before the agent reconsiders.">
+              <NumInput value={dropSuppress} onChange={setDropSuppress} step={1} />
+            </HelpRow>
+            <HelpRow label="Score above which we keep watching" help="Accounts at this score stay on watch but don't trigger drafts yet.">
+              <NumInput value={watchIcp} onChange={setWatchIcp} step={0.05} />
+            </HelpRow>
 
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '1rem' }}>
-              <label style={labelStyle}>Enricher examples</label>
-              <button
-                type="button"
-                onClick={() => { setExampleFactsText(''); setBannedPredicatesText(''); }}
-                style={{ padding: '.25rem .55rem', fontSize: '.7rem', background: 'transparent', color: 'var(--text-3)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer' }}
-                title="Clear examples + banned predicates"
-              >
-                Reset
-              </button>
+            <div style={{ marginTop: '.75rem', fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Scoring weights</div>
+            <HelpRow label="Industry match" help="How much industry match counts in the composite score."><NumInput value={wIndustry} onChange={setWIndustry} step={0.05} /></HelpRow>
+            <HelpRow label="Stage match" help="How much stage match counts."><NumInput value={wStage} onChange={setWStage} step={0.05} /></HelpRow>
+            <HelpRow label="Signal strength" help="How much raw signal strength counts."><NumInput value={wSignal} onChange={setWSignal} step={0.05} /></HelpRow>
+            <HelpRow label="Evidence depth" help="How much fact evidence counts."><NumInput value={wEvidence} onChange={setWEvidence} step={0.05} /></HelpRow>
+            <HelpRow label="Recency" help="How much recent activity counts."><NumInput value={wRecency} onChange={setWRecency} step={0.05} /></HelpRow>
+            <HelpRow label="Graph proximity" help="How much closeness to existing customers counts."><NumInput value={wGraph} onChange={setWGraph} step={0.05} /></HelpRow>
+            <HelpRow label="Minimum ICP-match strength to count as evidence" help="Facts below this cosine similarity to your ICP description are ignored for scoring."><NumInput value={rrfGate} onChange={setRrfGate} step={0.05} /></HelpRow>
+
+            <div style={{ marginTop: '.75rem', fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Enrichment</div>
+            <HelpRow label="Contact provider" help="Where to look up email addresses. 'none' disables contact lookups entirely.">
+              <select value={contactProvider} onChange={(e) => setContactProvider(e.target.value as 'none' | 'hunter')} style={textInput}>
+                <option value="none">none</option>
+                <option value="hunter">Hunter.io</option>
+              </select>
+            </HelpRow>
+            <HelpRow label="Hunter monthly cap" help="Hard cap on Hunter lookups per calendar month. 0 means no cap.">
+              <NumInput value={hunterCap} onChange={setHunterCap} step={1} />
+            </HelpRow>
+            <HelpRow label="Daily budget (cents)" help="Token-spend ceiling per day for this workspace.">
+              <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value, 10) || 0)} style={{ ...textInput, width: 140 }} />
+            </HelpRow>
+
+            <div style={{ marginTop: '.75rem', fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Hiring filter</div>
+            <div style={{ fontSize: '.72rem', color: 'var(--text-3)' }}>
+              ATS postings the agent should care about. Leave a section empty to include everything. Postings outside these filters never become signals (no fact extraction, no tokens).
             </div>
-            <div style={helpStyle}>What kinds of facts should the agent look for when reading signals about an entity? One per line in the form <code>predicate | example value</code>. The LLM uses these as exemplars — extracted facts don't have to match exactly. Leave empty for vertical-neutral defaults.</div>
-            <textarea
-              value={exampleFactsText}
-              onChange={(e) => setExampleFactsText(e.target.value)}
-              rows={8}
-              placeholder={'hiring_for | SDR / AE / RevOps role being filled\nraised_round | Series A $12M led by Sequoia\nlaunched_product | specific product or feature'}
-              style={proseStyle}
-            />
+            <HelpRow label="Include role families" help="Only postings classified into these role families become signals. Empty = include all families.">
+              <TaxonomyMultiSelect options={ROLE_FAMILY_OPTIONS} value={hireIncludeFamilies} onChange={setHireIncludeFamilies} />
+            </HelpRow>
+            <HelpRow label="Include seniorities" help="Only postings at these seniority levels become signals. Empty = include all seniorities.">
+              <TaxonomyMultiSelect options={ROLE_SENIORITY_OPTIONS} value={hireIncludeSeniorities} onChange={setHireIncludeSeniorities} />
+            </HelpRow>
+            <HelpRow label="Always include exec roles" help="If checked, VP+ / Head-of / C-level roles always pass, even if their seniority isn't in the include list above.">
+              <input type="checkbox" checked={hireAlwaysExec} onChange={(e) => setHireAlwaysExec(e.target.checked)} />
+            </HelpRow>
+            <HelpRow label="Exclude role families" help="Always drop postings classified into these families (overrides include). Useful for filtering out engineering hires at companies that don't sell to engineers.">
+              <TaxonomyMultiSelect options={ROLE_FAMILY_OPTIONS} value={hireExcludeFamilies} onChange={setHireExcludeFamilies} />
+            </HelpRow>
           </div>
+        )}
 
-          <div>
-            <label style={labelStyle}>Banned enricher predicates</label>
-            <div style={helpStyle}>Predicates the enricher must NEVER assert (e.g. low-info or noisy ones). One per line. Stacks on top of the always-banned list (<code>is_company</code>, <code>exists</code>, etc.).</div>
-            <textarea
-              value={bannedPredicatesText}
-              onChange={(e) => setBannedPredicatesText(e.target.value)}
-              rows={4}
-              style={proseStyle}
-            />
+        {section === 'connections' && (
+          <div style={{ marginTop: '1.5rem' }}>
+            <ConnectedServices workspace_id={ws.id} />
           </div>
-        </div>
-      )}
+        )}
 
-      {tab === 'llm' && (
-        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <p style={{ fontSize: '.8rem', color: 'var(--text-3)', lineHeight: 1.5 }}>
-            Paste API keys for this workspace. When set, these override the server's env vars for every call originating in this workspace (drafter, scoring, intake chat). Embedding still runs on OpenAI — leave the OpenAI key set even if you're routing chat through OpenRouter.
-          </p>
-
-          <div>
-            <label style={labelStyle}>OpenAI API key</label>
-            <div style={helpStyle}>Used for bare model ids (e.g. <code>gpt-4o-mini</code>) AND for all text embeddings. Leave empty to use the server's OPENAI_API_KEY env var.</div>
-            <input
-              type="password"
-              value={openaiKey}
-              onChange={(e) => { setOpenaiKey(e.target.value); setOpenaiKeyDirty(true); }}
-              style={{ ...jsonStyle, fontFamily: 'inherit' }}
-              placeholder="sk-..."
-              autoComplete="off"
-            />
+        {section === 'members' && (
+          <div style={{ marginTop: '1.5rem' }}>
+            <MembersSection workspace_id={ws.id} />
           </div>
+        )}
 
-          <div>
-            <label style={labelStyle}>OpenRouter API key</label>
-            <div style={helpStyle}>Used for slash-prefixed model ids (e.g. <code>deepseek/deepseek-v4-pro</code>, <code>anthropic/claude-sonnet-4-6</code>). Leave empty to use the server's OPENROUTER_API_KEY env var.</div>
-            <input
-              type="password"
-              value={openrouterKey}
-              onChange={(e) => { setOpenrouterKey(e.target.value); setOpenrouterKeyDirty(true); }}
-              style={{ ...jsonStyle, fontFamily: 'inherit' }}
-              placeholder="sk-or-..."
-              autoComplete="off"
-            />
+        {section === 'api_keys' && (
+          <div style={{ marginTop: '1.5rem' }}>
+            <ApiKeysSection workspace_id={ws.id} />
           </div>
+        )}
+      </fieldset>
 
-          <div>
-            <label style={labelStyle}>Default chat model</label>
-            <div style={helpStyle}>Override the workspace-wide default for non-drafter LLM calls (enricher, scoring, intake). Leave empty to keep the code default (<code>deepseek/deepseek-v4-flash:free</code>).</div>
-            <input
-              value={defaultChatModel}
-              onChange={(e) => setDefaultChatModel(e.target.value)}
-              style={{ ...jsonStyle, fontFamily: 'inherit' }}
-              placeholder="deepseek/deepseek-v4-flash:free"
-            />
-          </div>
-
-          <div>
-            <label style={labelStyle}>Drafter model</label>
-            <div style={helpStyle}>Override the model the drafter uses specifically. This is the customer-facing output, so quality matters. Leave empty to keep the code default (<code>deepseek/deepseek-v4-pro</code>).</div>
-            <input
-              value={drafterModel}
-              onChange={(e) => setDrafterModel(e.target.value)}
-              style={{ ...jsonStyle, fontFamily: 'inherit' }}
-              placeholder="deepseek/deepseek-v4-pro"
-            />
-          </div>
-        </div>
-      )}
-
-      {tab === 'advanced' && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <p style={{ fontSize: '.75rem', color: 'var(--text-3)' }}>
-            Raw policy JSON. Edits on this tab take precedence over the friendly fields on Email / Integrations when you save.
-          </p>
-
+      <div style={{ marginTop: '2rem' }}>
+        <details open style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '.5rem .75rem' }}>
+          <summary style={{ cursor: 'pointer', fontSize: '.85rem', color: 'var(--text-2)' }}>
+            Environment variables
+            <span style={{ fontSize: '.7rem', color: 'var(--text-3)', marginLeft: '.5rem' }}>
+              keys + model overrides. Fill in only the ones you want to set per workspace; empty rows fall through to env.
+            </span>
+          </summary>
           <div style={{ marginTop: '.75rem' }}>
-            <label style={labelStyle}>policy (jsonb)</label>
-            <textarea value={policyText} onChange={(e) => setPolicyText(e.target.value)} rows={14} style={jsonStyle} />
+            <EnvVarsEditor value={envVars} onChange={setEnvVars} />
           </div>
+        </details>
+      </div>
 
-          <div style={{ marginTop: '1.25rem' }}>
-            <label style={labelStyle}>daily budget (cents)</label>
-            <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value, 10))} style={{ ...jsonStyle, fontFamily: 'inherit' }} />
-          </div>
-        </div>
-      )}
+      <div style={{ marginTop: '.75rem' }}>
+        <DeveloperView
+          policy={composedPolicy}
+          workspaceMeta={{ id: ws.id, created_at: ws.created_at, updated_at: ws.updated_at }}
+          unlocked={devUnlocked}
+          onUnlockChange={setDevUnlocked}
+          onPolicyChange={setDevPolicy}
+        />
+      </div>
 
       <div style={{ marginTop: '1.5rem', display: 'flex', alignItems: 'center', gap: '.75rem' }}>
         <button onClick={save} disabled={saving} style={{ padding: '.5rem 1rem', background: '#9ece6a', color: '#000', border: 'none', borderRadius: 6, cursor: 'pointer', opacity: saving ? 0.4 : 1 }}>
@@ -845,23 +466,91 @@ export default function SettingsPage() {
   );
 }
 
-function NumRow({ label, value, onChange, step }: { label: string; value: number; onChange: (v: number) => void; step: number }) {
+function filterEmpty(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (k && v && v.length) out[k] = v;
+  }
+  return out;
+}
+
+function num(v: unknown, def: number): number { return typeof v === 'number' ? v : def; }
+
+// Taxonomy options mirror packages/tools/src/classify_role.ts. Kept in sync by
+// hand — the classifier values are the source of truth; mismatched values
+// here are silently ignored by passesHiringFilter.
+const ROLE_FAMILY_OPTIONS: string[] = [
+  'sales', 'gtm', 'revops', 'growth', 'customer_success', 'marketing',
+  'engineering', 'product', 'design', 'data', 'ml_ai',
+  'ops', 'finance', 'people', 'legal', 'founder', 'other',
+];
+const ROLE_SENIORITY_OPTIONS: string[] = [
+  'ic_junior', 'ic_mid', 'ic_senior', 'lead', 'manager', 'director', 'vp', 'cxo', 'unknown',
+];
+
+function TaxonomyMultiSelect({ options, value, onChange }: { options: string[]; value: string[]; onChange: (v: string[]) => void }) {
+  function toggle(opt: string) {
+    onChange(value.includes(opt) ? value.filter((v) => v !== opt) : [...value, opt]);
+  }
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '.75rem', padding: '.25rem 0' }}>
-      <input
-        type="number"
-        step={step}
-        value={value}
-        onChange={(e) => {
-          const v = parseFloat(e.target.value);
-          if (Number.isFinite(v)) onChange(v);
-        }}
-        style={{
-          width: 90, padding: '.35rem .5rem', background: 'var(--panel)', color: 'var(--text)',
-          border: '1px solid var(--border)', borderRadius: 6, fontFamily: 'JetBrains Mono, monospace', fontSize: '.8rem',
-        }}
-      />
-      <span style={{ fontSize: '.8rem', color: 'var(--text-2)' }}>{label}</span>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.35rem' }}>
+      {options.map((opt) => {
+        const on = value.includes(opt);
+        return (
+          <button
+            key={opt}
+            type="button"
+            onClick={() => toggle(opt)}
+            style={{
+              padding: '.25rem .6rem',
+              fontSize: '.75rem',
+              borderRadius: 999,
+              cursor: 'pointer',
+              border: on ? '1px solid var(--text)' : '1px solid var(--border)',
+              background: on ? 'var(--text)' : 'var(--bg)',
+              color: on ? 'var(--bg)' : 'var(--text-2)',
+              fontFamily: 'inherit',
+            }}
+          >{opt}</button>
+        );
+      })}
     </div>
   );
 }
+
+function SectionTab({ id, current, onClick, label }: { id: Section; current: Section; onClick: (s: Section) => void; label: string }) {
+  const active = current === id;
+  return (
+    <button
+      onClick={() => onClick(id)}
+      style={{
+        padding: '.5rem .9rem', fontSize: '.85rem', cursor: 'pointer',
+        background: active ? 'var(--panel-2)' : 'transparent',
+        color: active ? 'var(--text)' : 'var(--text-2)',
+        border: 'none', borderBottom: active ? '2px solid var(--text)' : '2px solid transparent',
+      }}
+    >{label}</button>
+  );
+}
+
+function NumInput({ value, onChange, step }: { value: number; onChange: (v: number) => void; step: number }) {
+  return (
+    <input
+      type="number" step={step} value={value}
+      onChange={(e) => {
+        const v = parseFloat(e.target.value);
+        if (Number.isFinite(v)) onChange(v);
+      }}
+      style={{ ...textInput, width: 100 }}
+    />
+  );
+}
+
+const prose: React.CSSProperties = {
+  width: '100%', padding: '.75rem', background: 'var(--bg)', color: 'var(--text)',
+  border: '1px solid var(--border)', fontFamily: 'inherit', fontSize: '.9rem', lineHeight: 1.55, borderRadius: 6,
+};
+const textInput: React.CSSProperties = {
+  padding: '.4rem .6rem', background: 'var(--bg)', color: 'var(--text)',
+  border: '1px solid var(--border)', borderRadius: 6, fontFamily: 'inherit', fontSize: '.85rem',
+};

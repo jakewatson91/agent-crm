@@ -5,6 +5,25 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./reads": "./src/reads.ts",
+    "./contacts": "./src/contacts.ts",
+    "./scoring": "./src/scoring.ts",
+    "./score_facts": "./src/score_facts.ts",
+    "./action_selector": "./src/action_selector.ts",
+    "./policy": "./src/policy.ts",
+    "./schemas": "./src/schemas.ts",
+    "./sweep": "./src/sweep.ts",
+    "./graph": "./src/graph.ts",
+    "./cron": "./src/cron.ts",
+    "./resolve_source": "./src/resolve_source.ts",
+    "./source_curator": "./src/source_curator.ts",
+    "./source_metrics": "./src/source_metrics.ts",
+    "./prompt_builders": "./src/prompt_builders.ts",
+    "./chat_workspace": "./src/chat_workspace.ts",
+    "./icp_embeddings": "./src/icp_embeddings.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

@@ -31,49 +31,11 @@
  */
 
 import { callTool } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
-export const meta: ConnectorMeta = {
-  type: 'api_call',
-  label: 'Custom API call',
-  description: 'Build any HTTP request from scratch. URL, method, headers, body, JSON path for items. Use when no preset fits.',
-  category: 'tool',
-  emits_signal_source: 'api_call',
-  schedule_cron: '0 */6 * * *',
-  config_schema: {
-    fields: [
-      { name: 'url', label: 'URL', kind: 'text', required: true,
-        help: 'Full URL including query string. e.g. https://api.example.com/v1/jobs?role=GTM' },
-      { name: 'method', label: 'Method', kind: 'text', default: 'GET' },
-      { name: 'headers', label: 'Headers (JSON)', kind: 'textarea',
-        help: 'JSON object. Use "Bearer ${env:MY_API_KEY}" to interpolate env vars at runtime.' },
-      { name: 'body', label: 'Request body (string or JSON)', kind: 'textarea',
-        help: 'Optional. For POST/PUT.' },
-      { name: 'items_path', label: 'Items path (dot notation)', kind: 'text',
-        help: 'Where the array of items lives in the response. e.g. "data.results" or "hits". Empty = response is the array.' },
-      { name: 'id_field', label: 'ID field per item', kind: 'text', default: 'id',
-        help: 'Used for dedup across runs.' },
-      { name: 'title_field', label: 'Title field per item', kind: 'text', default: 'title',
-        help: 'Becomes part of the signal body.' },
-      { name: 'body_field', label: 'Body field per item', kind: 'text', default: 'description',
-        help: 'Concatenated into the signal body for embedding.' },
-      { name: 'date_field', label: 'Date field per item', kind: 'text', default: 'created_at',
-        help: 'Used to filter items by since_hours.' },
-      { name: 'intent', label: 'Intent', kind: 'text', default: 'auto',
-        help: '"watch" filters to known entities. "discover" creates entities per item. "auto" picks based on watch_entities.' },
-      { name: 'watch_entities', label: 'Entities to watch (watch mode)', kind: 'entity_picker_multi' },
-      { name: 'match_fields', label: 'Fields to search for entity match (watch mode)', kind: 'string_array',
-        help: 'Default ["title","name","description","body","content"]. Specify per-item field names to scan for entity aliases.' },
-      { name: 'company_field', label: 'Company name field (discover mode)', kind: 'text',
-        help: 'Dot path to the company name on each item. e.g. "company.name" or "employer".' },
-      { name: 'domain_field', label: 'Company domain field (discover mode)', kind: 'text',
-        help: 'Optional. Dot path to a website/domain on each item, used for entity dedup.' },
-      { name: 'since_hours', label: 'Look back (hours)', kind: 'number', default: 168 },
-    ],
-  },
-};
+export { apiCallMeta as meta } from '../registry_meta.js';
 
 function getPath(obj: unknown, path: string | undefined): unknown {
   if (!path) return obj;
@@ -250,6 +212,7 @@ const apiCall: Connector = async (ctx: ConnectorContext): Promise<ConnectorResul
       body_for_embedding: title ? `${title} — ${body_text}` : body_text,
       structured_tags: {
         signal_source: 'api_call',
+        source_id: ctx.source_id,
         source_url: url,
         item_id,
         item_url: getPath(item, 'url') ?? null,

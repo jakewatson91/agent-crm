@@ -7,7 +7,7 @@ export type ActorKind = z.infer<typeof ActorKindSchema>;
 
 export const TargetKindSchema = z.enum([
   'entity', 'fact', 'signal', 'subscription', 'channel', 'channel_post',
-  'touch', 'gate', 'workspace', 'conversation', 'outcome',
+  'touch', 'gate', 'workspace', 'conversation', 'outcome', 'source',
 ]);
 export type TargetKind = z.infer<typeof TargetKindSchema>;
 
@@ -93,6 +93,10 @@ export const QueryArgsSchema = z.object({
   nl: z.string().min(1),
   perspective: z.string().optional(),
   asker: z.string().optional(),
+  // Restrict matches to facts whose originating signal came from this source.
+  // Lets the agent ask things like "what has source X produced this week?"
+  // without filtering client-side. No-op if the source has no matched facts.
+  source_id: z.string().optional(),
 });
 export type QueryArgs = z.infer<typeof QueryArgsSchema>;
 

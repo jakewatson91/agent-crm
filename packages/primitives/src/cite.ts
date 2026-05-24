@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { CiteArgsSchema, type Cite, type FactRow } from './types.js';
+import { CiteArgsSchema, type Cite, type FactRow } from './types.ts';
 
 /**
  * Walk the provenance chain for a fact (or any claim id that resolves to a fact).

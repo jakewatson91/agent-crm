@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { chatComplete } from '@agent-crm/primitives';
-import { listConnectors } from '@agent-crm/inngest/functions/sources/registry';
+import { listConnectors } from '@agent-crm/inngest/functions/sources/registry_meta';
 
 export const runtime = 'nodejs';
 
@@ -79,7 +79,7 @@ PRESETS (one-click, hardcoded source):
 
 TOOLS (generic, user fills config):
 - Specific RSS feed URL or known static feed (Substack /feed, blog RSS, simple HTML page) -> "web"
-- SEARCH the open web (hiring discovery, news, competitor research, funding announcements, JS-hydrated sites like jobs.yc.com / workatastartup.com / wellfound.com / linkedin) -> "exa"
+- SEARCH the open web (hiring discovery, news, competitor research, funding announcements, or any JS-hydrated site where RSS won't work) -> "exa"
 - A specific REST/JSON API not covered by a preset (e.g. company's own webhook export, custom endpoint, niche API the user mentioned) -> "api_call"
 
 Rule of thumb: prefer presets when a known source matches. Otherwise pick the tool: web for static URLs/RSS, exa for searches across the web, api_call for explicit API endpoints the user named.
@@ -90,34 +90,32 @@ Rule of thumb: prefer presets when a known source matches. Otherwise pick the to
   - roles: when the user names specific job roles ("Founding GTM, GTM Engineer, Growth, Automation Engineer"), put EACH role verbatim as an array entry. Don't normalize. Don't drop them.
   - keywords: any other free-form criteria the user mentioned that doesn't fit roles (e.g. "remote", "Series A", "San Francisco").
   - extraction_prompt: a one-line hint about what shape of items live on the page, if obvious. Example for jobs: "Find job listings. Each has a role title, company name, location, posted date."
-  - url: extract from the description. For "watch YC for hires" use https://www.ycombinator.com/jobs. For specific company hiring pages use that URL.
+  - url: extract from the description verbatim if a URL is given. If the user names a site without a full URL, build a plausible one from their wording.
 - config: include every field the chosen connector understands. Add custom fields beyond the schema if the user mentions criteria the schema doesn't cover; the UI will render them as editable text.
 - For batches (yc connector): convert "W25"/"S25" or "Winter 2025"/"Summer 2025" forms; emit them in the strings the user wrote.
 - For string_array fields with no info, return [].
 - For number fields with a default, use the default unless the user specified otherwise.
 
-Examples (without entity context):
+Shape-only examples below. Angle-bracket placeholders (<topic>, <role>, <company>, <vertical>, etc.) stand in for whatever terms the actual user description supplies — substitute them with the user's real values when emitting output. Do NOT echo angle-bracket placeholders back.
 
-User: "watch HN for AI CRM mentions"
-Output: {"connector_type":"hn","name":"hn_ai_crm_mentions","config":{"watch_entities":[],"keywords":["AI CRM","agent CRM"],"since_hours":24,"min_points":0}}
+User: "watch HN for <topic> mentions"
+Output: {"connector_type":"hn","name":"hn_<topic>_mentions","config":{"watch_entities":[],"keywords":["<topic>"],"since_hours":24,"min_points":0}}
 
-User: "scrape YC W25 active companies"
-Output: {"connector_type":"yc","name":"yc_w25_active","config":{"batches":["W25"],"statuses":["Active"],"industries":[],"max_per_run":200}}
+User: "scrape YC <batch> <status> companies"
+Output: {"connector_type":"yc","name":"yc_<batch>_<status>","config":{"batches":["<batch>"],"statuses":["<status>"],"industries":[],"max_per_run":200}}
 
-User: "watch the Lenny's Newsletter Substack"
-Output: {"connector_type":"web","name":"lennys_newsletter","config":{"url":"https://www.lennysnewsletter.com/feed","intent":"watch","watch_entities":[],"roles":[],"keywords":[],"fetch_mode":"auto","since_hours":168,"extraction_prompt":""}}
+User: "watch the <feed-or-newsletter-url> RSS"
+Output: {"connector_type":"web","name":"<feed_slug>","config":{"url":"<feed-url>","intent":"watch","watch_entities":[],"roles":[],"keywords":[],"fetch_mode":"auto","since_hours":168,"extraction_prompt":""}}
 
-User: "add a YC hiring signal for GTM-related hires. Things like Founding GTM, GTM engineer, Growth, Automation Engineer"
-Output: {"connector_type":"exa","name":"yc_gtm_hires","config":{"query":"YC startup hiring Founding GTM OR GTM Engineer OR Growth OR Automation Engineer","include_domains":["ycombinator.com","workatastartup.com"],"intent":"discover","watch_entities":[],"roles":["Founding GTM","GTM Engineer","Growth","Automation Engineer"],"keywords":[],"num_results":25,"since_hours":168,"search_type":"auto"}}
+User: "find <industry> companies hiring for <roles>"
+Output: {"connector_type":"exa","name":"<industry>_<role-summary>_hires","config":{"query":"<industry> hiring <roles>","include_domains":[],"intent":"discover","watch_entities":[],"roles":["<role-1>","<role-2>"],"keywords":[],"num_results":25,"since_hours":168,"search_type":"auto"}}
 
-User: "watch the web for senior engineering hires in California at AI startups"
-Output: {"connector_type":"exa","name":"ai_senior_eng_ca","config":{"query":"AI startup hiring senior engineer San Francisco California","include_domains":[],"intent":"discover","watch_entities":[],"roles":["Senior Software Engineer","Senior Backend Engineer","Senior Frontend Engineer","Senior Full Stack Engineer"],"keywords":["California","San Francisco","Bay Area"],"num_results":25,"since_hours":168,"search_type":"auto"}}
+User: "find <signal> in <vertical>"
+Output: {"connector_type":"exa","name":"<vertical>_<signal-summary>","config":{"query":"<vertical> <signal>","include_domains":[],"intent":"discover","watch_entities":[],"roles":[],"keywords":["<signal>","<vertical>"],"num_results":25,"since_hours":168,"search_type":"auto"}}
 
-User: "find recent Series A funding announcements at fintechs"
-Output: {"connector_type":"exa","name":"fintech_series_a","config":{"query":"fintech Series A funding announcement","include_domains":["techcrunch.com","theinformation.com","crunchbase.com"],"intent":"discover","watch_entities":[],"roles":[],"keywords":["Series A","fintech","raised","announcement"],"num_results":25,"since_hours":168,"search_type":"auto"}}
+User: "watch <company>'s GitHub for releases"
+Output: {"connector_type":"github","name":"<company>_github_releases","config":{"watch_entities":[],"event_types":["ReleaseEvent","PublicEvent","CreateEvent","MemberEvent","ForkEvent"],"since_hours":24}}
 
-User: "watch Stripe's GitHub for releases"
-Output: {"connector_type":"github","name":"stripe_github_releases","config":{"watch_entities":[],"event_types":["ReleaseEvent","PublicEvent","CreateEvent","MemberEvent","ForkEvent"],"since_hours":24}}
 `;
 
   let llm;

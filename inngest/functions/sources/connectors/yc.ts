@@ -21,7 +21,7 @@
 
 import { createHash } from 'node:crypto';
 import { callTool } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { upsertEntityEmbedding } from '../utils.js';
 
 // Fields whose change we treat as a meaningful YC delta. team_size, hiring
@@ -75,46 +75,96 @@ interface YcCompany {
   url?: string;
 }
 
-export const meta: ConnectorMeta = {
-  type: 'yc',
-  label: 'Y Combinator (companies)',
-  description: 'Pull active YC companies from the directory. Creates account entities (deduped by domain) and emits signals so agents can score / enrich them.',
-  category: 'preset',
-  emits_signal_source: 'yc',
-  // Quarterly. YC publishes new batches twice a year; daily polling produces
-  // the same data 364 days out of 365. First of Jan/Apr/Jul/Oct at 6am UTC.
-  schedule_cron: '0 6 1 */3 *',
-  config_schema: {
-    fields: [
-      {
-        name: 'batches',
-        label: 'Batches (optional)',
-        kind: 'string_array',
-        help: 'Comma-separated, e.g. "W25, S25". Leave empty to ingest all active companies.',
+export { ycMeta as meta } from '../registry_meta.js';
+
+/**
+ * Lookup-only API for the seed_accounts endpoint. Fetches + filters YC
+ * directory candidates and returns ready-to-insert shapes. Does NOT touch the
+ * database or emit signals. The seed endpoint handles ranking + insertion.
+ */
+export interface YcFetchFilter {
+  batches?: string[];
+  statuses?: string[];
+  industries?: string[];
+  team_size_min?: number;
+  team_size_max?: number;
+  stages?: string[];
+  limit?: number;        // raw cap before downstream ranking; default 500
+}
+
+export interface YcCandidate {
+  name: string;
+  slug: string;
+  domain: string | null;
+  one_liner: string | null;
+  long_description: string | null;
+  /** Pre-built attribute object — drop into entity.attributes on insert. */
+  attributes: Record<string, unknown>;
+  /** Text suitable for ranking (embedding similarity vs workspace.about). */
+  rank_text: string;
+}
+
+export async function fetchYcCandidates(filter: YcFetchFilter): Promise<YcCandidate[]> {
+  const batches = (filter.batches ?? []).filter(Boolean);
+  const statuses = (filter.statuses ?? ['Active']).filter(Boolean);
+  const industries = (filter.industries ?? []).filter(Boolean);
+  const stages = (filter.stages ?? []).filter(Boolean);
+  const tsMin = filter.team_size_min;
+  const tsMax = filter.team_size_max;
+  const limit = filter.limit ?? 500;
+
+  const r = await fetch(YC_ALL_URL);
+  if (!r.ok) throw new Error(`yc-oss fetch ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const companies = (await r.json()) as YcCompany[];
+
+  const filtered = companies.filter((c) => {
+    if (!batchMatches(c.batch, batches)) return false;
+    if (statuses.length && !statuses.includes(c.status)) return false;
+    if (industries.length) {
+      const hay = `${c.industry ?? ''} ${(c.industries ?? []).join(' ')} ${c.subindustry ?? ''}`.toLowerCase();
+      if (!industries.some((i) => hay.includes(i.toLowerCase()))) return false;
+    }
+    if (stages.length && (!c.stage || !stages.includes(c.stage))) return false;
+    if (typeof tsMin === 'number' && (c.team_size ?? 0) < tsMin) return false;
+    if (typeof tsMax === 'number' && (c.team_size ?? Number.POSITIVE_INFINITY) > tsMax) return false;
+    return true;
+  });
+
+  return filtered
+    .sort((a, b) => (b.launched_at ?? 0) - (a.launched_at ?? 0))
+    .slice(0, limit)
+    .map((c) => ({
+      name: c.name,
+      slug: c.slug,
+      domain: normalizeDomain(c.website),
+      one_liner: c.one_liner ?? null,
+      long_description: c.long_description ?? null,
+      attributes: {
+        // Ground-truth fields (canonical names — see scoring.ts GROUND_TRUTH_KEYS)
+        team_size: c.team_size ?? null,
+        stage: c.stage ?? null,
+        industry: c.industry ?? null,
+        location: c.all_locations ?? null,
+        // YC-specific
+        domain: normalizeDomain(c.website),
+        subindustry: c.subindustry ?? null,
+        industries: c.industries ?? [],
+        regions: c.regions ?? [],
+        yc_batch: c.batch,
+        yc_status: c.status,
+        yc_slug: c.slug,
+        yc_url: c.url ?? `https://www.ycombinator.com/companies/${c.slug}`,
+        website: c.website ?? null,
+        top_company: c.top_company ?? false,
+        is_hiring: c.isHiring ?? false,
+        one_liner: c.one_liner ?? null,
+        description: c.long_description ?? null,
+        tags: c.tags ?? [],
+        yc_snapshot_hash: ycSnapshotHash(c),
       },
-      {
-        name: 'statuses',
-        label: 'Statuses to include',
-        kind: 'string_array',
-        default: ['Active'],
-        help: 'Default: Active. Other options: Acquired, Public, Inactive.',
-      },
-      {
-        name: 'industries',
-        label: 'Industries (optional substring match)',
-        kind: 'string_array',
-        help: 'e.g. "B2B, Fintech". Empty = all industries.',
-      },
-      {
-        name: 'max_per_run',
-        label: 'Max companies per run',
-        kind: 'number',
-        default: 200,
-        help: 'Safety cap. First run on a fresh workspace can be slow; raise to 1000+ once entities exist.',
-      },
-    ],
-  },
-};
+      rank_text: `${c.name} (${c.batch}): ${c.one_liner ?? ''} ${c.long_description ?? ''} industry=${c.industry ?? ''} stage=${c.stage ?? ''}`,
+    }));
+}
 
 function normalizeDomain(url: string | undefined): string | null {
   if (!url) return null;
@@ -294,6 +344,7 @@ const yc: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
         body_for_embedding: `${c.name} (YC ${c.batch}, ${c.status}). ${c.one_liner ?? ''} ${c.long_description ?? ''} Industry: ${c.industry ?? '-'}. Location: ${c.all_locations ?? '-'}. Hiring: ${c.isHiring ? 'yes' : 'no'}.`,
         structured_tags: {
           signal_source: 'yc',
+          source_id: ctx.source_id,
           yc_batch: c.batch,
           yc_status: c.status,
           industry: c.industry ?? null,

@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { callTool } from '@agent-crm/tools';
-import { chatComplete } from '@agent-crm/primitives';
 import { getConnector } from '@agent-crm/inngest/functions/sources/registry';
+import { deriveDefaults } from '../_derive_defaults';
+import { getUser } from '../../../_lib/auth';
 
 export const runtime = 'nodejs';
 
@@ -18,71 +19,14 @@ interface CreateReq {
   } | null;
 }
 
-// One-shot LLM derive: turn the plain-English "about" into the structured fields
-// the agent loop expects. We keep the prompt vertical-neutral — no B2B SaaS
-// assumptions — so a real-estate or recruiting workspace gets sensible defaults.
-async function deriveDefaults(about: string): Promise<{
-  icp: Record<string, unknown>;
-  persona: Record<string, unknown>;
-  constitution: string;
-  knowledge_base: string;
-  example_facts: Array<{ predicate: string; object_text: string }>;
-  pain_points: string[];
-  value_props: string[];
-  tone_keywords: string[];
-}> {
-  const sys = `You configure an agent-native CRM for a new customer. Read their plain-English description of what the agent should help with, then output JSON with these fields:
-
-- "icp": object describing the kinds of accounts/things the agent should care about. Keys are open — pick what makes sense for this customer (industry, stage, location, size, signal_type, anything). Don't force B2B SaaS terms onto a non-SaaS use case.
-- "persona": object with one or two keys describing how the agent represents the customer. Open keys; "pitch" or "voice" are common.
-- "constitution": short free-form prose. Voice, do-nots, hard rules. Plain English, no jargon. 5-12 short lines.
-- "knowledge_base": optional pain-to-angle mapping in the format described below; empty string if not applicable.
-- "example_facts": array of 5-8 {predicate, object_text} pairs the enricher should look for when reading signals about an entity. Choose predicates appropriate for the vertical (real-estate = list_price, days_on_market; B2B sales = hiring_for, raised_round). Don't reuse B2B examples on non-B2B workspaces.
-- "pain_points": array of 3-5 short strings describing the specific pains this customer's product addresses. The drafter uses these in cold outreach. Concrete, observable, prospect-recognizable language. Not "they want to grow" — "their sales team is one person and the founder is doing outbound at night."
-- "value_props": array of 3-5 short strings — concrete behaviors or numbers the drafter can cite in the one-liner. "We benchmarked HubSpot losing 96% of writes under concurrent edits." Not "we're agent-native."
-- "tone_keywords": array of 3-6 short words describing the email tone. e.g. ["casual", "concrete", "no-jargon"].
-
-KNOWLEDGE_BASE FORMAT (only if it fits the use case):
-- TRIGGERS: <phrases the target audience might say>
-  ANGLE: <which of their angles connects, 1 sentence>
-
-Output strictly valid JSON: {"icp":{...},"persona":{...},"constitution":"...","knowledge_base":"...","example_facts":[{"predicate":"...","object_text":"..."}],"pain_points":["...","..."],"value_props":["...","..."],"tone_keywords":["...","..."]}`;
-  const user = `Customer description:\n${about}`;
-  try {
-    const r = await chatComplete({
-      model: 'deepseek/deepseek-v4-flash:free',
-      messages: [
-        { role: 'system', content: sys },
-        { role: 'user', content: user },
-      ],
-      response_format: { type: 'json_object' },
-      max_tokens: 1000,
-    });
-    const j = JSON.parse(r.text);
-    const examples = Array.isArray(j.example_facts)
-      ? (j.example_facts as Array<{ predicate?: unknown; object_text?: unknown }>)
-          .filter((f) => typeof f?.predicate === 'string' && typeof f?.object_text === 'string')
-          .map((f) => ({ predicate: f.predicate as string, object_text: f.object_text as string }))
-      : [];
-    const toStrArr = (v: unknown): string[] =>
-      Array.isArray(v) ? (v as unknown[]).filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : [];
-    return {
-      icp: (j.icp ?? {}) as Record<string, unknown>,
-      persona: (j.persona ?? {}) as Record<string, unknown>,
-      constitution: typeof j.constitution === 'string' ? j.constitution : '',
-      knowledge_base: typeof j.knowledge_base === 'string' ? j.knowledge_base : '',
-      example_facts: examples,
-      pain_points: toStrArr(j.pain_points),
-      value_props: toStrArr(j.value_props),
-      tone_keywords: toStrArr(j.tone_keywords),
-    };
-  } catch {
-    // Fall back to empty defaults so the wizard still finishes if the LLM hiccups.
-    return { icp: {}, persona: {}, constitution: '', knowledge_base: '', example_facts: [], pain_points: [], value_props: [], tone_keywords: [] };
-  }
-}
+// deriveDefaults lives in ../_derive_defaults so the Settings page can call
+// it from /api/workspaces/regenerate without forking the prompt.
 
 export async function POST(req: Request) {
+  const user = await getUser();
+  if (!user) {
+    return NextResponse.json({ error: 'not signed in' }, { status: 401 });
+  }
   const body = (await req.json().catch(() => null)) as CreateReq | null;
   if (!body?.name || !body?.about) {
     return NextResponse.json({ error: 'name and about required' }, { status: 400 });
@@ -128,6 +72,11 @@ export async function POST(req: Request) {
   });
   if (!created.ok) return NextResponse.json({ error: created.error }, { status: 500 });
   const workspace_id = created.target_id;
+
+  // First member of a new workspace is the creator, as owner.
+  await supabase.from('workspace_members').insert({
+    workspace_id, user_id: user.id, role: 'owner',
+  });
 
   // create_workspace doesn't yet take about/constitution/knowledge_base — they
   // live on the row but not in the tool schema. Update directly.

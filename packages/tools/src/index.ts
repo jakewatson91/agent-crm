@@ -10,31 +10,37 @@ import {
   vectorLiteral,
   type Actor,
 } from '@agent-crm/primitives';
-import { TOOL_SCHEMAS, type ToolName } from './schemas.js';
-import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, type EntityStatus } from './reads.js';
-import { findContacts, linkContactToAccount } from './contacts.js';
-import { scoreEntity, scoreAndAssert, combineSubScores } from './scoring.js';
-import { selectAction, loadActionContext } from './action_selector.js';
-import { graphProximity } from './graph.js';
-import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.js';
-import { getPolicy, DEFAULT_POLICY, type WorkspacePolicy, type OutreachPolicy, type EnrichmentPolicy, type DrafterPolicy, type ValueTheme } from './policy.js';
+import { TOOL_SCHEMAS, type ToolName } from './schemas.ts';
+import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, type EntityStatus } from './reads.ts';
+import { findContacts, linkContactToAccount } from './contacts.ts';
+import { scoreEntity, scoreAndAssert, combineSubScores } from './scoring.ts';
+import { selectAction, loadActionContext } from './action_selector.ts';
+import { graphProximity } from './graph.ts';
+import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.ts';
+import { getPolicy, DEFAULT_POLICY, resolveEnvVar, type WorkspacePolicy, type OutreachPolicy, type EnrichmentPolicy, type DrafterPolicy, type ValueTheme, type HiringFilterPolicy } from './policy.ts';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
-export { getPolicy, DEFAULT_POLICY };
-export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, ValueTheme };
-export { cronToMinIntervalMinutes } from './cron.js';
-export { hasValueAlignedFact } from './action_selector.js';
-export { chatCompleteForWorkspace, type ChatForWorkspaceArgs } from './chat_workspace.js';
-export { buildDrafterDecision, type DrafterDecisionOpts } from './prompt_builders.js';
-export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.js';
+export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
+export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
+export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
+export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
+export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, ValueTheme, HiringFilterPolicy };
+export { cronToMinIntervalMinutes } from './cron.ts';
+export { compress, estimateTokens, type CompressOptions, type CompressResult, type UrlRef } from './compress.ts';
+export { hasValueAlignedFact } from './action_selector.ts';
+export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, type ChatForWorkspaceArgs } from './chat_workspace.ts';
+export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
+export { buildDrafterDecision, type DrafterDecisionOpts } from './prompt_builders.ts';
+export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
 export { scoreEntity, scoreAndAssert, combineSubScores };
-export { selectAction, loadActionContext, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.js';
-export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights } from './scoring.js';
-export { graphProximity, type GraphProximityResult } from './graph.js';
+export { selectAction, loadActionContext, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.ts';
+export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights } from './scoring.ts';
+export { graphProximity, type GraphProximityResult } from './graph.ts';
+export { getEntityTypes, getEntityTypesBatch, isEntityOfType, entityIdsOfType, listWorkspaceTypes } from './entity_types.ts';
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -75,10 +81,71 @@ export async function callTool(
       case 'set_workspace_policy':
       case 'create_account':
       case 'create_contact':
-      case 'assert_fact':
-      case 'supersede_fact':
       case 'request_gate': {
         const r = await act(supabase, actor, { tool, args, ...meta });
+        return { ok: true, event_id: r.event_id, target_id: r.target_id };
+      }
+
+      case 'assert_fact': {
+        // record_event RPC ignores unknown payload fields, so we strip signal_id
+        // out of the args we pass to act(). Then we set facts.signal_id directly
+        // in a second statement. The `.is('signal_id', null)` clause makes this
+        // a no-op on content-hash-deduped rows that already carry a signal
+        // binding from their original assertion — preserves the cite-chain
+        // truth that a fact's source is the FIRST signal that produced it.
+        const { signal_id, ...actArgs } = args as { signal_id?: string } & Record<string, unknown>;
+        const r = await act(supabase, actor, { tool, args: actArgs, ...meta });
+        if (signal_id) {
+          await supabase.from('facts').update({ signal_id }).eq('id', r.target_id).is('signal_id', null);
+        }
+        return { ok: true, event_id: r.event_id, target_id: r.target_id };
+      }
+
+      case 'supersede_fact': {
+        // Supersede creates a NEW fact row. Its signal_id comes from (in order):
+        // the caller's signal_id if provided, else the prior fact's signal_id
+        // (inheritance), else null. The new row always gets *some* binding
+        // when one exists upstream.
+        const { signal_id, supersedes } = args as { signal_id?: string; supersedes: string };
+        const { signal_id: _sid, ...actArgs } = args as { signal_id?: string } & Record<string, unknown>;
+        const r = await act(supabase, actor, { tool, args: actArgs, ...meta });
+        let bindSignalId: string | null = signal_id ?? null;
+        if (!bindSignalId) {
+          const prior = await supabase.from('facts').select('signal_id').eq('id', supersedes).maybeSingle();
+          bindSignalId = (prior.data?.signal_id as string | null) ?? null;
+        }
+        if (bindSignalId) {
+          await supabase.from('facts').update({ signal_id: bindSignalId }).eq('id', r.target_id);
+        }
+        return { ok: true, event_id: r.event_id, target_id: r.target_id };
+      }
+
+      case 'update_source': {
+        // Mutate the source row first, then record the event with prior_state
+        // in the payload. The record_event RPC validates target_kind; we use
+        // 'source' (added in migration 0022) so undo can query events directly
+        // by target_kind+target_id.
+        const a = args as {
+          source_id: string;
+          active?: boolean;
+          config?: Record<string, unknown>;
+          prior_state: Record<string, unknown>;
+          reasoning: string;
+        };
+        const patch: Record<string, unknown> = {};
+        if (typeof a.active === 'boolean') patch.active = a.active;
+        if (a.config !== undefined) patch.config = a.config;
+        if (Object.keys(patch).length === 0) {
+          return { ok: false, error: 'update_source: nothing to update (active and config both undefined)' };
+        }
+        const upd = await supabase.from('sources').update(patch).eq('id', a.source_id).eq('workspace_id', actor.workspace_id);
+        if (upd.error) return { ok: false, error: `sources update failed: ${upd.error.message}` };
+        const r = await act(supabase, actor, {
+          tool: 'update_source',
+          target_id: a.source_id,
+          args: { source_id: a.source_id, patch, prior_state: a.prior_state, reasoning: a.reasoning },
+          ...meta,
+        });
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
       }
 
@@ -139,8 +206,8 @@ export async function callTool(
       }
 
       case 'query': {
-        const a = args as { nl: string; perspective?: string };
-        const projection = await queryPrim(supabase, actor.workspace_id, { nl: a.nl, perspective: a.perspective, asker: actor.actor_id });
+        const a = args as { nl: string; perspective?: string; source_id?: string };
+        const projection = await queryPrim(supabase, actor.workspace_id, { nl: a.nl, perspective: a.perspective, asker: actor.actor_id, source_id: a.source_id });
         // Pull-only primitive: no event row, but we return the projection as data.
         return { ok: true, event_id: '', target_id: '', data: projection };
       }
@@ -259,6 +326,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     link_contact_to_account: 'Create a contact entity and link it to an account via works_at + email + role facts. Idempotent on email: if a contact with the same email already exists, returns its id.',
     score_entity: 'Score an entity for ICP fit using workspace.icp + workspace.about + entity facts. Returns icp_fit in [0,1] + breakdown + reasoning. With assert=true, also asserts icp_fit + icp_fit_breakdown facts (idempotent via supersede).',
     token_summary: 'Aggregate token usage across recent agent runs. Returns totals + per-model + per-behavior breakdown. Reads from agent_run_metrics events. Tokens only, no pricing.',
+    update_source: 'Mutate a source row (active flag, config). Caller must pass prior_state so the resulting event row is undo-ready. Used by the source curator to deactivate dead sources and rewrite queries.',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({

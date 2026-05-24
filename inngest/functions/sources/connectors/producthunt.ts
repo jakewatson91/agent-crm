@@ -16,7 +16,7 @@
  */
 
 import { callTool } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
@@ -33,37 +33,7 @@ interface PhPost {
   topics: { nodes: { name: string }[] };
 }
 
-export const meta: ConnectorMeta = {
-  type: 'producthunt',
-  label: 'Product Hunt',
-  description: 'Today\'s launches from Product Hunt. Requires PRODUCTHUNT_TOKEN env. Free developer access.',
-  category: 'preset',
-  emits_signal_source: 'producthunt',
-  schedule_cron: '0 14 * * *',  // 14:00 UTC = roughly when PH daily leaderboard stabilises
-  config_schema: {
-    fields: [
-      {
-        name: 'watch_entities',
-        label: 'Companies to watch',
-        kind: 'entity_picker_multi',
-        required: true,
-        help: 'Match by name / website / maker username. Use aliases for known maker handles.',
-      },
-      {
-        name: 'since_hours',
-        label: 'Look back (hours)',
-        kind: 'number',
-        default: 24,
-      },
-      {
-        name: 'min_votes',
-        label: 'Minimum votes',
-        kind: 'number',
-        default: 0,
-      },
-    ],
-  },
-};
+export { producthuntMeta as meta } from '../registry_meta.js';
 
 const QUERY = `query Posts($postedAfter: DateTime) {
   posts(postedAfter: $postedAfter, order: VOTES, first: 50) {
@@ -149,6 +119,7 @@ const ph: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
         body_for_embedding: `[Product Hunt] ${p.name} — ${p.tagline}. ${p.description?.slice(0, 200) ?? ''} (${p.votesCount} votes) ${p.url}`,
         structured_tags: {
           signal_source: 'producthunt',
+          source_id: ctx.source_id,
           ph_post_id: p.id,
           ph_url: p.url,
           ph_website: p.website,

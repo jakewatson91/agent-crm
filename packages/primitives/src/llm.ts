@@ -43,7 +43,7 @@ export interface ChatCompleteArgs {
    * it wins over process.env. Used by the workspace wrapper to inject the
    * caller's pasted keys without leaking DB knowledge into this package.
    */
-  api_keys?: { openai?: string; openrouter?: string };
+  api_keys?: { openai?: string; openrouter?: string; deepseek?: string };
 }
 
 export interface ChatCompleteResult {
@@ -176,4 +176,154 @@ export async function chatComplete(args: ChatCompleteArgs): Promise<ChatComplete
 function isValidJson(s: string): boolean {
   if (!s || !s.trim()) return false;
   try { JSON.parse(s); return true; } catch { return false; }
+}
+
+export type ChatStreamDelta = { kind: 'text' | 'reasoning'; text: string };
+
+/**
+ * Streaming variant of chatComplete. Calls onDelta with incremental text
+ * chunks as they arrive; tool-call fragments are accumulated server-side and
+ * surfaced only in the final return value, since partial tool calls aren't
+ * useful to render. The returned ChatCompleteResult matches chatComplete's
+ * shape so the ReAct loop can swap between them freely.
+ *
+ * No retry/fallback layer — streaming + tools is the only path that uses this,
+ * and tool-shaped responses don't have the empty-JSON failure mode that
+ * chatComplete guards against.
+ */
+export async function chatCompleteStream(
+  args: ChatCompleteArgs,
+  onDelta: (delta: ChatStreamDelta) => void,
+): Promise<ChatCompleteResult> {
+  const isOpenRouter = args.model.includes('/');
+  const provider: 'openai' | 'openrouter' = isOpenRouter ? 'openrouter' : 'openai';
+
+  const overrideKey = isOpenRouter ? args.api_keys?.openrouter : args.api_keys?.openai;
+  const apiKey = overrideKey || (isOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY);
+  if (!apiKey) throw new Error(`Missing ${isOpenRouter ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'} for model ${args.model}`);
+
+  const baseUrl = isOpenRouter ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+  };
+  if (isOpenRouter) {
+    headers['HTTP-Referer'] = 'https://github.com/agent-crm';
+    headers['X-Title'] = 'agent-crm';
+  }
+
+  const wireMessages = args.messages.map((m) => {
+    const base: Record<string, unknown> = { role: m.role, content: m.content };
+    if (m.role === 'assistant' && m.tool_calls?.length) base.tool_calls = m.tool_calls;
+    if (m.role === 'tool') {
+      if (m.tool_call_id) base.tool_call_id = m.tool_call_id;
+      if (m.name) base.name = m.name;
+    }
+    return base;
+  });
+
+  const body: Record<string, unknown> = {
+    model: args.model,
+    messages: wireMessages,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  if (args.max_tokens !== undefined) body.max_tokens = args.max_tokens;
+  if (args.temperature !== undefined) body.temperature = args.temperature;
+  if (args.response_format) body.response_format = args.response_format;
+  if (args.tools?.length) {
+    body.tools = args.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+    if (args.tool_choice) body.tool_choice = args.tool_choice;
+  }
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) throw new Error(`${provider} ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  let text = '';
+  let finishReason: string | undefined;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens = 0;
+
+  // Tool-call accumulator: keyed by index since OpenAI streams deltas per
+  // index with id only on the first chunk and arguments split across chunks.
+  const toolAcc = new Map<number, { id: string; name: string; arguments: string }>();
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      const line = frame.split('\n').find((l) => l.startsWith('data: '));
+      if (!line) continue;
+      const payload = line.slice(6).trim();
+      if (payload === '[DONE]') continue;
+      let chunk: {
+        choices?: Array<{
+          delta?: {
+            content?: string | null;
+            reasoning?: string | null;            // OpenRouter shape for thinking models
+            reasoning_content?: string | null;   // DeepSeek-direct shape
+            tool_calls?: Array<{ index: number; id?: string; type?: 'function'; function?: { name?: string; arguments?: string } }>;
+          };
+          finish_reason?: string | null;
+        }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+      };
+      try { chunk = JSON.parse(payload); } catch { continue; }
+
+      const choice = chunk.choices?.[0];
+      const delta = choice?.delta;
+      const reasoningChunk = delta?.reasoning ?? delta?.reasoning_content;
+      if (reasoningChunk) {
+        onDelta({ kind: 'reasoning', text: reasoningChunk });
+      }
+      if (delta?.content) {
+        text += delta.content;
+        onDelta({ kind: 'text', text: delta.content });
+      }
+      if (delta?.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const cur = toolAcc.get(tc.index) ?? { id: '', name: '', arguments: '' };
+          if (tc.id) cur.id = tc.id;
+          if (tc.function?.name) cur.name += tc.function.name;
+          if (tc.function?.arguments) cur.arguments += tc.function.arguments;
+          toolAcc.set(tc.index, cur);
+        }
+      }
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+      if (chunk.usage) {
+        inputTokens = chunk.usage.prompt_tokens ?? inputTokens;
+        outputTokens = chunk.usage.completion_tokens ?? outputTokens;
+        cachedInputTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? cachedInputTokens;
+      }
+    }
+  }
+
+  const tool_calls = toolAcc.size
+    ? Array.from(toolAcc.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([, v]) => ({ id: v.id, name: v.name, arguments_json: v.arguments }))
+    : undefined;
+
+  return {
+    text,
+    tool_calls,
+    finish_reason: finishReason,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cached_input_tokens: cachedInputTokens,
+    provider,
+    model: args.model,
+  };
 }

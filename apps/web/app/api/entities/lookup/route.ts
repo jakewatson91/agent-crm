@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { lookupEntity } from '@agent-crm/tools';
+import { lookupEntity } from '@agent-crm/tools/reads';
 
 export const dynamic = 'force-dynamic';
 

@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { act } from './act.js';
-import { embed, vectorLiteral } from './embed.js';
-import { SubscribeArgsSchema, type Actor, type SubscribeArgs } from './types.js';
+import { act } from './act.ts';
+import { embed, vectorLiteral } from './embed.ts';
+import { SubscribeArgsSchema, type Actor, type SubscribeArgs } from './types.ts';
 
 /**
  * Save a long-running filter rule. Matching events fire `action_on_match`

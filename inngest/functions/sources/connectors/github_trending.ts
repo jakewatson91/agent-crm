@@ -27,7 +27,7 @@
  */
 
 import { callTool } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
@@ -44,29 +44,7 @@ interface GhRepo {
   topics?: string[];
 }
 
-export const meta: ConnectorMeta = {
-  type: 'github_trending',
-  label: 'GitHub Trending',
-  description: 'Search public repos by topic + language + recency. Emit a signal when a result mentions a workspace entity in its name, description, or owner. No per-org subscription needed.',
-  category: 'preset',
-  emits_signal_source: 'github_trending',
-  schedule_cron: '0 */6 * * *',  // every 6h
-  config_schema: {
-    fields: [
-      { name: 'topics', label: 'GitHub topics (OR)', kind: 'string_array',
-        help: 'e.g. ai-agents, llm, retrieval-augmented-generation. At least one of topics/language should be set.' },
-      { name: 'language', label: 'Language filter', kind: 'text',
-        help: 'e.g. python, typescript. Optional.' },
-      { name: 'pushed_since', label: 'Pushed since (YYYY-MM-DD)', kind: 'text',
-        help: 'Only consider repos pushed since this date. Default: 30 days ago.' },
-      { name: 'min_stars', label: 'Minimum stars', kind: 'number', default: 25 },
-      { name: 'max_results', label: 'Max results per run', kind: 'number', default: 100 },
-      { name: 'watch_entities', label: 'Companies to watch (optional override)',
-        kind: 'entity_picker_multi',
-        help: 'Leave empty to match against every account in the workspace.' },
-    ],
-  },
-};
+export { githubTrendingMeta as meta } from '../registry_meta.js';
 
 function buildQuery(cfg: { topics?: string[]; language?: string; pushed_since?: string; min_stars?: number }): string {
   const parts: string[] = [];
@@ -165,6 +143,7 @@ const githubTrending: Connector = async (ctx: ConnectorContext): Promise<Connect
         body_for_embedding: body,
         structured_tags: {
           signal_source: 'github_trending',
+          source_id: ctx.source_id,
           gh_repo: repo.full_name,
           gh_repo_url: repo.html_url,
           gh_stars: repo.stargazers_count,

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 
 interface Summary {
@@ -83,33 +84,15 @@ const POST_KIND_BADGE: Record<string, string> = {
 export default function ReplayPage() {
   const params = useParams<{ ws: string }>();
   const [ts, setTs] = useState<string>('');
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function load(atTs: string) {
-    if (!atTs) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const url = `/api/replay/summary?workspace_id=${params.ws}&ts=${encodeURIComponent(atTs)}`;
-      const res = await fetch(url);
-      const j = await res.json();
-      if (!res.ok || j.error) { setError(j.error ?? `HTTP ${res.status}`); setSummary(null); }
-      else setSummary(j);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    const initial = new Date().toISOString();
-    setTs(initial);
-    load(initial);
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, []);
+  useEffect(() => { setTs(new Date().toISOString()); }, []);
+  const summaryRes = useSWR<Summary & { error?: string }>(
+    ts ? `/api/replay/summary?workspace_id=${params.ws}&ts=${encodeURIComponent(ts)}` : null,
+    DEFAULT_SWR,
+  );
+  const summary = summaryRes.data && !summaryRes.data.error ? summaryRes.data : null;
+  const error = summaryRes.data?.error ?? (summaryRes.error instanceof Error ? summaryRes.error.message : null);
+  const loading = ts !== '' && !summaryRes.data && !summaryRes.error;
+  const load = (atTs: string) => setTs(atTs);
 
   return (
     <section>
@@ -180,7 +163,7 @@ export default function ReplayPage() {
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '.55rem', flexWrap: 'wrap', marginBottom: '.3rem' }}>
                       <span className="badge badge-blue">{sig.type}</span>
                       {sig.source && <span className="badge badge-mute mono">{sig.source}</span>}
-                      <Link href={`/workspace/${params.ws}/channels`} style={{ fontWeight: 600, color: 'var(--text)' }}>
+                      <Link href={`/workspace/${params.ws}/entities/${sig.entity_id}`} style={{ fontWeight: 600, color: 'var(--text)' }}>
                         {sig.entity_name}
                       </Link>
                       <span className="muted mono" style={{ fontSize: '.7rem' }}>mag {sig.magnitude.toFixed(2)}</span>

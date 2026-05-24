@@ -1,0 +1,192 @@
+{
+  "workspace_id": "af602fa1-1e0b-4bee-9841-01894553e0a9",
+  "generated_at": "2026-05-19T19:03:21.258Z",
+  "strata": {
+    "high_vis": [
+      {
+        "id": "dded2924-68b4-4209-b8e7-0aaae3c8f0cb",
+        "name": "Bolna AI",
+        "batch": "Fall 2025",
+        "team_size": 21
+      },
+      {
+        "id": "9c1b4cd6-2371-4ab0-99cd-527713096332",
+        "name": "Albacore Inc.",
+        "batch": "Summer 2025",
+        "team_size": 18
+      },
+      {
+        "id": "dc350321-ff7d-4018-9769-550d0a6f9b55",
+        "name": "GETASAP",
+        "batch": "Summer 2025",
+        "team_size": 17
+      },
+      {
+        "id": "a9d88174-c24d-4123-832d-fe4712d13b8a",
+        "name": "Icarus",
+        "batch": "Fall 2025",
+        "team_size": 16
+      },
+      {
+        "id": "25a46a75-24a1-4602-b419-ed07d6a3bebb",
+        "name": "Flai",
+        "batch": "Summer 2025",
+        "team_size": 15
+      },
+      {
+        "id": "3eb7cf9d-c7bd-46c7-aa74-72986374dc1d",
+        "name": "Solva",
+        "batch": "Summer 2025",
+        "team_size": 15
+      },
+      {
+        "id": "505035e3-e9fb-429c-b3ea-16ac47669eb5",
+        "name": "Sunflower",
+        "batch": "Fall 2025",
+        "team_size": 15
+      },
+      {
+        "id": "6032cafe-a81c-426f-81ad-e8b054e4e26c",
+        "name": "Ndea",
+        "batch": "Winter 2026",
+        "team_size": 15
+      },
+      {
+        "id": "aafa8187-5057-440e-85a7-143ab580ab15",
+        "name": "General Legal",
+        "batch": "Winter 2026",
+        "team_size": 15
+      },
+      {
+        "id": "d0ea4dde-434c-4534-9482-cf5b16984554",
+        "name": "Piggy Robotics",
+        "batch": "Fall 2025",
+        "team_size": 15
+      }
+    ],
+    "standard": [
+      {
+        "id": "3bbe8be1-e9f3-4caf-8d05-1ecc706cc11f",
+        "name": "&AI",
+        "batch": "Summer 2024",
+        "team_size": 13
+      },
+      {
+        "id": "e17c6f83-a80b-48c5-ad98-cb4950d8c7c3",
+        "name": "Abel Police",
+        "batch": "Summer 2024",
+        "team_size": 5
+      },
+      {
+        "id": "4baba9ff-613a-4ee6-834c-b372fda48c63",
+        "name": "Aether",
+        "batch": "Winter 2024",
+        "team_size": 8
+      },
+      {
+        "id": "c6036067-3ad3-409a-8ae7-a6768d8893a3",
+        "name": "Alai",
+        "batch": "Winter 2024",
+        "team_size": 5
+      },
+      {
+        "id": "2bd0fcae-3896-45dc-86f9-e054253c8317",
+        "name": "Alice.tech",
+        "batch": "Winter 2025",
+        "team_size": 5
+      },
+      {
+        "id": "5179eff0-3e00-43e5-a60b-9dc37e453db9",
+        "name": "Anara",
+        "batch": "Summer 2024",
+        "team_size": 5
+      },
+      {
+        "id": "92254833-dd68-4a96-b9d5-fa58b683db1c",
+        "name": "Andon Labs",
+        "batch": "Winter 2024",
+        "team_size": 10
+      },
+      {
+        "id": "03a0c803-3c8a-4a28-bbf0-3aaa1f33a9a9",
+        "name": "Andy AI",
+        "batch": "Winter 2024",
+        "team_size": 5
+      },
+      {
+        "id": "b9dc5b1c-b673-4026-8339-99340c3006b3",
+        "name": "Anglera",
+        "batch": "Summer 2024",
+        "team_size": 6
+      },
+      {
+        "id": "3830ebd4-b9fc-4667-8c34-23b31bc585b1",
+        "name": "Ångström AI",
+        "batch": "Summer 2024",
+        "team_size": 5
+      }
+    ],
+    "quiet": [
+      {
+        "id": "9b32cf42-b81b-4e30-90a0-447867e01109",
+        "name": "14.ai",
+        "batch": "Winter 2024",
+        "team_size": 3
+      },
+      {
+        "id": "3e016617-e2d6-4c68-88ec-4b1a8097c847",
+        "name": "Adapted",
+        "batch": "Winter 2024",
+        "team_size": 2
+      },
+      {
+        "id": "07a29f30-8522-4a5d-80bb-6e04197c3f1e",
+        "name": "Adri AI",
+        "batch": "Winter 2023",
+        "team_size": 3
+      },
+      {
+        "id": "0042987d-60d4-4def-ad6e-ca766d694025",
+        "name": "Affinity",
+        "batch": "Summer 2023",
+        "team_size": 2
+      },
+      {
+        "id": "6f6098d6-e4c7-4f79-a742-4b2786ab8c47",
+        "name": "Aftercare",
+        "batch": "Winter 2024",
+        "team_size": 3
+      },
+      {
+        "id": "0e0101c9-2f35-4247-93b0-ff8e580db290",
+        "name": "Agentic Labs",
+        "batch": "Winter 2024",
+        "team_size": 2
+      },
+      {
+        "id": "d8de4735-ee4e-4fe1-a065-895df7fd550a",
+        "name": "Aidy",
+        "batch": "Winter 2024",
+        "team_size": 2
+      },
+      {
+        "id": "bc678bdf-d6c4-4d56-b222-a2f4b33f7a7f",
+        "name": "Apoxy",
+        "batch": "Summer 2023",
+        "team_size": 2
+      },
+      {
+        "id": "f9330645-ac2f-441d-8667-ca3d67e1b20e",
+        "name": "Arcimus",
+        "batch": "Summer 2023",
+        "team_size": 2
+      },
+      {
+        "id": "4cd83430-65b7-4368-bcd8-da334570d34c",
+        "name": "Argon AI, Inc.",
+        "batch": "Winter 2024",
+        "team_size": 2
+      }
+    ]
+  }
+}

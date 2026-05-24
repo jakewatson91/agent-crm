@@ -1,11 +1,16 @@
-export * from './types.js';
-export { embed, vectorLiteral } from './embed.js';
-export { act, getEvent, type ActResult } from './act.js';
-export { subscribe } from './subscribe.js';
-export { gate, decideGate } from './gate.js';
-export { query } from './query.js';
-export { cite } from './cite.js';
-export { chatComplete, type ChatCompleteArgs, type ChatCompleteResult, type ChatMessage, type ToolSpec } from './llm.js';
+// NOTE: re-exports use `.ts` extensions. Turbopack's bundler is broken on
+// the `.js` → `.ts` extension-alias mapping for THIS package's barrel —
+// even with `transpilePackages` and `turbopack.resolveExtensions` configured.
+// Direct `.ts` works (consumers go through Turbopack and tsx, both of which
+// accept `.ts` specifiers). Files inside the package can keep `.js` imports.
+export * from './types.ts';
+export { embed, vectorLiteral } from './embed.ts';
+export { act, getEvent, type ActResult } from './act.ts';
+export { subscribe } from './subscribe.ts';
+export { gate, decideGate } from './gate.ts';
+export { query } from './query.ts';
+export { cite } from './cite.ts';
+export { chatComplete, chatCompleteStream, type ChatCompleteArgs, type ChatCompleteResult, type ChatMessage, type ChatStreamDelta, type ToolSpec } from './llm.ts';
 export {
   relatedToEntity,
   contactsAt,
@@ -15,4 +20,4 @@ export {
   findEntityByName,
   type RelatedEntity,
   type FactRow as RelationFactRow,
-} from './relations.js';
+} from './relations.ts';

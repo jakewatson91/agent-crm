@@ -18,6 +18,13 @@ export interface OutreachPolicy {
 export interface EnrichmentPolicy {
   contact_provider?: 'none' | 'hunter';
   /**
+   * Hard cap on contact-provider lookups per calendar month for this workspace.
+   * Counted via `contact_lookup_attempted` facts asserted this month. When
+   * reached, drafter pre-flight skips the call and posts a system note. Unset
+   * or 0 = no cap (legacy behavior).
+   */
+  hunter_monthly_cap?: number;
+  /**
    * Vertical-specific extraction examples. Inserted into the enricher prompt
    * so the LLM extracts predicates relevant to THIS workspace's use case.
    * Empty array = use a vertical-neutral default in the prompt builder.
@@ -92,6 +99,8 @@ export interface DrafterPolicy {
 export interface LLMPolicy {
   openai_api_key?: string;
   openrouter_api_key?: string;
+  /** Direct DeepSeek API key. Used by the chat intake route via the AI SDK. */
+  deepseek_api_key?: string;
   /** Optional override of the workspace-wide cheap default. Unset = code default. */
   default_chat_model?: string;
   /** Optional override of the drafter model specifically (the customer-facing one). */
@@ -145,6 +154,22 @@ export interface ScoringPolicy {
   rrf_gate?: number;
 }
 
+/**
+ * Hiring-signal filter. Applied at the ATS connector: only postings whose
+ * classified role passes this filter become signals. Vertical-neutral —
+ * the families/seniorities are a fixed taxonomy in classify_role.ts, and
+ * each workspace picks which ones count for its buyer.
+ *
+ * Unset / empty filter → include everything (preserves pre-filter behavior).
+ */
+export interface HiringFilterPolicy {
+  include_families?: string[];      // RoleFamily values from classify_role.ts
+  include_seniorities?: string[];   // RoleSeniority values from classify_role.ts
+  exclude_families?: string[];
+  /** Always pass postings classified as is_exec, even if seniority isn't in include list. */
+  always_include_exec?: boolean;
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
@@ -158,6 +183,44 @@ export interface WorkspacePolicy {
   llm?: LLMPolicy;
   routing?: RoutingPolicy;
   scoring?: ScoringPolicy;
+  hiring_filter?: HiringFilterPolicy;
+
+  /**
+   * Generic env-var bag for this workspace. Flat dict of NAME → value.
+   * Readers (LLM call, Resend send, etc.) check this BEFORE the legacy named
+   * fields (policy.llm.openai_api_key, policy.outreach.resend_api_key)
+   * and BEFORE process.env. The settings UI surfaces this as a Render-style
+   * KV editor — any var the loop might consult goes here. No predetermined
+   * names; canonical names recognized by the loop today:
+   *   OPENAI_API_KEY      — LLM calls + embeddings (chat_workspace.ts)
+   *   OPENROUTER_API_KEY  — slash-prefixed models (chat_workspace.ts)
+   *   DEFAULT_CHAT_MODEL  — workspace default model override
+   *   DRAFTER_MODEL       — drafter-behavior model override
+   *   RESEND_API_KEY      — outbound email (send_email.ts)
+   * Setting other vars here is fine — they're stored, but no reader consults
+   * them yet (e.g. HUNTER_API_KEY is read from process.env only, pending follow-up).
+   */
+  env?: Record<string, string>;
+}
+
+/**
+ * Look up a workspace-scoped env var. Resolution order:
+ *   1. policy.env[name]        — Render-style override per workspace
+ *   2. legacyLookup(policy)    — back-compat with named policy.* fields
+ *   3. process.env[name]       — single-tenant fallback
+ */
+export function resolveEnvVar(
+  policy: WorkspacePolicy,
+  name: string,
+  legacyLookup?: (p: WorkspacePolicy) => string | undefined,
+): string | undefined {
+  const fromEnv = policy.env?.[name];
+  if (fromEnv && fromEnv.length) return fromEnv;
+  if (legacyLookup) {
+    const legacy = legacyLookup(policy);
+    if (legacy && legacy.length) return legacy;
+  }
+  return process.env[name];
 }
 
 export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrichment' | 'drafter' | 'llm' | 'routing' | 'scoring'>> & WorkspacePolicy = {
@@ -194,5 +257,6 @@ export async function getPolicy(supabase: SupabaseClient, workspace_id: string):
     llm: { ...DEFAULT_POLICY.llm, ...(raw.llm ?? {}) },
     routing: { ...DEFAULT_POLICY.routing, ...(raw.routing ?? {}) },
     scoring: { ...DEFAULT_POLICY.scoring, ...(raw.scoring ?? {}) },
+    env: { ...(raw.env ?? {}) },
   };
 }

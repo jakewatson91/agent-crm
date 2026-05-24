@@ -20,8 +20,8 @@
  *   - continue is the default no-op.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { ScoreBreakdown } from './scoring.js';
-import type { ValueTheme } from './policy.js';
+import type { ScoreBreakdown } from './scoring.ts';
+import type { ValueTheme } from './policy.ts';
 
 export type Action =
   | 'draft_outreach'

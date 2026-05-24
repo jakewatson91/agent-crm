@@ -18,16 +18,18 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed } from '@agent-crm/primitives';
 import { act } from '@agent-crm/primitives';
-import { graphProximity } from './graph.js';
-import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.js';
-import { chatCompleteForWorkspace } from './chat_workspace.js';
+import { graphProximity } from './graph.ts';
+import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
+import { chatCompleteForWorkspace } from './chat_workspace.ts';
 
-const SCORE_MODEL = 'deepseek/deepseek-v4-flash:free';
+const SCORE_MODEL = 'openai/gpt-oss-120b:free';
 const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 
 // Predicates that don't count as "substantive" evidence for evidence_depth.
-const ADMIN_PREDICATES = new Set([
+// Exported so audit surfaces (e.g. score timeline) can use the same canonical
+// "what counts as a score-driving fact" filter.
+export const ADMIN_PREDICATES = new Set([
   'icp_fit',
   'icp_fit_breakdown',
   'domain',
@@ -82,6 +84,41 @@ function recencyScore(facts: Array<{ created_at?: string; observed_at?: string }
   return clamp01(Math.exp(-ageDays / RECENCY_TAU_DAYS));
 }
 
+// Canonical ground-truth attribute keys. Connectors that fetch directory-style
+// data populate any of these they have; the scorer treats them as hard facts.
+// Anything not in this list is rendered as OTHER ATTRIBUTES (lower trust).
+const GROUND_TRUTH_KEYS = [
+  'team_size',
+  'headcount_range',
+  'stage',
+  'funding_stage',
+  'founded_year',
+  'public_private',
+  'annual_revenue_range',
+  'hq',
+  'location',
+  'industry',
+] as const;
+
+function renderGroundTruth(attrs: Record<string, unknown>): string {
+  const lines: string[] = [];
+  for (const k of GROUND_TRUTH_KEYS) {
+    const v = attrs[k];
+    if (v === undefined || v === null || v === '') continue;
+    lines.push(`  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`);
+  }
+  return lines.join('\n');
+}
+
+function renderOtherAttributes(attrs: Record<string, unknown>): string {
+  const skip = new Set<string>([...GROUND_TRUTH_KEYS, 'yc_snapshot_hash', 'domain']);
+  const entries = Object.entries(attrs).filter(([k, v]) =>
+    !skip.has(k) && v !== null && v !== undefined && v !== '',
+  );
+  if (!entries.length) return '';
+  return entries.map(([k, v]) => `  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join('\n');
+}
+
 function buildEntityPerspectiveText(
   entityName: string,
   entityAttributes: Record<string, unknown>,
@@ -120,7 +157,7 @@ export async function scoreEntity(
   entity_id: string,
 ): Promise<EntityScore | null> {
   const [entRes, factsRes, wsRes, graphRes, icpVecs] = await Promise.all([
-    supabase.from('entities').select('id, name, kind, attributes').eq('id', entity_id).maybeSingle(),
+    supabase.from('entities').select('id, name, attributes').eq('id', entity_id).maybeSingle(),
     supabase.from('facts').select('predicate, object_text, confidence, observed_at, created_at')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .is('supersedes', null).order('observed_at', { ascending: false }).limit(40),
@@ -130,8 +167,13 @@ export async function scoreEntity(
   ]);
 
   if (!entRes.data) return null;
-  const entity = entRes.data as { name: string; kind: string; attributes: Record<string, unknown> };
+  const entity = entRes.data as { name: string; attributes: Record<string, unknown> };
   const facts = (factsRes.data ?? []) as Array<{ predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string }>;
+  // Entity types come from active is_a facts (predicate = 'is_a'). Used for
+  // the prompt label below. Empty array is fine — the prompt degrades.
+  const entityTypes = facts
+    .filter((f) => f.predicate === 'is_a' && f.object_text)
+    .map((f) => f.object_text as string);
   const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown>; policy?: Record<string, any> };
 
   // Policy-driven scoring overrides (Phase 4). Both fall back to code defaults.
@@ -210,9 +252,14 @@ export async function scoreEntity(
   }
 
   // ---- LLM rubric: industry_match, stage_match, signal_strength ----
+  const groundTruth = renderGroundTruth(entity.attributes ?? {});
+  const otherAttrs = renderOtherAttributes(entity.attributes ?? {});
+
   const sysPrompt = `You score how well an account fits the workspace's ICP. You are NOT producing a single overall score; you are producing three orthogonal sub-scores on a strict rubric.
 
 Each sub-score is in [0.0, 1.0]. Be calibrated: do not inflate scores.
+
+GROUND TRUTH OVER INFERENCE: when the COMPANY GROUND TRUTH section gives you a hard fact (team size, funding stage, founded year, public/private), trust it over anything you might infer from FACTS prose. A 3000-person public company is not "early growth" no matter what the facts say.
 
 DIMENSIONS:
 1. industry_match — does the entity's industry / market positioning match the ICP industries described in the workspace ABOUT and ICP? Match the prose, not a single keyword.
@@ -221,11 +268,12 @@ DIMENSIONS:
    - 0.4: tangential (might apply, no direct fit)
    - 0.0: clear mismatch (different industry / wrong market)
 
-2. stage_match — funding/team/scale alignment.
-   - 1.0: stage maps perfectly to ICP (e.g. early-stage as required, right team size)
-   - 0.7: close but slightly off (e.g. one stage early or late)
-   - 0.4: ambiguous — could be either
-   - 0.0: wrong scale (e.g. ICP wants startups, this is a 10k-person enterprise)
+2. stage_match — funding/team/scale alignment, anchored on COMPANY GROUND TRUTH.
+   - 1.0: ground-truth team_size / stage / funding maps cleanly to ICP requirements
+   - 0.7: close but slightly off (one stage early or late, team a bit larger/smaller than target)
+   - 0.4: ambiguous — ground truth missing or partial, can't tell either way
+   - 0.0: ground truth shows wrong scale (ICP wants <50-person startups, this is a 3000-person public company; or vice versa)
+   When ground truth is missing, score 0.4 by default — do not guess from prose.
 
 3. signal_strength — how *actionable* is the most recent signal that triggered this scoring?
    IMPORTANT: a directory listing or a generic mention is NOT a strong signal. Strong signals are:
@@ -234,7 +282,7 @@ DIMENSIONS:
    - 0.4: passive presence (active on a directory, listed in a database)
    - 0.0: noise (mentioned in passing in unrelated content)
 
-REASONING: 1–2 sentences citing the SPECIFIC facts that drove each score. No filler. No template phrases.
+REASONING: 1–2 sentences citing the SPECIFIC ground-truth fields and facts that drove each score. No filler. No template phrases.
 
 Output JSON only:
 {"industry_match": 0.0-1.0, "stage_match": 0.0-1.0, "signal_strength": 0.0-1.0, "reasoning": "<1-2 sentences>"}`;
@@ -245,10 +293,13 @@ ${(ws.about ?? '').slice(0, 800)}
 WORKSPACE ICP:
 ${JSON.stringify(ws.icp ?? {}, null, 2)}
 
-ACCOUNT: ${entity.name} (${entity.kind})
+ACCOUNT: ${entity.name}${entityTypes.length ? ` (${entityTypes.join(', ')})` : ''}
 
-ATTRIBUTES:
-${JSON.stringify(entity.attributes ?? {}, null, 2)}
+COMPANY GROUND TRUTH (hard facts about the account — trust over inference):
+${groundTruth || '  (none — score stage_match=0.4 by default)'}
+
+OTHER ATTRIBUTES:
+${otherAttrs || '  (none)'}
 
 FACTS (predicate=value, conf):
 ${facts.length ? facts.filter((f) => !ADMIN_PREDICATES.has(f.predicate)).map((f) => `  ${f.predicate}=${f.object_text} (${f.confidence})`).join('\n') : '  (none)'}
@@ -346,6 +397,27 @@ export async function scoreAndAssert(
   actor: { workspace_id: string; actor_kind: 'agent' | 'user' | 'system'; actor_id: string },
   entity_id: string,
 ): Promise<EntityScore | null> {
+  // ICP fit is an account-level property. A contact/person has no industry_match
+  // or stage_match, so scoring them produces a meaningless number that pollutes
+  // the distribution. Gate at the write path so every caller is covered.
+  // Workspace policy.scorable_types lists which is_a values are scoreable;
+  // default to ['account'] for back-compat with the old kind enum.
+  const [typeRes, polRes] = await Promise.all([
+    supabase.from('facts').select('object_text')
+      .eq('workspace_id', actor.workspace_id)
+      .eq('subject_entity', entity_id)
+      .eq('predicate', 'is_a')
+      .is('supersedes', null),
+    supabase.from('workspaces').select('policy').eq('id', actor.workspace_id).maybeSingle(),
+  ]);
+  const entityTypes = ((typeRes.data ?? []) as Array<{ object_text: string | null }>)
+    .map((r) => r.object_text)
+    .filter((s): s is string => !!s);
+  const scorableTypes: string[] = Array.isArray(polRes.data?.policy?.scorable_types)
+    ? polRes.data!.policy.scorable_types as string[]
+    : ['account'];
+  if (!entityTypes.some((t) => scorableTypes.includes(t))) return null;
+
   // Respect active dropped_until: re-scoring a dropped entity wastes LLM calls,
   // pollutes the score_distribution sweep, and gives the operator a fresh
   // score that contradicts the drop decision. action_selector already
@@ -396,7 +468,9 @@ export async function scoreAndAssert(
       .limit(1)
       .maybeSingle();
     const newText = s.value.toFixed(2);
-    if (existing.data?.object_text === newText) continue; // unchanged; skip write
+    // Always write — even when the value is unchanged — so observed_at refreshes
+    // and the sweep's score_signal_coupling check can see that the scorer ran.
+    // scoreEntity (LLM + embeddings) already executed; this is just 8 row writes.
     try {
       if (existing.data) {
         await act(supabase, actor, {

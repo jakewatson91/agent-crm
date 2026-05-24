@@ -55,7 +55,7 @@ import { callTool, chatCompleteForWorkspace } from '@agent-crm/tools';
 // custom_http is per-workspace by construction (sources.workspace_id), so it
 // uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
 // keys and stay on raw chatComplete for now.
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface CustomHttpSpec {
   fetch: {
@@ -92,27 +92,7 @@ interface ExtractedBatch {
   rejected?: Array<{ item_index: number; reason: string }>;
 }
 
-export const meta: ConnectorMeta = {
-  type: 'custom_http',
-  label: 'Custom HTTP (LLM extract)',
-  description:
-    'Fetch any URL on a schedule, batch the response through an LLM with your extraction prompt, and assert entities + facts. The connector wizard generates the spec from a URL + a free-text description; no code required.',
-  category: 'tool',
-  emits_signal_source: 'custom_http',
-  schedule_cron: '0 */6 * * *',
-  config_schema: {
-    fields: [
-      { name: 'fetch', label: 'Fetch spec (JSON)', kind: 'textarea', required: true,
-        help: 'Object with url, method, headers, body, response_path. Use ${env:NAME} for env vars.' },
-      { name: 'extract', label: 'Extract spec (JSON)', kind: 'textarea', required: true,
-        help: 'Object with system_prompt, batch_size, model. The prompt MUST tell the LLM the exact output JSON shape (see custom_http.ts docs).' },
-      { name: 'signal', label: 'Signal spec (JSON, optional)', kind: 'textarea',
-        help: 'Object with type, magnitude. Optional — defaults shown.' },
-      { name: 'dedup', label: 'Dedup spec (JSON, optional)', kind: 'textarea',
-        help: 'Object with since_hours, item_id_path. Without item_id_path the item itself is hashed for dedup.' },
-    ],
-  },
-};
+export { customHttpMeta as meta } from '../registry_meta.js';
 
 function getPath(obj: unknown, path: string | undefined): unknown {
   if (!path) return obj;
@@ -322,6 +302,7 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
         body_for_embedding: signalBody,
         structured_tags: {
           signal_source: signalType,
+          source_id: ctx.source_id,
           source_url: fetchSpec.url,
           item_id,
           matched_alias: name,

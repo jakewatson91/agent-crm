@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 import { CiteChain } from '../../../_components/CiteChain';
+import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
 
 interface Gate {
   id: string;
@@ -28,26 +30,26 @@ interface Health {
 
 export default function GatesPage() {
   const params = useParams<{ ws: string }>();
-  const [gates, setGates] = useState<Gate[]>([]);
-  const [health, setHealth] = useState<Health | null>(null);
-  const [loading, setLoading] = useState(true);
+  const gatesRes = useSWR<{ gates: Gate[] }>(`/api/gates/list?workspace_id=${params.ws}`, DEFAULT_SWR);
+  const healthRes = useSWR<Health & { error?: string }>(`/api/admin/health?workspace_id=${params.ws}`, DEFAULT_SWR);
+  const gates = gatesRes.data?.gates ?? [];
+  const health = healthRes.data && !healthRes.data.error ? healthRes.data : null;
+  const loading = !gatesRes.data && !gatesRes.error;
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const [gRes, hRes] = await Promise.all([
-        fetch(`/api/gates/list?workspace_id=${params.ws}`).then((r) => r.json()),
-        fetch(`/api/admin/health?workspace_id=${params.ws}`).then((r) => r.json()).catch(() => null),
-      ]);
-      setGates(gRes.gates ?? []);
-      if (hRes && !hRes.error) setHealth(hRes);
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => { load(); }, [params.ws]);
+  const pageCtx = useMemo<PageContext>(() => ({
+    tab: 'gates',
+    summary: gates.length === 0
+      ? 'no pending approvals'
+      : `${gates.length} pending approval${gates.length === 1 ? '' : 's'}`,
+    visible: gates.slice(0, 10).map((g) => ({
+      kind: 'gate',
+      id: g.id,
+      label: [g.account_title, g.policy].filter(Boolean).join(' · ') || undefined,
+    })),
+  }), [gates]);
+  useSetPageContext(pageCtx);
 
   async function decide(gate_id: string, decision: 'approve' | 'reject') {
     setBusy(gate_id);
@@ -62,7 +64,7 @@ export default function GatesPage() {
         alert(`decide failed: ${j.error ?? res.status}`);
         return;
       }
-      await load();
+      await Promise.all([gatesRes.mutate(), healthRes.mutate()]);
     } finally {
       setBusy(null);
     }

@@ -62,8 +62,8 @@ export async function listEntities(
   const entityIds = channels.map((c) => c.account_entity_id);
   const channelIds = channels.map((c) => c.id);
 
-  const [entRes, draftsRes, gatesRes, postsRes, factsRes, signalsRes, contactLinksRes] = await Promise.all([
-    supabase.from('entities').select('id, name, kind').in('id', entityIds),
+  const [entRes, draftsRes, gatesRes, postsRes, factsRes, signalsRes, contactLinksRes, typeFactsRes] = await Promise.all([
+    supabase.from('entities').select('id, name').in('id', entityIds),
     supabase.from('channel_posts').select('channel_id, body, created_at')
       .in('channel_id', channelIds).eq('kind', 'touch_draft')
       .order('created_at', { ascending: false }).limit(channelIds.length * 2),
@@ -81,10 +81,18 @@ export async function listEntities(
       .eq('workspace_id', workspace_id).eq('predicate', 'works_at')
       .in('object_entity', entityIds).is('supersedes', null)
       .order('created_at', { ascending: false }),
+    // is_a facts: type per entity
+    supabase.from('facts').select('subject_entity, object_text')
+      .eq('workspace_id', workspace_id).eq('predicate', 'is_a')
+      .in('subject_entity', entityIds).is('supersedes', null),
   ]);
 
-  const entityById = new Map<string, { id: string; name: string; kind: string }>();
-  for (const e of (entRes.data ?? []) as Array<{ id: string; name: string; kind: string }>) entityById.set(e.id, e);
+  const typeByEntity = new Map<string, string>();
+  for (const r of (typeFactsRes.data ?? []) as Array<{ subject_entity: string; object_text: string | null }>) {
+    if (r.object_text && !typeByEntity.has(r.subject_entity)) typeByEntity.set(r.subject_entity, r.object_text);
+  }
+  const entityById = new Map<string, { id: string; name: string }>();
+  for (const e of (entRes.data ?? []) as Array<{ id: string; name: string }>) entityById.set(e.id, e);
 
   const latestDraft = new Map<string, string>();
   for (const r of (draftsRes.data ?? []) as Array<{ channel_id: string; created_at: string }>) {
@@ -165,7 +173,7 @@ export async function listEntities(
     return {
       entity_id: c.account_entity_id,
       name: ent?.name ?? '(unknown)',
-      kind: ent?.kind ?? 'account',
+      kind: typeByEntity.get(c.account_entity_id) ?? 'account',
       status: statusFor(draftAt, gateAt, postAt, (signalCount.get(c.account_entity_id) ?? 0) > 0),
       fact_count: factCount.get(c.account_entity_id) ?? 0,
       signal_types: [...(signalTypes.get(c.account_entity_id) ?? new Set<string>())].sort(),
@@ -209,7 +217,7 @@ export async function getEntity(
   entity_id: string,
 ): Promise<EntityProjection> {
   const [entRes, factsRes, sigsRes, channelRes] = await Promise.all([
-    supabase.from('entities').select('id, name, kind, attributes')
+    supabase.from('entities').select('id, name, attributes')
       .eq('workspace_id', workspace_id).eq('id', entity_id).single(),
     supabase.from('facts').select('id, predicate, object_text, observed_at, confidence')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id).is('supersedes', null)
@@ -221,7 +229,12 @@ export async function getEntity(
   ]);
 
   if (entRes.error || !entRes.data) throw new Error(`entity not found: ${entRes.error?.message}`);
-  const entity = entRes.data as { id: string; name: string; kind: string; attributes: Record<string, unknown> };
+  const baseEntity = entRes.data as { id: string; name: string; attributes: Record<string, unknown> };
+  // Derive `kind` from is_a facts already in factsRes (no extra query).
+  const isAFacts = ((factsRes.data ?? []) as Array<{ predicate: string; object_text: string | null }>)
+    .filter((f) => f.predicate === 'is_a' && f.object_text);
+  const entityKind = (isAFacts[0]?.object_text as string | undefined) ?? 'entity';
+  const entity = { ...baseEntity, kind: entityKind };
 
   let posts: EntityProjection['posts'] = [];
   const channel_id = (channelRes.data?.id as string | undefined) ?? null;
@@ -336,16 +349,28 @@ export async function lookupEntity(
   // with leading/trailing wildcards for fuzzy matching.
   const pattern = args.fuzzy ? `%${q}%` : q;
   const { data, error } = args.fuzzy
-    ? await supabase.from('entities').select('id, name, kind')
-        .eq('workspace_id', workspace_id).ilike('name', pattern).limit(args.limit)
-    : await supabase.from('entities').select('id, name, kind')
-        .eq('workspace_id', workspace_id).eq('name', q).limit(args.limit);
+    ? await supabase.from('entities').select('id, name')
+        .eq('workspace_id', workspace_id).is('archived_at', null).ilike('name', pattern).limit(args.limit)
+    : await supabase.from('entities').select('id, name')
+        .eq('workspace_id', workspace_id).is('archived_at', null).eq('name', q).limit(args.limit);
   if (error) throw error;
+  const rows = ((data ?? []) as Array<{ id: string; name: string }>);
+  // Look up is_a facts for the matched ids in one batch.
+  const idArr = rows.map((r) => r.id);
+  const typeById = new Map<string, string>();
+  if (idArr.length) {
+    const { data: tf } = await supabase.from('facts').select('subject_entity, object_text')
+      .eq('workspace_id', workspace_id).eq('predicate', 'is_a').is('supersedes', null)
+      .in('subject_entity', idArr);
+    for (const f of (tf ?? []) as Array<{ subject_entity: string; object_text: string | null }>) {
+      if (f.object_text && !typeById.has(f.subject_entity)) typeById.set(f.subject_entity, f.object_text);
+    }
+  }
   const lc = q.toLowerCase();
-  return ((data ?? []) as Array<{ id: string; name: string; kind: string }>).map((r) => ({
+  return rows.map((r) => ({
     entity_id: r.id,
     name: r.name,
-    kind: r.kind,
+    kind: typeById.get(r.id) ?? 'entity',
     score: r.name.toLowerCase() === lc ? 1.0 : 1.0 - Math.abs(r.name.length - q.length) / Math.max(r.name.length, q.length, 1),
   })).sort((a, b) => b.score - a.score);
 }

@@ -488,3 +488,618 @@ Five-phase move of every customer-varying value off code constants onto `workspa
 - Did NOT wire native Anthropic SDK. OpenRouter slash-prefix (`anthropic/claude-sonnet-4-6`) works for Anthropic models. Deferred until Anthropic billing clears at the account level.
 - Did NOT verify architecture-as-product end-to-end against a fresh real-estate workspace. Code path proven via verify_loop on dog-food workspace; second-vertical sanity check is the obvious next deliverable.
 
+## 2026-05-18 — Chat panel, entity rename, junk-extraction defense, hardcoded-brand purge
+
+### Chat panel + workspace shell
+- Floating ✦ FAB widget retired. Chat is now a bottom-anchored carved-out panel inside the main column on every workspace page. `⌘J` toggles open/closed, `⌘B` toggles the sidebar (VS Code-style). Drag the top edge to resize (240–85vh). Default closed everywhere.
+- New components: `Chat.tsx` (panel body + SSE renderer), `ChatBar.tsx` (toggle + resize), `WorkspaceShell.tsx` (client shell owning sidebar-collapse state), `StatusBar.tsx` (bottom row with `⌘J chat · ⌘B sidebar` hints).
+- Workspace home (`/workspace/[ws]`) is now a server redirect to `/gates` (Approvals = "empty when healthy" landing). Tile launcher killed.
+- Memory rule saved: `feedback_chat_never_sidebar` — chat is never a sidebar, never a FAB.
+
+### Channels → entities (UI/URL only)
+- `/channels` → `/feed`, `/channels/[channel]` → `/entities/[entity_id]`. Server component does the channel-id lookup, renders `EntityDetail` client component (refactored to prop-driven).
+- Updated: sidebar nav, EntitySearch routing, replay page signal links, workspace pickers/wizards, FeedStream href.
+- DB schema unchanged. Full schema collapse plan filed at `TODO_entity_merge.md`. ~25 files + migration to drop `channels` and rename `channel_posts → entity_posts`. Deferred.
+
+### Entity directory
+- New `/workspace/[ws]/entities` page — primary nav item between Feed and Approvals. Grouped by `kind` (Accounts → Contacts → Products), sorted by latest agent activity within each section. Card content varies by kind (account = ICP chip + last action; contact = company + title; product = version/pricing). No tabular columns, no sort UI, no filter chips.
+
+### Junk-extraction defense (5 layers)
+- **Migration 0021** — `archived_at` timestamptz on `entities` + partial index on active rows. Soft delete; row + history stay for audit/replay.
+- **`packages/tools/src/reads.ts:lookupEntity`** — filters `archived_at IS NULL`.
+- **`inngest/functions/sources/utils.ts:validateCompanyName(name, domain, blocklist)`** — shared shape validator. Catches: lowercase handles, multi-word lowercase phrases, cram pattern `^[A-Z]{2,}[a-z]`, single-token length > 14, ≥5-word names, article suffixes, listicle prefixes, domain pattern matches, workspace-blocklist names.
+- **Exa + web connectors** load `workspaces.policy.publication_blocklist` and thread it through prompt + validator. Extraction prompt rewritten to describe categories instead of naming brands.
+- **Daily `entityArchiveSweep`** Inngest cron (12:30 UTC) — entities older than 14d with zero activity → auto-archive. Capped at 500/run.
+- **UI mirror** in `apps/web/.../entities/page.tsx:isJunkName` — same shape rules at render time.
+- **One-time cleanup**: 361 active → 317 active, 44 archived. Verified via service-role node script.
+
+### Hardcoded-brand purge (root cause of the refactor)
+- New global rule in `~/agent_memory/CODING.md`: NEVER hardcode brand names / vertical-specific phrases / customer emails in code, prompts, validators, blocklists, or defaults. Shape lives in code; contents live in config (workspaces.policy, sources.config, env, DB). Vertical-specific defaults aren't defaults.
+- Stripped from: exa.ts (prompt + comments + help text), web.ts (comments + help text + validator call), utils.ts (validator now takes blocklist param), entities/page.tsx (isJunkName takes blocklist), api/sources/parse/route.ts (few-shot examples now use angle-bracket placeholders), sources/page.tsx (input placeholder), cleanup SQL (joins workspace policy).
+- Seed script refactor: `scripts/populate_kb_and_sources.ts` deleted → split into vertical-neutral `seed_demo_workspace.ts` (takes `--profile=<name>`) + `scripts/seed/dogfood.ts` (vertical content) + `scripts/seed/types.ts` (interface).
+
+### Workflow finding
+- Memory rule `feedback_run_db_ops_yourself`: for additive migrations + prewritten cleanup SQL, execute via service-role Supabase client in `.env.local` directly. Don't keep handing SQL back to Jake to paste into the dashboard. Confirm only for destructive ops (drop table/column, hard delete, anything that breaks an existing column contract).
+
+### Trade-offs
+- Did NOT merge `channels` into `entities` at the DB level (~25 files + migration). Filed as `TODO_entity_merge.md`. UI rename alone is enough for now; collapse pays off when next contributor reads the schema.
+- Did NOT fix pre-existing type errors in `inngest/functions/agent_logic.ts` (the Hunter-move from enricher to drafter has `meta` used before declared at lines 393/397; flagged but not mine to fix without context on that session's intent).
+- Did NOT touch wrong-domain attribution (e.g. Attio → startupriders.com). Name validator only checks the name; correcting domain attribution would need an external lookup against company-vs-domain.
+
+
+## 2026-05-18 PM — Local dev speed pass
+
+### Why
+User: "the overall speed of the app in local dev is incredibly slow" → "still pretty slow, feed takes 3-5 seconds, settings doesn't load."
+
+### What was actually slow
+Three distinct causes, only the first was obvious:
+1. **Next.js dev was on webpack, not turbopack.** The `webpack:` callback in `next.config.mjs` was pinning it. Pulling 5 workspace packages through webpack's `transpilePackages` made every route compile slow.
+2. **355 client-component boundaries inside SSR pages.** `<Timestamp>` is a `'use client'` component used inside every entity card / feed row. RSC has to serialize each boundary's props server→client. With ~355 entities, that's 2-3s of pure serialization, even when `unstable_cache` made the Supabase pipeline a 30ms hit. The cache helped the data path; the render path was still dominated by RSC overhead.
+3. **`/api/workspace/get` was 152KB.** `workspace.policy` was carrying `icp_embedding_cache.vectors` (123KB) + `pitch_embedding_cache.vector` (31KB). The settings page downloaded these on every load — the agent uses them server-side, the UI doesn't.
+
+Diagnosis order mattered: I jumped to turbopack + tree-shaking first (real wins on compile time), but the user's "still slow" was about warm hits. Only after adding `console.log(performance.now())` around the cached data fetch and seeing 6-43ms vs 2-3s total response did the RSC-boundary cost become obvious. Then a `python3 -c 'len(json.dumps(d))'` per top-level key revealed the 155KB embedding cache.
+
+### Fixes shipped
+- `apps/web/next.config.mjs` — turbopack on, `optimizePackageImports` for the three workspace barrels, `resolveExtensions` for `.js → .ts/.tsx`.
+- `apps/web/package.json` — `next dev --turbopack` + added `swr`.
+- `apps/web/app/api/inngest/route.ts` — module-level imports moved to lazy `await import()` so iterating UI files doesn't recompile the inngest function graph.
+- `inngest/functions/sources/registry_meta.ts` — new file, holds all 9 `ConnectorMeta` objects as plain data. Each `connectors/<name>.ts` re-exports `meta` from there. `/api/sources/connectors`, `/api/sources/parse`, `/api/agents/parse` import only `registry_meta` and skip the connector implementation graph.
+- `packages/tools/package.json` — `exports` map for subpath imports. Five routes narrowed (`sources/list`, `entities/lookup`, `admin/health`, `admin/preview-prompt`, `_lib/send_email`).
+- `apps/web/app/_lib/swr.ts` — shared SWR fetcher + DEFAULT_SWR config. Refactored `gates`, `sources`, `agents`, `replay` from `useEffect + fetch + useState` to `useSWR`. Settings skipped (large editable-field shape; not a hot tab).
+- `apps/web/app/_components/ChatBar.tsx` — `Chat` lazy-loaded via `next/dynamic`, fires only on ⌘J.
+- `apps/web/app/_components/WorkspacePrefetch.tsx` — new layout-mounted client component that warms `/api/feed/list`, `/api/entities/index`, `/api/sources/list`, `/api/gates/list` once on hydration via SWR `mutate()`. Targets the 7-10s "first API route compile per dev session" tax.
+- `apps/web/app/workspace/[ws]/entities/page.tsx` — converted from SSR (3.3s warm) to client + SWR (0.14s warm). Data path: new `/api/entities/index` route does the same Supabase pipeline + `unstable_cache(10s)`.
+- `apps/web/app/workspace/[ws]/feed/page.tsx` — SSR-with-fallback pattern. Server fetches via `unstable_cache(10s)` and inlines data into page response; `FeedClient.tsx` uses SWR `fallbackData` so first render needs no API round-trip. Warm: 1.2s → 0.2-0.5s.
+- `apps/web/app/api/workspace/get/route.ts` — strips `icp_embedding_cache` + `pitch_embedding_cache` from policy server-side. Wrapped in `unstable_cache(10s)`. 152KB → 5.8KB. (User followed up with `maskEnv` on top so secret-shaped env values don't leak into DevTools / network captures.)
+- Two new API routes: `/api/entities/index` and `/api/feed/list` — both `unstable_cache(10s)` over the same pipelines the pages use.
+
+### Warm-hit timings (curl, localhost)
+| Page       | Before | After   |
+|------------|--------|---------|
+| entities   | 3.3s   | 0.14s   |
+| feed       | 1.2s   | 0.2-0.5s|
+| gates      | 0.24s  | 0.20s   |
+| settings   | 0.43s  | 0.15s page + 0.27s cached `/api/workspace/get` |
+| sources    | 0.18s  | 0.30s   |
+| agents     | 0.28s  | 0.30s   |
+| replay     | 0.51s  | 0.38s   |
+
+### What didn't help / wasn't the bottleneck
+- Parallelizing the entities-page Supabase queries (was already after unstable_cache became dominant). Kept the change but it didn't move the needle.
+- Adding `unstable_cache` alone to the original SSR page — data fetch dropped to 6-43ms, total request time stayed at 2-3s. Cache helps the data path, not the React render. Had to convert to client or single-client-island to get past RSC boundary cost.
+
+### Known leftovers (deferred)
+- **Cold first-API-route compile** in any dev session is still 7-10s. `WorkspacePrefetch` masks it for the four common routes, but the very first hit pays it. Unavoidable in Next dev without a precompile step.
+- **Settings was not refactored to SWR** — many editable fields tied to one fetch; refactor isn't worth the diff for a non-hot tab.
+- **`agent_logic.ts:393,397` pre-existing `meta` hoisting bug** — flagged in earlier session, not addressed here. Causes type-check to fail in `apps/web` + `inngest`.
+- **Build manifest ENOENT** errors hit the user mid-session when two `pnpm dev` processes raced on `.next/`. Recovery: kill all `next dev`, wipe `apps/web/.next` + `apps/web/.turbo`.
+
+## 2026-05-17 evening → 2026-05-18 — Source observability + curator loop + settings rewrite
+
+### L1 — per-source health metrics
+- Every signal now carries `structured_tags.source_id` (specific source row, not just `signal_source` connector type). 9 connectors patched: hn, exa, web, yc, github, github_trending, producthunt, api_call, custom_http.
+- `scripts/backfill_signal_source_id.ts` — one-shot script that walks signals where `structured_tags.source_id IS NULL`, derives the source_id from each signal's `source_event_id → events.actor_id` (pattern `source:<connector_type>:<8char>`). 2567 historic signals updated; 24 unresolved (pre-source manual injects).
+- New `agent_dispatch_result` event in `inngest/functions/agent_logic.ts:690` emitted at the end of the enricher path. Payload: `{behavior, agent, signal_id, subscription_id, ok, dispatch_action, facts_asserted}`. Separate from `agent_run_metrics` (which is LLM-call-time tokens) so `fact_yield` is a one-hop join.
+- `packages/tools/src/source_metrics.ts` — exports `getSourceMetrics(sb, workspace_id, window_hours)` → array of `{source_id, name, connector_type, active, schedule_cron, window_hours, signals, unmatched_rate, agent_fire_rate, fact_yield, entities_seeded}`. Pure read function, no migrations needed.
+- `packages/tools/src/resolve_source.ts` — `resolveSourceForFacts(sb, fact_ids[])` returns a `Map<fact_id, {source_id, source_name, connector_type}>`. Batched 3-hop join (`facts → events.payload.signal_id → signals.structured_tags.source_id → sources`).
+- `apps/web/app/api/sources/list/route.ts` — attaches `metrics` to each source row. Defaults to 7d window; accepts `?window_hours=`.
+- `packages/tools/src/sweep.ts` — new `source_dead_weight` check. Guarded on the presence of at least one `agent_dispatch_result` event in the window so it doesn't flag everything as YELLOW on first run.
+- `packages/primitives/src/query.ts` — accepts optional `source_id` filter; populates `Cite.source_event_id` (was empty string); attaches resolved `source` meta per match. Schema in `types.ts` extended; tool schema in `packages/tools/src/schemas.ts` exposes `source_id` to the agent.
+- `apps/web/app/api/agent/intake/tools.ts` — new `source_health` chat tool surfaces the rollup to the chat agent.
+
+### Coverage fixes (L1 precondition)
+- `inngest/functions/sources/connectors/hn.ts:44` — cron default was hardcoded `0 * * * *`. Active HN source `hn_u2u2` updated to `0 */6 * * *` (matches exa/web). Was causing 76% source-concentration.
+- `subscriptions.watch_x_posts_icp_companies.structured_filter` — was `{signal_source: "github"}` but the semantic was about X posts (no X source exists). Filter cleared so the embedding-match can fire.
+- `subscriptions.stealth_mode_yc_startup_launches.structured_filter` — `{signal_source: "yc_directory"}` → `{signal_source: "yc"}`. YC connector emits `yc`, never `yc_directory`. Match was impossible before.
+- New `claims_catchall_enricher` subscription: no structured filter, threshold 0.15, `agent_behavior: enricher`. Catches HN signals that no narrow sub embeds-match.
+
+### L2 — source curator (decide-and-notify)
+- `inngest/functions/source_curator.ts` — daily cron `0 8 * * *`. Iterates workspaces, calls `curateWorkspaceSources(sb, ws.id, {apply: true})` per workspace.
+- `packages/tools/src/source_curator.ts` — exports `curateWorkspaceSources(sb, ws_id, opts)`. Heuristic pre-filter picks ≤5 candidates per workspace (mature dead, low-fire dead, or 14d zero-signal source). Per-source 7d cooldown via recent `agent_action_taken` events. LLM (gpt-4o-mini) decides one of `{deactivate, rewrite_query, add_catchall_subscription, no_action}` with a one-sentence reasoning + action-specific payload (new query string OR new subscription semantic). Required-field validation downgrades to `no_action` if the LLM omits.
+- Migration `0022_source_target_kind.sql` — adds `'source'` to the `target_kind` enum.
+- New `update_source` tool: schema in `packages/tools/src/schemas.ts:UpdateSourceSchema` (requires `prior_state` for undo), case in `packages/tools/src/index.ts`. Mutates the sources row, then records an event with `target_kind='source'` + `payload.prior_state` so undo is a one-line read.
+- `apps/web/app/api/agent_actions/list/route.ts` — GET. Returns recent `agent_action_taken` events + per-row `undone` flag.
+- `apps/web/app/api/agent_actions/undo/route.ts` — POST. Idempotent. Applies inverse per `action_type`. Writes counter-event `agent_action_undone`. Comparison normalizes number/string event_id mismatch.
+- `apps/web/app/api/agent/intake/tools.ts` — new `recent_agent_actions` chat tool.
+- `apps/web/app/_components/Chat.tsx` — new `RecentAgentActionsResult` renderer with per-row Undo buttons that POST directly to the undo endpoint and update the card in place.
+- `scripts/source_curator_dryrun.ts` — preview proposed actions without applying (`--apply` to write).
+
+### L3 — subscription embedding drift
+- Migration `0023_subscription_learned_centroid.sql` — adds `learned_centroid vector(1536)`, `learned_positive_count int`, `learned_updated_at timestamptz` + HNSW index on the centroid where non-null. Rewrites `match_signal_to_subscriptions(p_signal_id uuid)` to use `greatest(1 - seed_dist, case when learned_centroid is null then 0 else 1 - learned_dist end)`. Subscriptions with no learned centroid behave identically — additive change.
+- `inngest/functions/subscription_drift.ts` — Inngest cron `*/30 * * * *`. Pulls positive `agent_dispatch_result` events in the last 35min (5min overlap with the 30min cron). Groups by `subscription_id`. For each subscription, blends signal embeddings into the centroid via EMA α=0.2. First positive seeds the centroid directly; subsequent positives drift it 20%. Smoke verified: synthesized one positive, centroid flipped null → set, count 0 → 1.
+
+### Hunter credit conservation
+- `inngest/functions/agent_logic.ts` — `maybeLinkContactsForEntity` call moved from the enricher path (line 655 area, fires on every fact-yielding signal) to the drafter pre-flight (line 384 area, fires only when the agent decided to message the account).
+- `policy.enrichment.hunter_monthly_cap?: number` added to `EnrichmentPolicy`. Enforcement inside `maybeLinkContactsForEntity` step 2: counts `contact_lookup_attempted` facts asserted since UTC month start; cap-hit posts a `kind:'system'` channel note and returns 0.
+
+### Settings full rewrite
+- `apps/web/app/workspace/[ws]/settings/page.tsx` — full rewrite. 7 tabs → 3 sections (About, Writing style, Thresholds) + 2 collapsed panels (Environment variables, Developer view). About is one prose box; Writing style is the constitution + a chip list for banned phrases + the from/override email fields. Thresholds keeps the numeric levers grouped by purpose. ~867 LOC → ~560 LOC.
+- New shared components under `_components/`: `HelpRow.tsx`, `ChipList.tsx`, `EnvVarsEditor.tsx`, `DeveloperView.tsx`. Deleted unused: `KeyValueTable.tsx`, `PredicateExamplesTable.tsx`, `WizardBadge.tsx`.
+- **EnvVarsEditor paste UX**: paste `NAME=value` or a whole `.env` block into any cell → splits and populates rows. Handles `export NAME=value` prefix and quoted values. Existing names update in place. `*_KEY|*_SECRET|*_TOKEN|*_PASSWORD` auto-mask after save (••••-with-Edit button).
+- **Auto-derive on About change**: save detects `about` text changed; calls `/api/workspaces/regenerate` server-side; merges derived `icp / persona / knowledge_base / pain_points / value_props / tone_keywords / example_facts` into the save payload. User never sees the wizard step.
+- `apps/web/app/api/workspaces/_derive_defaults.ts` — shared `deriveDefaults(about)` lifted from `workspaces/create/route.ts`.
+- `apps/web/app/api/workspaces/regenerate/route.ts` — POST `{workspace_id, about}` → `{derived}`. Doesn't persist.
+- **Developer-view edit lock** prevents the previous silent-clobber bug. Friendly forms become `<fieldset disabled>` while the raw policy editor is unlocked; re-locking re-enables them.
+
+### Secret masking over the wire
+- New `apps/web/app/api/_lib/secret_mask.ts` — exports `MASKED_SENTINEL = '__agent_crm_masked__'`, `isSecretKey(name)`, `maskEnv(env)`, `unmaskEnv(incoming, existing)`. Secret regex `(KEY|SECRET|TOKEN|PASSWORD|PWD)$`.
+- `/api/workspace/get` calls `maskEnv` on `policy.env` before serializing. The agent loop reads real values server-side via `getPolicy()`; the UI/network never sees them.
+- `/api/workspace/update` reads the existing policy row, calls `unmaskEnv(incoming, existing)` so echoing the sentinel back preserves the real value. Smoke verified: real key → sentinel over the wire → POST sentinel back → DB still holds the real key.
+
+### `policy.env` generic env-var bag
+- `WorkspacePolicy.env?: Record<string, string>` added. New `resolveEnvVar(policy, name, legacyLookup)` helper. Resolution: `policy.env[NAME]` → legacy named field → `process.env`.
+- `packages/tools/src/chat_workspace.ts` — reads `policy.env.OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `DEFAULT_CHAT_MODEL` / `DRAFTER_MODEL` before falling back to legacy `policy.llm.*`.
+- `apps/web/app/api/_lib/send_email.ts` — reads `policy.env.RESEND_API_KEY` before `policy.outreach.resend_api_key` before `process.env.RESEND_API_KEY`.
+- `scripts/migrate_policy_to_env.ts` — idempotent backfill of legacy named secrets into `policy.env`. Demo workspace had no legacy values set (uses env defaults), so no-op there.
+
+### Decide-and-notify principle codified
+- Memory: `project_decide_and_notify.md` — agent inside agent-crm acts on reversible changes (source config, scoring tweaks) and notifies the user with undo. Approvals reserved for irreversible external actions (outreach send).
+- Memory: `project_multi_turn_agent_future.md` — future build, all agent behaviors are single-shot today; needs `ask_user` tool + per-run state + resume protocol for clarifying questions. Defer until single-shot is shown to need it.
+- Memory: `feedback_banned_word_substrate.md` strengthened with literal pre-send scan reminder after I slipped twice in one session.
+
+### Turbopack `.js` → `.ts` resolution fix (the yak shave at the end)
+- **Symptom**: `Module not found: Can't resolve './act.js'` on every route consuming `@agent-crm/primitives` or `@agent-crm/tools`. Citation popovers, settings page, every primitive consumer 500'd.
+- **Diagnosis**: Next 15.5.18 Turbopack doesn't honor `turbopack.resolveExtensions` for `.js` → `.ts` mapping in workspace-package barrels. The `transpilePackages` + `optimizePackageImports` interactions made it worse. Source files use `./foo.js` specifiers (required by tsconfig `moduleResolution: Bundler` + `verbatimModuleSyntax: true`); Turbopack tries to resolve the literal `.js` and fails.
+- **Fix**: rewrote every relative `./foo.js` import inside `packages/primitives/src/` (10 files) and `packages/tools/src/` (17 files) to `./foo.ts`. Turbopack accepts `.ts` directly; tsx accepts both; behavior unchanged at runtime.
+- **Also reverted**: a temporary `"exports": {".": "./src/index.ts"}` on `packages/primitives/package.json` (caused unrelated pnpm tsx CWD-resolution failure for every script in the repo). Emptied `experimental.optimizePackageImports` (turned out not to be the cause, but cheap insurance).
+- **Operational note added to project_state.md Stack section**: any new file added to primitives or tools MUST use `.ts` extensions in its imports.
+
+### Memory writes
+- `project_decide_and_notify.md` (new project memory)
+- `project_multi_turn_agent_future.md` (new project memory)
+- `feedback_banned_word_substrate.md` (strengthened pre-send scan rule)
+- MEMORY.md index updated to point at both new entries
+
+## 2026-05-18 PM — Entity page: standardized template + honest provenance
+
+### Goal
+Entity pages 404'd unless the entity had a channel (account-only). Even on accounts, "why this?" duplicated the facts section above it and the citation chain stopped at event metadata. Wanted one template across kinds + actually-useful provenance, without adding agent complexity.
+
+### Changes
+- **`/entities/[entity_id]` works for any kind.** `page.tsx` fetches the entity directly, looks up a channel only when `kind === 'account'`, passes `channelId | null` to EntityDetail. Non-account kinds render the shared sections; channel-only sections (recent activity, history, audit slider) hide cleanly.
+- **Related Entities section (lazy).** Collapsible block between header and recent activity. New `/api/entities/[entity_id]/related` route is a 30-line wrapper over `relatedToEntity` + `entitiesFromSubject` (existing helpers in `packages/primitives/src/relations.ts`). Inbound = contacts on accounts; outbound = accounts a contact works at. Predicate → label is pattern-shaped (`is_*_of` regex group + `works_at` + `advises`); no hardcoded role names.
+- **Citation chain shows the source signal.** `/api/facts/[id]/chain` now resolves each hop's originating signal via `events.target_kind='signal'` first, then `events.payload.signal_id` as fallback. CiteChain.tsx renders the leaf as a quoted excerpt (first 280 chars of `body_for_embedding`) + clickable "open link ↗" pulled from `structured_tags.{item_url, hn_url, yc_url}` in that precedence + source name from `signal_source`.
+- **WhyThis rewritten.** Dropped the replay-at-T-1ms fact dump. Now: post's `reasoning` (already populated by the summary route from the child decision post's body) + batch-hydrated cited facts via new `/api/facts/batch?ids=` + per-fact "chain" expander. Full replay stays on the audit slider where it belongs.
+- **Perf pass.** First load felt slow with the eager related fetch + sequential chain hydration: (1) Related Entities collapsed by default — fetch only on expand; (2) chain route parallelized — each hop's event+fact run via `Promise.all`, all hops via `Promise.all` over the chain (was a 3-deep sequential loop); (3) migration `0025_facts_object_entity_idx.sql` adds `create index facts_object_entity_idx on facts (workspace_id, object_entity) where object_entity is not null` — applied to prod via `scripts/apply_migration.ts`. Was a workspace-wide seq scan.
+
+### New routes
+- `apps/web/app/api/entities/[entity_id]/related/route.ts`
+- `apps/web/app/api/entities/[entity_id]/facts/route.ts` (thin facts read for non-account kinds; family grouping mirrors `/api/channels/[channel]/summary`)
+- `apps/web/app/api/facts/batch/route.ts`
+
+### Touched
+- `apps/web/app/workspace/[ws]/entities/[entity_id]/page.tsx` — drop account-only 404
+- `apps/web/app/workspace/[ws]/entities/[entity_id]/EntityDetail.tsx` — accept new props, add Related Entities, lazy state
+- `apps/web/app/api/facts/[id]/chain/route.ts` — signal hydration + parallel hops
+- `apps/web/app/_components/CiteChain.tsx` — signal leaf rendering
+- `apps/web/app/_components/WhyThis.tsx` — full rewrite
+- `apps/web/app/workspace/[ws]/feed/FeedStream.tsx` — pass new WhyThis props, drop redundant inline CiteChain row
+- `supabase/migrations/0025_facts_object_entity_idx.sql`
+
+### Constitution check
+Audit surfaces are explicitly allowed by CLAUDE.md ("provenance walks, replay, raw event log... explicitly framed as audit"). All changes are read-side polish on data the agent already writes. No new agent behavior, no new schema (just an index).
+
+---
+
+## 2026-05-18 PM — Chat agent: contacts scope + enrich_contacts + voice rewrite
+
+### Trigger
+Chat answered "no contacts on file" for Anthropic when 3 contacts were linked (yash@, miguel@, will@anthropic.com). The `query` tool had no `contacts` scope; the model had no path to the contact-to-account edge (`facts.object_entity` + `works_at`/`is_*_of` predicates) or to the email-domain fallback for unlinked contacts.
+
+### What shipped
+- **`scope:'contacts'`** on the `query` tool (`apps/web/app/api/agent/intake/tools.ts`).
+  - Resolves account by `account_entity_id` or fuzzy `account_name` (post-filtered to `kind=account`, 0/2+ matches return clearly).
+  - Walks `relatedToEntity(ws, account_id, [works_at, is_ceo_of, is_cto_of, is_founder_of, is_employee_of, advises])`.
+  - Falls back to email-domain match for unlinked contact entities (skipped if domain is null or `.example`).
+  - Inlines email/role/seniority/linkedin_url to avoid second round trips.
+  - Optional `role_filter` post-filter on role/seniority text.
+  - Envelope: `{scope, account, linked_count, domain_only_count, rows, note?}`.
+- **`enrich_contacts({account_entity_id, limit?, role_filter?})`** tool wraps `findContacts` (Hunter) + `linkContactToAccount`. Reversible. Errors clearly on placeholder/null domain.
+- **`has_fact: {predicate, object_match?}`** filter on `entities` scope for graph walks like "accounts in industry containing 'ai'."
+- **Recent-entity context.** `buildRecentEntityNote()` in `route.ts` walks the last 6 thread messages, pulls entity ids out of tool-call args + tool-result content, resolves names, prepends a system message so pronouns resolve.
+- **MAX_STEPS 8 → 12** for graph walks (3-stage queries plus a final response).
+- **Synthetic `.example` domain killed.** `create_account` leaves `attributes.domain` unset when the user didn't supply one — fixes silent failure of email-domain matching for chat-created accounts.
+- **`Chat.tsx` renderers.** `QueryContacts` (account header + domain + per-row name/email/role/link_source). `EnrichContactsResult` (per-row `new`/`existed` tag + name/email/role).
+- **`SYSTEM_PROMPT` rewrite — principle-based.**
+  - VOICE: lead with answer, no filler, plain English in prose, no em dashes.
+  - ENDINGS (new block): reversible → "Next: ..." and take it; irreversible → make the choice explicit (yes/no OR short option list depending on fit); data complete → stop; never hand control back open-ended when a reversible step exists.
+  - EMPTY RESULTS: name what was checked, propose the recovery if one exists.
+  - No hardcoded phrase blocklist — per user direction. Workspace policy is the right home for that if a customer wants it.
+
+### Verified live
+- `POST /api/agent/intake "which contacts do we have for Anthropic?"` → 2 steps, one `query({scope:'contacts'})` call, model returns all 3 with email + role and stops cleanly. No preamble, no trailing open question.
+- `POST /api/agent/intake "who works at Hatch?"` → `query({scope:'contacts'})` → linked_count=0 → auto-fires `enrich_contacts` per the prompt → Hunter 429 (matches `project_hunter_out_of_credits`) → model reports the error and offers options. Decide-and-notify path proven end-to-end.
+
+### Memory updates
+- `project_contacts_enrichment_todo.md` rewritten: contacts ARE live now (Hunter wrapper + chat tool + query scope). Old "deferred" framing replaced.
+- `MEMORY.md` index line updated to match.
+
+### Touched
+- `apps/web/app/api/agent/intake/tools.ts`
+- `apps/web/app/api/agent/intake/route.ts`
+- `apps/web/app/_components/Chat.tsx`
+
+### Self-callout (lesson)
+First pass added "irreversible step ends with one yes/no proposal — not a menu of options." When user pushed back, no source. I made it up. Loosened the rule to "make the choice explicit, yes/no OR short option list depending on fit." Lesson: stylistic constraints in code/prompts need grounding. If I can't cite the rule, I shouldn't add it.
+
+---
+
+## 2026-05-18 PM — Sidebar cleanup + unify build on turbopack + drop unstable_cache
+
+### Trigger
+Two threads in one session: (1) "configure section is confusing — drop dead tabs"; (2) "dev updates aren't showing on the dev server, we've had to `rm -rf .next` twice."
+
+### What shipped
+
+**Sidebar reorg + dead-route purge**
+- `apps/web/app/workspace/[ws]/layout.tsx` rewritten: **Workspace** (Feed / Entities / Approvals) · **Setup** (Sources / Settings) · **Audit** (Replay). "Configure" section killed; Settings moved out of Audit (it's setup, not verification).
+- Deleted `/workspace/[ws]/query` route + `/api/primitives/query` API. Chat at `/workspace/[ws]` does the same thing.
+- Deleted `/workspace/[ws]/agents` page + `/api/agents/{parse,create,list}` APIs. The underlying `subscriptions` table, `match_signal_to_subscriptions` RPC, and `agent_logic.ts` routing are untouched — `create_subscription` is already a chat-callable tool (`packages/tools/src/schemas.ts:182`), so new subscriptions can be added through chat without a dedicated page. Aligns with the closed-set rule (`feedback_no_more_agents`).
+- Deleted orphan `/workspace/[ws]/connectors/new` (custom_http wizard; Sources page already covers `custom_http` via its connector button row, no refs from elsewhere).
+- Deleted orphan `/workspace/[ws]/activity` (5-line redirect to /feed).
+- `scripts/seed_demo.ts:272-275` stale URLs (`/activity`, `/channels`, `/query`) cleaned.
+
+**Unified build on turbopack — root-cause fix for recurring `rm -rf .next`**
+- `apps/web/package.json`: `"build": "next build --turbopack"`.
+- `apps/web/next.config.mjs`: deleted the `webpack: (config) => { config.resolve.extensionAlias = ... }` block. Now only `turbopack.resolveExtensions` remains, handling `.js`→`.ts` for both dev and build.
+- Why this matters: `next dev --turbopack` and `next build` (webpack default until Next 15.3) maintained separate cache state in the same `.next/` dir. When `next.config.mjs` changed which bundler did what, the cached module graph from the other bundler still referenced the old config and choked. One bundler everywhere eliminates the entire class of issue.
+
+**`unstable_cache` removed from 4 sites**
+- Why: in dev, `unstable_cache` persists across HMR recompilations in memory. The cache key doesn't include a handler version, so code changes to the wrapped function don't bust it. For up to `revalidate` seconds after any fetch, the API returns the *previous* cached payload — making it look like edits aren't taking effect.
+- Touched: `apps/web/app/api/entities/index/route.ts`, `apps/web/app/api/feed/list/route.ts`, `apps/web/app/api/workspace/get/route.ts`, `apps/web/app/workspace/[ws]/feed/page.tsx`. Each was wrapping a Supabase aggregation in `unstable_cache(fn, ['key'], { revalidate: 10 })`. Now plain async functions. Stale top-of-file comments referencing the cache cleaned up.
+- Prod tradeoff: loses the 10s tab-flip cache. SWR client-side cache still helps. If perf becomes a problem, add the wrap back guarded by `NODE_ENV !== 'development'`.
+
+### What I tried and Jake rejected
+- Built a `devSafeCache` helper in `apps/web/app/_lib/cache.ts` that no-op'd `unstable_cache` in dev. Jake: "way too complicated for a simple issue. Don't fucking einstein this shit." Helper deleted, just removed the cache wraps.
+
+### Touched
+- `apps/web/app/workspace/[ws]/layout.tsx`
+- `apps/web/app/workspace/[ws]/query/` (deleted)
+- `apps/web/app/workspace/[ws]/agents/` (deleted)
+- `apps/web/app/workspace/[ws]/connectors/` (deleted)
+- `apps/web/app/workspace/[ws]/activity/` (deleted)
+- `apps/web/app/api/primitives/query/` (deleted)
+- `apps/web/app/api/agents/` (deleted)
+- `apps/web/app/api/entities/index/route.ts`
+- `apps/web/app/api/feed/list/route.ts`
+- `apps/web/app/api/workspace/get/route.ts`
+- `apps/web/app/workspace/[ws]/feed/page.tsx`
+- `apps/web/package.json`
+- `apps/web/next.config.mjs`
+- `scripts/seed_demo.ts`
+
+### Build status
+`pnpm --filter web build` compiles successfully under turbopack but fails typecheck on a pre-existing in-tree bug at `inngest/functions/agent_logic.ts:408` (`meta` used before declaration in the new Hunter pre-flight block — Jake's in-progress work, not from this session). Dev server unaffected.
+
+### Memory updates
+- `project_hunter_out_of_credits.md` — Hunter.io quota exhausted as of 2026-05-18 (saved earlier in the session, before the sidebar work).
+
+### Self-callout (lesson)
+On the dev-cache thread I jumped to building a shared `devSafeCache` helper across 4 sites — fits the codebase pattern, prevents future occurrences, replaces duplicated logic. Jake correctly called it overengineering for the immediate ask. Lesson: when the user says "this is annoying, fix it," the bar is "smallest change that stops the annoyance." A helper that touches 4 files and adds a new module is bigger than just deleting the cache wraps. Apply the abstraction principle harder — three similar lines is better than a premature abstraction, and four is not the threshold either when the user wants to move fast.
+
+## 2026-05-18 evening — Chat panel polish (streaming + dedupe + drop hint)
+
+### Token streaming end-to-end
+- Added `chatCompleteStream(args, onDelta): Promise<ChatCompleteResult>` in `packages/primitives/src/llm.ts`. Same wire setup as `callOnce`, plus `stream: true` + `stream_options: { include_usage: true }`. Reads SSE response body, parses `data:` lines, ignores `[DONE]`. For each chunk: text deltas → `onDelta({ kind: 'text', text })`; tool-call deltas accumulated in a `Map<index, {id, name, arguments}>` since OpenAI/OpenRouter stream id once and split arguments across chunks. Usage harvested from the final chunk's `usage` field. Returns the same shape as `chatComplete` so callers can swap freely.
+- Exported `chatCompleteStream` + `ChatStreamDelta` type from `packages/primitives/src/index.ts`.
+- Added `chatCompleteStreamForWorkspace(supabase, ws, args, onDelta)` in `packages/tools/src/chat_workspace.ts`. Refactored policy/key resolution into a shared `resolveArgs` helper used by both the stream + non-stream wrappers. Re-exported from `packages/tools/src/index.ts`.
+
+### Intake route
+- `apps/web/app/api/agent/intake/route.ts`: replaced the `chatCompleteForWorkspace(...)` call inside the ReAct loop with `chatCompleteStreamForWorkspace(...)` + `onDelta` callback that emits `{ type: 'assistant_delta', text }` SSE events. Header comment updated to document the new event.
+- Tool-call fragments stay server-side and surface only in the existing final `{ type: 'assistant', message }` event — DB persistence is unchanged.
+
+### Client (Chat.tsx)
+- Added `streaming` state. SSE handler now branches on `assistant_delta` (append to streaming buffer) and resets on `assistant` / `tool_result` / new send.
+- Rendered an in-flight assistant bubble with a blinking `▍` cursor (CSS keyframes inline). `thinking…` placeholder now gated on `busy && !streaming`.
+- Deleted the `{history.length === 0 && (...)}` empty-state hint paragraph + example box.
+- Deleted the "paste an observation or ask" subtext from the header.
+- Deleted the `m.tool_calls?.map(...)` `→ {toolname}` mono line inside `MessageView`; the structured `ResultCard` header `query · entities · 3` already says what ran.
+- `MessageView` returns `null` for assistant messages with empty `content` and only `tool_calls`, so intermediate ReAct steps that went straight to a tool no longer leave empty bubbles.
+
+### Verification
+- Dev server boots clean (`pnpm --filter web dev`, Next 15.5.18 turbopack). Workspace route compiled in 25.7s cold on first hit.
+- Pre-existing tsc errors are pre-existing: `.ts` extension imports across packages (intentional per the comment in `primitives/src/index.ts:1-5` — turbopack/tsx accept them), stale `.next` cache types for deleted channels pages, and a `meta` use-before-decl in `inngest/functions/agent_logic.ts:393,397`. None caused by this change.
+
+## 2026-05-18 late evening — Chat reasoning stream
+
+### Problem
+User reported "streaming isn't happening" on the chat panel. Tool-result cards rendered, but the final assistant text plopped in as a single block after a 10-15s pause. Verified the SSE wiring was correct end-to-end. Reproduced against OpenRouter with a single curl: `deepseek/deepseek-v4-pro` streams ~20+ chunks of `{"delta":{"content":"","reasoning":"...","reasoning_details":[...]}}` before any `delta.content` arrives. The model is in a reasoning class; the parser was discarding the only tokens being emitted during the thinking phase.
+
+### Changes
+- `packages/primitives/src/llm.ts` — `ChatStreamDelta` widened to `{ kind: 'text' | 'reasoning'; text: string }`. Inside `chatCompleteStream`'s SSE loop: added `reasoningChunk = delta?.reasoning ?? delta?.reasoning_content` and fired `onDelta({ kind: 'reasoning', text })` for non-empty values. Reasoning text deliberately NOT appended to the accumulated `text` so the returned `ChatCompleteResult` (and DB-persisted assistant message) is unchanged.
+- `apps/web/app/api/agent/intake/route.ts` — onDelta callback dispatches `kind:'reasoning'` to a new `{ type: 'reasoning_delta', text }` SSE event. Header docstring updated.
+- `apps/web/app/_components/Chat.tsx` — new `reasoning` state. SSE handler appends `reasoning_delta` to it; clears on `assistant_delta`/`assistant`/`tool_result`/send-start/stream-end. New `ThinkingPill` component renders a dashed inline pill with the trailing 140 chars of reasoning + a small mono "thinking" tag; uses `direction: rtl` + `<bdo dir="ltr">` so the most recent tokens stay visible at the right edge without forcing scroll. `busy && !streaming && !reasoning` gates the legacy `thinking…` placeholder so they don't double up.
+
+### Verification
+- Direct OpenRouter probe via curl confirmed the reasoning/content split and the GMICloud provider's chunk format. Typecheck clean on the touched files (pre-existing `.ts`-extension errors elsewhere unaffected).
+
+## 2026-05-19 — Entity audit polish (score timeline + hop-0 source URL + duplicate reasoning + confidence threshold)
+
+### Plan
+`/Users/jakewatson/.claude/plans/declarative-riding-bunny.md` — five items, four shipped, one deferred.
+
+### Shipped
+
+**Duplicate reasoning killed.** Both `FeedStream.tsx` and `EntityDetail.tsx:ActivityRow` were rendering `item.reasoning` inline AND inside WhyThis. Removed the inline blocks; WhyThis is the single source. `isClickable` tightened to truncation-only.
+
+**Confidence hidden unless < 0.7.** New helper `apps/web/app/_lib/confidence.ts:lowConfLabel()`. Wired to 6 render sites (WhyThis, CiteChain, Chat ×2, EntityDetail ×2). DB column + scoring math untouched.
+
+**Hop-0 source URL on cited facts.**
+- New helpers `apps/web/app/api/_lib/source_url.ts` (`pickSourceUrl` extracted) and `apps/web/app/api/_lib/resolve_source_signal.ts` (walks `parent_event_id` chain up to 6 hops + opt-in historical fallback joining by `subject_entity` + nearest-prior `signal.created` event).
+- `/api/facts/batch` extended with `source_signal: {source_name, source_url} | null`.
+- `/api/facts/[id]/chain` walks the same parent chain inline (was checking only the immediate assert_fact event, which can never have `target_kind='signal'`).
+- WhyThis + ScoreTimeline render `↗ dev.to/path/to/article` (hostname+path via `prettyUrl`) — replaces previous `↗ exa` aggregator label.
+
+**Plumbing fix in `inngest/functions/agent_logic.ts`.** At top of `runAgent`, look up `signal.created` event id by `signal_id` and thread as `meta.parent_event_id` for all downstream tool calls. Forward: new `assert_fact` events chain back to the signal. Historical: events are append-only by SQL grant, can't backfill; read-time heuristic fallback fills the gap.
+
+**Score Timeline on the entity page.**
+- Exported `ADMIN_PREDICATES` from `packages/tools/src/scoring.ts` (canonical "what counts as score-driving" filter).
+- New `/api/entities/[id]/score_history` route — walks full `score_total` history (including superseded), buckets non-admin facts into the gap windows between adjacent assertions.
+- New `apps/web/app/workspace/[ws]/entities/[entity_id]/ScoreTimeline.tsx` component — newest-first, `↑/↓/→` arrows + delta + per-fact source URL + chain expander. Collapsed by default.
+- Wired into `EntityDetail.tsx` between recent activity and current facts.
+
+### Deferred per plan
+Workspace-level "supporting evidence" bank (third-party quotes the drafter can cite across all outreach) — design sketched in `policy.drafter.supporting_evidence`. Build when first canonical quote has a use case.
+
+### Operational note
+Three racing `next dev` processes were the reason Jake couldn't see edits for two turns. Killed all + cleared `.next`/`.turbo` + restarted single instance. The "If you hit `ENOENT _buildManifest.js.tmp`" note in `project_state.md` already flagged this failure mode.
+
+## 2026-05-19 (afternoon → evening) — Composio v1 (read-only) + TokenJuice (compress)
+
+Two pieces. Composio brings external OAuth services (Gmail / Slack / Calendar / HubSpot / Salesforce) as agent-callable read tools without writing a connector each. TokenJuice (`compress()`) cuts LLM input tokens 73–96% on real web pages.
+
+### Composio v1 — read-only
+
+**New package** `@agent-crm/composio`:
+- `client.ts` wraps `@composio/core`. Surfaces: `authorize`, `getConnectionStatus`, `execute`, `disconnect`, `fetchUserProfile`. userId convention is `workspace:<id>` so every workspace is isolated in Composio's user namespace.
+- `catalog.ts` curated catalog (16 read actions): Gmail (4), Slack (3), Google Calendar (2), HubSpot (5), Salesforce (3). Pinned to read-only per `MEMORY.md` `project_composio_v1_read_only`.
+- `scope.ts` classifier — verb-based heuristic for unknown action slugs (`SEND/POST/DELETE → dangerous`, `GET/LIST/FETCH → read`).
+
+**Migration** `supabase/migrations/0027_composio_connections.sql` — one row per (workspace_id, toolkit_slug). Columns: `composio_connection_id`, `composio_user_id`, `status`, `connect_url`, `profile`, `last_error`. Service-role writes; RLS member-read.
+
+**API routes** under `apps/web/app/api/composio/`:
+- `GET /toolkits` — curated catalog with action lists + scope chips
+- `POST /authorize` — start OAuth handoff, persist row, return `redirect_url`
+- `GET /connections?workspace_id=X` — list per workspace
+- `POST /connections/[id]/refresh` — poll Composio; pull profile on first ACTIVE transition
+- `DELETE /connections/[id]` — revoke at Composio + delete row
+- `POST /execute` — gates `scope !== 'read'` (v1 read-only); audits to `events` as `composio.execute`
+
+**Agent tools** added to `INTAKE_TOOLS`:
+- `composio_list_tools(toolkit_slug?)` — only returns actions for toolkits the workspace has actually connected
+- `composio_execute(action_slug, arguments)` — runs reads immediately; audits every call
+
+**UI**: new "Connections" tab in `/workspace/[ws]/settings/page.tsx`. Component `_components/ConnectedServices.tsx`. Shows status, profile email, Resume OAuth / Disconnect, expandable per-toolkit action list. Connect opens redirect_url in a new tab and polls `/refresh` every 3s until ACTIVE.
+
+**Operational requirements**:
+- `COMPOSIO_API_KEY` in `.env.local` (operator-level secret; OK per CODING.md)
+- Toolkit auth configs enabled in Composio dashboard (one-time setup; `toolkits.authorize` auto-creates managed configs)
+
+**Cost**: free tier = 20K tool calls/mo, then $29/mo / 200K, $229/mo / 2M. Single workspace easily under free tier.
+
+**Convention pinned**: `@agent-crm/composio` imports use `.ts` extensions (not `.js`) to match `@agent-crm/tools` and Turbopack's resolution. The `exports` map is single-entry (`"."` → `src/index.ts`); subpath entries removed. First version with `.js` extensions broke Turbopack with `Module not found: Can't resolve './catalog.js'`.
+
+### TokenJuice — `compress()` in `@agent-crm/tools`
+
+**New file** `packages/tools/src/compress.ts` (~190 LOC, zero deps).
+
+Three-pass pipeline:
+1. **HTML→markdown** — drops `<head>`/`<script>`/`<style>`/`<svg>`/`<noscript>`/`<iframe>`/`<template>`, converts headings/lists/links/emphasis. Strips remaining tags. Decodes entities last.
+2. **URL collapse** — long URLs (≥32 chars default) become `[ref:N]` markers; originals stored in sidecar `refs: {id, url}[]`.
+3. **Whitespace dedup** — collapses runs of blank lines and runs of spaces, normalises CRLF.
+
+Optional fourth pass: caller-provided `summarise(text)` runs when post-compression token estimate exceeds `llm_summary_above_tokens`. Off by default.
+
+**Multi-byte text** (CJK, emoji, accented Latin) passes through unmodified.
+
+**Wired into** `inngest/functions/sources/connectors/web.ts`. Replaces the prior `slice(0, 30000)` truncation that was dropping 90%+ of every TechCrunch fetch. Refs are surfaced in the LLM user-message tail so the model substitutes real URLs when populating extracted item URLs.
+
+**Bench** (`packages/tools/scripts/compress_bench.ts`):
+| Page | Before | After | Reduction | URL refs |
+|---|---|---|---|---|
+| TechCrunch homepage | 107,032 tokens | 4,413 | 95.9% | 124 |
+| HN front | 8,777 | 2,298 | 73.8% | 29 |
+| YC company JS shell | 9,064 | 0 | 100% | 0 |
+| YC 404 page | 288 | 35 | 87.8% | 0 |
+
+### Deferred (next pass)
+- Wire `compress()` into `composio_execute` for HTML-heavy Composio responses (Gmail bodies, Salesforce notes).
+- Surface URL refs into the signal's `payload.refs` jsonb so CiteChain can resolve them after the fact.
+- Composio write/dangerous actions through the existing outreach_send gate flow (v2).
+- Composio webhook trigger receiver (Gmail new-email push → fact derivation).
+- Tree-summarizer (hour→day→month rollups) explicitly rejected as premature — chat agent reads scoped projections, not a firehose.
+
+### Operational note
+Multiple zombie `next-server` procs were holding port 3000 even after `kill` / `pkill -f next-server`. They keep getting respawned by parent `pnpm dev`. The clean fix is `lsof -tiTCP:3000 | xargs -r kill -9` plus killing any `pnpm dev` parent. Generic SIGTERM is unreliable; go straight to `-9`.
+
+
+## 2026-05-19 PM/evening — Chat agent migrated to AI SDK v6
+
+### What shipped
+Hand-rolled SSE + ReAct loop in the chat intake route replaced with Vercel AI SDK v6 (`streamText` server, `useChat` client). All 9 typed tool-result renderers carried over unchanged. Word-level smoothing, abort, inline errors with retry, copy-on-hover, tool-running chip, page-context payload, markdown rendering — all wired.
+
+### Deps
+```
+pnpm add ai @ai-sdk/deepseek @ai-sdk/react react-markdown remark-gfm react-textarea-autosize
+```
+Installed: `ai@6.0.185`, `@ai-sdk/deepseek@2.0.35`, `@ai-sdk/react@3.0.187`, `react-markdown@10`, `remark-gfm@4`, `react-textarea-autosize@8`.
+
+### Why direct DeepSeek instead of OpenRouter
+- `@ai-sdk/deepseek` direct surfaces reasoning tokens (`part.type === 'reasoning'` in the `fullStream` iterator) — documented and verified in wire trace.
+- `@openrouter/ai-sdk-provider` docs don't mention reasoning surfacing — risk of silent drop.
+- Direct also skips OpenRouter's markup. Same model, cheaper.
+- Base URL defaults to `https://api.deepseek.com`; the key is enough.
+- Future model swap is one line: `createDeepSeek(...)` → `createOpenAI(...)` etc. All providers follow the same `streamText` API.
+
+### Server: `apps/web/app/api/agent/intake/route.ts`
+- `streamText({ model: ds('deepseek-v4-pro'), system, messages, tools, stopWhen: stepCountIs(12), experimental_transform: smoothStream({ chunking: 'word' }), temperature: 0.2 })`.
+- Tools wrapped in `tool({ description, inputSchema: jsonSchema(spec.parameters), execute })`. Each handler closes over per-request `ctx` (supabase + actor + workspace_id) and returns parsed objects (truncated to 8000 chars).
+- `createUIMessageStream({ execute, onFinish })` mixes a custom `data-thread` data part (conversation_id on a fresh thread) with the model's stream via `writer.merge(result.toUIMessageStream({ sendReasoning: true }))`.
+- `onFinish({ messages: responseMessages })` persists incoming + response messages back to `conversations.transcript.messages`. FIFO-trimmed at STORED_CAP=400. One `chat.turn` event per turn.
+- `convertToModelMessages(messages)` (must `await` — returns Promise in v6) translates UIMessage parts to ModelMessage shape.
+- `buildRecentEntityNote` (existing) and `buildPageContextNote` (user-added via linter) prepended to the system prompt.
+
+### Client: `apps/web/app/_components/Chat.tsx`
+- `useChat({ transport: new DefaultChatTransport({ api, body: () => ({ workspace_id, conversation_id, page_context }) }), onData, onError })`. The body resolver is a function so the latest conversation_id rides every turn without re-creating the transport.
+- `onData({ type: 'data-thread' })` captures the server-generated id into `useState`. A `useRef` mirror keeps the transport closure reading the latest value.
+- Messages render by walking `m.parts`. Part type dispatch:
+  - `text` → `<AssistantText>` wraps the string in `<ReactMarkdown remarkPlugins={[remarkGfm]}>` with mono-styled code/links/lists/tables/blockquotes CSS.
+  - `reasoning` → `<ThinkingPill>` (dashed pill, last 140 chars of reasoning text, only shown while streaming + no text yet). Old `dir="rtl"` + `<bdo>` hack replaced with plain left-aligned truncation.
+  - `tool-<name>` → `<ToolPartView>`. State drives rendering: `input-streaming` / `input-available` → "running <tool>…" chip; `output-available` → dispatch by tool name to existing 9 typed cards; `output-error` → `<ErrorResult>`. Output strings get JSON-parsed back to objects (handles the 8000-char truncation).
+- Composer: `<TextareaAutosize minRows={1} maxRows={8}>` replaces fixed-height textarea. Stop button (`stop()` from useChat) swaps in for Send while `status === 'streaming' | 'submitted'`. Errors render inline below messages with a `regenerate()` retry link.
+- Copy button: hover-revealed `.copy-btn` calls `navigator.clipboard.writeText(text)` and flashes ✓ for 1.2s.
+
+### Persistence + legacy thread handling
+- Transcripts now hold UIMessage shape directly (parts with text / reasoning / tool-* / step-start types). No conversion layer.
+- `/api/agent/intake/threads` title extraction walks `parts` if present, falls back to `content` so legacy + new shapes both list correctly.
+- `/api/agent/intake/thread` returns raw `unknown[]` messages; client filter at hydration drops entries that don't look like UIMessages (`typeof id === 'string' && Array.isArray(parts)`). Old chat threads from before the migration appear in the picker but rehydrate empty. Acceptable for dogfood.
+
+### What dropped
+- Custom SSE event types (`thread`, `assistant_delta`, `reasoning_delta`, `assistant`, `tool_result`, `done`, `error`) deleted from the wire protocol — useChat consumes the UI Message Stream protocol directly.
+- Manual fetch + SSE reader + frame parsing in `Chat.tsx` (~80 lines).
+- Manual ReAct loop with step counting + tool-call argument accumulator in `route.ts` (~50 lines).
+- `chatCompleteStream` + `chatCompleteStreamForWorkspace` exports remain (other agent paths may still use them) but the chat intake route no longer touches them.
+
+### Type / policy changes
+- `LLMPolicy` (`packages/tools/src/policy.ts`) +1 field: `deepseek_api_key?: string`.
+- `ChatCompleteArgs.api_keys` (`packages/primitives/src/llm.ts`) +1 field: `deepseek?: string` (consistency only; the new path doesn't use it).
+- `resolveDeepseekKey(supabase, workspace_id)` added to `packages/tools/src/chat_workspace.ts`; exported from `@agent-crm/tools` index. Resolution order: `policy.env.DEEPSEEK_API_KEY` → `policy.llm.deepseek_api_key` → `process.env.DEEPSEEK_API_KEY` (route-level fallback).
+
+### Verified
+Direct API hit against the demo workspace (`af602fa1-1e0b-4bee-9841-01894553e0a9`):
+- Stream emits: `data-thread` → `start` → `start-step` → `reasoning-start` + `reasoning-delta` × N → `reasoning-end` → `tool-input-start` + `tool-input-delta` × N + `tool-input-available` → tool exec → `tool-output-available` → `finish-step` → next step: `text-delta` × N (one word per delta, smoothStream chunking confirmed) → `text-end` → `finish-step` → `finish`.
+- Persistence: thread row in `conversations.transcript.messages` has UIMessage shape with `[step-start, reasoning, tool-query, tool-query, tool-query, step-start, reasoning, text]` parts on the assistant message of a multi-step trace.
+- Markdown rendering confirmed via user's browser test (asked for a markdown table → rendered as HTML table; copy button copied tab-separated cells).
+
+### Backlog
+- Item 1 (phone-actionable notifications) and Item 2 (call orchestrator) updated with the Telegram-bot direction from the OpenClaw research earlier this session. Self-serve setup flow named (BotFather → paste token → DM bot once to capture chat_id), wire shape spelled out, `tel:` url-button trick for dial buttons noted. Not built — backlog only.
+
+### Open observations from session-start sweep (deferred)
+- `score_signal_coupling 0/52 entities rescored` (RED). Enricher → `scoreAndAssert` path looks broken.
+- 6 sources flagged `source_dead_weight` (4 YC + indie_hackers + hn_u2u2 + techcrunch) — all fact_yield = 0 despite firing signals.
+
+## 2026-05-19 PM/evening — Composio v1 hardening
+
+- `0027_composio_connections.sql` applied: per-(workspace, toolkit_slug) connection rows with status / connect_url / profile / last_error. Service-role writes, member reads.
+- `0028_composio_auth_configs.sql` applied: deploy-wide cache of auth config ids keyed by toolkit_slug. Seeded Gmail with `ac_unpO1Tp1weW9`.
+- `@agent-crm/composio` package: `client.ts` (Composio SDK wrapper + auto-create+cache for auth configs), `catalog.ts` (read-only curated actions), `scope.ts` (read/write/dangerous classifier), `index.ts` exports.
+- SDK migration `connectedAccounts.initiate` → `connectedAccounts.link(userId, authConfigId)` — legacy endpoint retired by Composio on 2026-04-24.
+- `dangerouslySkipVersionCheck: true` threaded into every execute() call. Without it, the SDK throws `ComposioToolVersionRequiredError` because the default version resolves to `"latest"`.
+- API routes under `apps/web/app/api/composio/`: `authorize`, `connections`, `connections/[id]`, `connections/[id]/refresh`, `toolkits`, `execute` (six routes total, including the OAuth-status poll on `/refresh`).
+- Agent tools `composio_list_tools` + `composio_execute` added to `INTAKE_TOOLS`. Read-only enforced via catalog (`GMAIL_SEND_EMAIL` etc. excluded). Every execute audits to `events` as `action='composio.execute'`.
+- Settings UI: `ConnectedServices.tsx` (206 LOC) with status chips, OAuth handoff link, polling refresh, profile email surface.
+- Operator setup is now `COMPOSIO_API_KEY` only — no per-toolkit env vars. End-user setup is one click in settings.
+- Bug fixed in `apps/web/app/api/agent/intake/tools.ts:queryDrafts`: `channels.entity_id` → `channels.account_entity_id` (3 references). Pre-existing wrong-column-name surfaced when the agent picked `scope:'drafts'`.
+- Memory: `project_composio_v1_read_only` (no send/post/create actions in v1 catalog) + `project_composio_quota_budget` (20K calls/mo, 60 req/min — watermarked sync, 1×/day cap, per-workspace daily cap pattern documented for when sync is built).
+
+
+## 2026-05-19 PM — Page-aware chat (readable page context)
+
+Borrowed CopilotKit's `useCopilotReadable` pattern without the library. Each workspace tab now publishes a small structured snapshot of what's on screen; the chat sends it on every turn so "the first one" / "this gate" resolve against the rendered page, not just chat history. Plan file: `/Users/jakewatson/.claude/plans/reflective-strolling-comet.md`. Client-callable actions (CopilotKit's `useCopilotAction`) explicitly out of scope — revisit when a concrete need shows up.
+
+- New `apps/web/app/_components/PageContext.tsx`: `PageContextProvider` (ref + render-tick), `useSetPageContext(ctx)` (publishes on mount, clears on unmount if still latest), `useCurrentPageContext()` (render-time read), `usePageContextGetter()` (stable getter for transport `body` resolver).
+- Workspace layout wraps the shell in `<PageContextProvider>` so chat + tab pages share the bus.
+- `Chat.tsx`: `DefaultChatTransport` body resolver now includes `page_context: getPageContext() ?? undefined` alongside `workspace_id` + `conversation_id`. Snapshot-at-send-time; not persisted with the transcript.
+- `apps/web/app/api/agent/intake/route.ts`: accepts optional `body.page_context`, builds `buildPageContextNote(...)` (cap 10 visible items, ≤600-char `data` slot), joins into the system prompt next to `recentEntityNote`. Note numbers items 1–N, calls them "in display order," and explicitly forbids inferring sort method / total count / unlisted items — model must call `query` for more.
+- Tab publishers wired on 5 pages: gates, sources, entities, feed (via `FeedClient`), entity detail. Settings + Replay skipped — no useful visible items.
+- Bug caught + fixed mid-session: first version of the entities-page publisher sorted by `icp_fit desc` with labels `${name} (icp 0.55)`. Agent confabulated "sorted alphabetically, &AI through Abstrakt" because visible list didn't match render order and labels biased it toward an ordering inference. Two fixes: (1) entities publisher rewritten to mirror render's kind-group + activity-desc sort; (2) system-prompt block numbered + "do NOT infer sort method or total count" line added. Re-verified: agent now leads with Ashr / Autumn AI / Emdash matching the rendered page.
+
+## 2026-05-19 21:38 UTC — Chat loop fixes (gates.kind bug + drafts scope + tighter prompt)
+
+Trigger: Jake pasted a chat transcript where he asked "are there any outbound templates I can use?" and the agent fired 10+ tool calls, repeatedly errored on `column gates.kind does not exist`, ran a string of 0-row events queries, and along the way added subscriptions + deactivated a source unprompted. "Looping and blowing up credits."
+
+Three real bugs:
+- `queryGates` in `apps/web/app/api/agent/intake/tools.ts` selected `kind` and `payload` — neither exists on the `gates` table (real cols are `policy`, `condition`, `requested_by_agent`). Every `query({scope:'gates'})` returned a SQL error, and the agent kept retrying it across steps. Fixed the select list.
+- No way to ask for outbound drafts. Drafts live in `channel_posts.kind='touch_draft'`; the query tool had no scope for them, so the agent guessed through `events` and got 0-row noise. Added `query({ scope: 'drafts' })` (and `filter.subject_entity` for per-entity drafts). Returns `{ id, entity_id, body, cites, created_at, author }`.
+- System prompt encouraged "decide-and-notify" too aggressively, so the agent treated *any* observation it noticed as a license to act. Rewritten: "Answer the user's actual question. Do not take side-actions just because you notice something." Plus a two-strike rule: "If two attempts in a row return empty or error, STOP and report what you checked." Endings section softened: `Next:` is only when the user implied it, not whenever the agent feels like it.
+- Worst-case spend per turn halved: `MAX_STEPS` 12→6 in `apps/web/app/api/agent/intake/route.ts`.
+- Type cleanup: `QueryScope` union extended with `'drafts'` (was inconsistent with the JSON-schema enum + switch case after the edit).
+
+Lesson worth remembering globally: when a tool returns an error every call and the agent visibly retries it, the system-prompt "loop budget" rule isn't enough — fix the tool first, then tighten the prompt. Chat loops with `MAX_STEPS` in double digits will burn that budget on any consistent tool failure. Default to 4-6 steps for Q&A loops; raise only when a flow needs it.
+
+
+## 2026-05-20 16:02 UTC — ATS connector ownership verification + Sila cleanup
+
+Trigger: Jake spotted that the feed for YC W26 "Sila" (silahq.com, 2-person AI work-messaging startup) was showing weatherization technicians, warehouse runners, plumbers, and HVAC service techs across PA/NJ/CT/MA. Wrong company entirely.
+
+Root cause in `inngest/functions/sources/connectors/ats.ts`: discovery derived slugs from the entity name only (`deriveSlugs("Sila")` → `["sila"]`), probed `jobs.lever.co/sila`, got 200, and cached it as the entity's ATS. But that Lever board belongs to **Sila Services**, a Pennsylvania home-services contractor — completely different company that happened to grab the slug first. No verification step: a 200 was treated as proof of ownership.
+
+**Fix shipped (commit 5c8ed0c):**
+- `deriveSlugs(name, domain?)` now prepends domain-derived slugs: `silahq.com` → tries `silahq` before `sila`. Domain-derived slugs are a much stronger signal than name-derived because two companies rarely share a domain root.
+- New `verifyBoardMatchesEntity(provider, slug, domain, sampleJob)`: after any probe returns 200, fetches the board's public landing page (`jobs.lever.co/{slug}`, `boards.greenhouse.io/{slug}`, `jobs.ashbyhq.com/{slug}`, `apply.workable.com/{slug}`) and one sample job page, scans the HTML for the entity's bare domain. Match → accept. No match → reject and keep probing other slugs/providers. Live-tested: `jobs.lever.co/sila` correctly fails for `silahq.com`, passes for `silaservices`; positive control `boards.greenhouse.io/anthropic` contains `anthropic.com`.
+- No domain on the entity → can't verify → `ats: 'none'` with `verification: 'domain_missing'`. Hint now carries `verification: 'domain_match' | 'unverified' | 'domain_missing'` so we can audit/sweep later.
+- Probe response is reused for the first run — no extra fetch after verification.
+
+**Cleanup of existing bad data:**
+- Audited 24 entities across workspaces with active ATS hints. 17 were wrong (failed verification when checked retroactively); 7 verified correctly.
+- 7 upgraded to `domain_match`: SalesPatriot, CTGT, Capy, Innate, Apolink, Aqua Voice, FurtherAI (all Ashby).
+- 17 reset to `ats: 'none'` with `discovered_at` backdated 60 days so the reprobe-window check passes and the next cron actually tries again. Includes Sila, Substrate, Sphinx, Foresight, Valence — all collide with bigger same-named companies on those ATS boards.
+- **Sila specifically**: 268 bogus `hiring_post` signals deleted; 161 derived facts (`hired_for_role`, `recent_event`, `job_title`, plus `score_*` and `icp_*` outputs that were computed off the bad signals) deleted via signal_id link; another 35 stale `job_location` / `job_department` facts (no `signal_id` link — missed by the first pass) deleted in a targeted second sweep. `attributes.ats_seen_jobs` (200 Lever job IDs) cleared.
+- Ran the ATS connector once via `scripts/_run_ats_once.ts` to verify in production: Lever's `sila` slug matched again, verification rejected it, **0 new signals attached to Sila**. 8 new boards discovered + verified on this same run (Lance, Traverse, DiligenceSquared, Polymath, Perfectly, Stilta, Human Archive, Pax Historia — all Ashby).
+- Workable was rate-limiting heavily on this run (~99 429s); those entities will retry on the next cron tick.
+
+Files: `inngest/functions/sources/connectors/ats.ts` (verification step, ~70 LOC added), `scripts/_run_ats_once.ts` (one-shot trigger bypassing Inngest).
+
+
+## 2026-05-23 — Hiring-signal pipeline rewrite
+
+Trigger: Jake reviewed three "new info" cards from the dog-food workspace and called it out as broken — hiring facts were one-line ("posted Embedded Engineer via Ashby"), and the wrong postings were coming through (engineering / marketing / people roles at accounts being targeted for a sales-tool pitch). Existing ATS connector pulled four fields off every job posting and discarded the description, salary, and employment_type the providers returned; no role filter existed; enricher had no hiring-specific guidance. Plan file: `serene-churning-crane.md`.
+
+**Shipped:**
+- `supabase/migrations/0029_role_classifications.sql` — deploy-wide cache table keyed by SHA-256 of `lower(title) + '|' + lower(department||'')`. Applied to prod.
+- `packages/tools/src/classify_role.ts` — `classifyRole(sb, ws, title, department)` returns `{family, seniority, is_exec}` via one gpt-4o-mini call with strict JSON output and read-through cache. Same title across all workspaces costs one LLM call total. `passesHiringFilter(classification, filter)` is the gate predicate (include_families / include_seniorities / exclude_families / always_include_exec; empty filter passes everything).
+- `packages/tools/src/policy.ts` — new `HiringFilterPolicy` interface added to `WorkspacePolicy`. No schema change (workspaces.policy is jsonb).
+- `inngest/functions/sources/connectors/ats.ts` — all four provider fetchers (Greenhouse `?content=true`, Lever `descriptionPlain`, Ashby `descriptionPlain`, Workable per-job detail fetch capped at 25 per entity per run) now keep description, salary range, employment_type, team. New `htmlToText()` strips block-level HTML. Per-job loop: classify → filter → write rich `body_for_embedding` (headline + role line + 1500-char description excerpt + URL) and rich `structured_tags` (`job_description` up to 4000 chars, `job_salary_min/max/currency/period`, `job_employment_type`, `role_family`, `role_seniority`, `role_is_exec`, `role_filter_passed`). Filter-failed postings still recorded in `ats_seen_jobs` so they don't re-classify next run.
+- `inngest/functions/agent_logic.ts` — enricher prompt got a HIRING SIGNALS block that fires when signal type/kind is hiring. Instructs the model to extract `hiring_role`, `hiring_tech_stack` (multi), `hiring_responsibility` (multi, up to 3), `hiring_salary_range` (only when explicit), `hiring_location_mode`, `hiring_employment_type`, plus a short `recent_event` summary. Stacks on the existing demographic + pain passes — same JSON envelope, no new agent path.
+- `apps/web/app/workspace/[ws]/settings/page.tsx` — new Hiring filter section under Thresholds. Chip multi-select (`TaxonomyMultiSelect`) for families + seniorities + exclude families, checkbox for always_include_exec. No defaults shipped (vertical-neutral per CODING.md). Wired through `composedPolicy` so save round-trips through existing `/api/workspace/update`.
+- `apps/web/next.config.mjs` — added `@agent-crm/composio` to `transpilePackages`. Without it, every page in the app 500'd with `Module not found: Can't resolve './scope.js'` because turbopack only applies `resolveExtensions` to listed packages.
+
+**Verified end-to-end on workspace `af602fa1`:**
+- Filter-off smoke: 116 signals across the watchlist, all with rich tags (4000-char descriptions, role classifications). 149 unique titles cached across 13 families. Classifier reads nuance correctly: "GTM Engineer" → gtm, "Founding Account Executive" → sales, "Future AI Founder" → founder with `is_exec=true`.
+- Filter-on smoke (`include_families:[sales,gtm,revops,growth,founder]`, `always_include_exec:true`): 13 signals across Harper, AfterQuery, Weave, Mercura — every single one matching the filter. Engineering / marketing / people / ops postings at the same companies (visible in filter-off output) were correctly dropped at the connector before signal creation.
+
+**Side-quest fixes from the same session:**
+- Cleared `sk-test-…` placeholder from `workspace.policy.env.OPENAI_API_KEY`. Was blocking every chat / enricher / classifier call because policy.env wins over `.env.local`. Logged as a known issue.
+- Classifier prompt initially missing the word "json"; OpenAI's `response_format: json_object` requires the literal token in messages. Fixed.
+
+**Deferred from this work:**
+- `team_growth_signal` ("first sales hire" detection). Needs caching prior job TITLES per entity, not just external_ids.
+- HN sourcing fix (separate problem). Out of scope per plan.
+- Global ICP floor for non-hiring signals. Out of scope per plan.
+- Entity-alias disambiguation (Ember/Qian Xuesen class). Out of scope per plan.
+
+Files: `supabase/migrations/0029_role_classifications.sql`, `packages/tools/src/classify_role.ts` (new), `packages/tools/src/policy.ts`, `packages/tools/src/index.ts`, `inngest/functions/sources/connectors/ats.ts`, `inngest/functions/agent_logic.ts`, `apps/web/app/workspace/[ws]/settings/page.tsx`, `apps/web/next.config.mjs`, `scripts/_clear_workspace_test_key.ts`, `scripts/_set_hiring_filter.ts`, `scripts/_clear_hud_seen.ts`, `scripts/_verify_hiring_rich.ts`, `scripts/_run_ats_hud_only.ts`, `scripts/_inspect_hud.ts`.
+
+## 2026-05-23 — v1 token-cost benchmark across 5 CRMs
+
+### Scope
+- 5 platforms compared: agent-crm (live), HubSpot (live REST), Day.ai (simulated from public SDK schema — paid-only, no trial), Attio (live REST), Twenty (self-hosted via Docker).
+- 3 agent workloads measured: draft (write personalized email), brief (pre-meeting summary), score (0-10 outreach priority).
+- 4 agent-crm read shapes tested: flat-JSON projection, tree-JSON projection, production text format, tool-call wrapper.
+- 702 runs total, 696 ok / 6 failed. Same DeepSeek-reasoner model on every side, same data seeded on every platform, same unified prompts across platforms.
+- Every API call and LLM call saved as inspectable JSON receipts under `benchmark/v1/receipts/`.
+
+### Headline numbers
+- Production agent-crm (text format) is the cheapest variant at $0.000475/action mean.
+- Beats Twenty tight by 12% on the mean (was a tie when measured with JSON projection in v1.4 — production format reclaims the lead).
+- Beats HubSpot tight by 2-7× depending on workload.
+- Beats Day.ai tight by 5-16× depending on workload.
+- Beats Attio tight by 8-15× depending on workload — Attio's value-wrapper response format is incompressible by client.
+
+### Key infrastructure built
+- `benchmark/v1/` directory: lib/ (llm wrapper, receipts saver, workloads, summary), readers/ (agent_crm + hubspot + attio + dayai + twenty), seeders for HubSpot/Attio/Twenty, runners per platform + per shape, dedupe/regen utilities.
+- Switched LLM provider from OpenRouter to DeepSeek direct API mid-session (3× cheaper, exposes `reasoning_content` as separate field from `content` which fixed a content-null bug).
+- HubSpot dev account scopes audited and expanded (added contacts/notes/companies read).
+- Twenty.com self-hosted via Docker at localhost:3001; full seed via REST batch endpoints with rate-limit-aware throttling (100 req/60s).
+- Attio seeded on free tier (50K records, no CC required).
+- Day.ai cloned from `github.com/day-ai/day-ai-sdk` and simulator built from their SCHEMA.md.
+
+### Deliverable
+- `benchmark/v1/WRITEUP.md` — full narrative with tables, cost-per-action by company stage (solo founder to enterprise), honest caveats, and reproducibility instructions.
+- Commit: dfdfb35.
+
+### What v1 deliberately doesn't prove
+- Blind-scored quality eval at N=30+ per platform (skim suggested comparable quality, no rigorous test).
+- HubSpot GraphQL endpoint as an alternate read path (verified via web research that HubSpot's official MCP uses REST tool loops, not GraphQL, so the REST comparison is honest).
+- TCO including platform fees in detail — the writeup notes platform fees dominate at small scale but doesn't model every plan tier.

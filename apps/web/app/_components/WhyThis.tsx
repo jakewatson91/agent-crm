@@ -1,73 +1,78 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { CiteChain } from './CiteChain';
+import { lowConfLabel } from '../_lib/confidence';
 
-interface ReplaySnapshot {
-  facts?: Array<{ id: string; predicate: string; object_text: string; subject_entity: string; observed_at: string; confidence: number }>;
-  signals?: Array<{ id: string; type: string; entity_id: string; body_for_embedding?: string }>;
-  entities?: Array<{ id: string; name: string; attributes: Record<string, unknown> }>;
+function prettyUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+    const path = u.pathname === '/' ? '' : u.pathname;
+    const combined = host + path;
+    return combined.length > 50 ? combined.slice(0, 47) + '…' : combined;
+  } catch {
+    return url.length > 50 ? url.slice(0, 47) + '…' : url;
+  }
+}
+
+interface CitedFact {
+  id: string;
+  predicate: string;
+  object_text: string | null;
+  confidence: number;
+  observed_at: string;
+  source_event_id: number | null;
+  source_signal: { source_name: string | null; source_url: string | null } | null;
 }
 
 /**
- * "Why this?" — opens a side panel showing the agent's snapshot at the moment a
- * post was written. Uses replay_to(post.created_at - epsilon) so the user sees
- * exactly what facts/signals existed when the agent decided to write this post.
+ * "Why this?" — the agent's audit panel for a single post.
  *
- * This is the everyday surface for replay. The user thinks "show me why" —
- * they don't think about replay as a feature.
+ * Shows the reasoning the agent wrote when it produced the post, the facts it
+ * actually cited (with a click-through to walk each fact's provenance chain),
+ * and the source event metadata. Intentionally NOT a fact dump — the full
+ * "everything the agent knew at time T" view lives in the audit slider at the
+ * bottom of the entity page.
  */
 export function WhyThis({
+  postId,
   workspace_id,
   entity_id,
   ts,
+  reasoning,
   cites,
 }: {
+  postId: string;
   workspace_id: string;
   entity_id: string;
-  ts: string;          // post created_at — we replay to just before this moment
-  cites?: string[];    // fact_ids the post claimed to cite, for quick highlight
+  ts: string;
+  reasoning: string | null;
+  cites: string[];
 }) {
   const [open, setOpen] = useState(false);
-  const [snap, setSnap] = useState<ReplaySnapshot | null>(null);
+  const [facts, setFacts] = useState<CitedFact[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function fetchSnapshot() {
-    setLoading(true); setError(null);
-    try {
-      // Replay to 1ms before the post was written — that's the state the agent
-      // saw at decision time. Replaying to created_at exactly would include the
-      // post's own causal events.
-      const replayTs = new Date(Date.parse(ts) - 1).toISOString();
-      const res = await fetch('/api/primitives/replay', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id, ts: replayTs }),
-      });
-      const j = await res.json();
-      if (!res.ok) { setError(j.error ?? 'replay failed'); return; }
-      setSnap(j);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function toggle() {
-    if (!open && !snap) fetchSnapshot();
-    setOpen(!open);
-  }
-
-  const citeSet = new Set(cites ?? []);
-  const factsForEntity = (snap?.facts ?? []).filter((f) => f.subject_entity === entity_id);
-  const signalsForEntity = (snap?.signals ?? []).filter((s) => s.entity_id === entity_id);
+  useEffect(() => {
+    if (!open || facts || loading || cites.length === 0) return;
+    setLoading(true);
+    fetch(`/api/facts/batch?ids=${cites.join(',')}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.error) setError(j.error);
+        else setFacts(j.facts ?? []);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [open, facts, loading, cites]);
 
   return (
     <div style={{ display: 'inline-block' }}>
       <button
-        onClick={toggle}
-        title="Show what the agent knew when it wrote this"
+        onClick={() => setOpen((v) => !v)}
+        title="Show the agent's reasoning and what it cited"
         style={{
           padding: '2px 10px',
           background: open ? 'var(--accent-blue)' : 'var(--accent-blue-soft)',
@@ -92,51 +97,57 @@ export function WhyThis({
           fontSize: '.78rem',
           maxWidth: 700,
         }}>
-          <div style={{ color: '#4f6da3', fontSize: '.68rem', marginBottom: '.5rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
-            agent&apos;s view at time of writing
+          <div style={{ color: '#4f6da3', fontSize: '.68rem', marginBottom: '.4rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            agent&apos;s reasoning
           </div>
-          {loading && <div className="subtle">replaying…</div>}
+          {reasoning ? (
+            <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5, marginBottom: '.6rem', color: 'var(--text)' }}>
+              {reasoning}
+            </div>
+          ) : (
+            <div className="muted" style={{ fontStyle: 'italic', marginBottom: '.6rem' }}>
+              No reasoning recorded for this post.
+            </div>
+          )}
+
+          <div style={{ color: '#5a7e5f', fontSize: '.68rem', marginBottom: '.3rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            cited facts · {cites.length}
+          </div>
+          {cites.length === 0 && (
+            <div className="muted" style={{ fontStyle: 'italic' }}>
+              The agent cited no facts on this post.
+            </div>
+          )}
+          {loading && <div className="subtle">loading cited facts…</div>}
           {error && <div style={{ color: 'var(--accent-coral)' }}>✗ {error}</div>}
-          {snap && !loading && (
-            <>
-              <div className="subtle" style={{ fontSize: '.72rem', marginBottom: '.5rem' }}>
-                {factsForEntity.length} active facts on this account · {signalsForEntity.length} signals it saw
-              </div>
-              {factsForEntity.length === 0 && signalsForEntity.length === 0 && (
-                <div className="muted" style={{ fontStyle: 'italic' }}>
-                  No facts or signals existed for this entity at that moment. The agent wrote this from workspace context only.
-                </div>
-              )}
-              {factsForEntity.length > 0 && (
-                <div style={{ marginBottom: '.55rem' }}>
-                  <div style={{ fontSize: '.68rem', color: '#5a7e5f', marginBottom: '.25rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>facts</div>
-                  {factsForEntity.slice(0, 12).map((f) => (
-                    <div key={f.id} className="mono" style={{
-                      fontSize: '.72rem',
-                      color: citeSet.has(f.id) ? '#5a7e5f' : 'var(--text-2)',
-                      fontWeight: citeSet.has(f.id) ? 600 : 400,
-                    }}>
-                      {citeSet.has(f.id) ? '✓ ' : '  '}{f.predicate} = {f.object_text}
-                      {citeSet.has(f.id) && <span className="muted" style={{ fontWeight: 400 }}> (cited)</span>}
-                    </div>
-                  ))}
-                  {factsForEntity.length > 12 && (
-                    <div className="muted" style={{ fontSize: '.7rem' }}>… +{factsForEntity.length - 12} more</div>
+          {facts && facts.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
+              {facts.map((f) => (
+                <div key={f.id} className="mono" style={{ fontSize: '.74rem', display: 'flex', gap: '.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                  <span style={{ color: '#5a7e5f' }}>✓</span>
+                  <span style={{ color: 'var(--text)' }}>
+                    {f.predicate} = {f.object_text ?? '—'}
+                  </span>
+                  {lowConfLabel(f.confidence) && (
+                    <span className="muted" style={{ fontSize: '.66rem', color: 'var(--accent-coral)' }}>
+                      {lowConfLabel(f.confidence)}
+                    </span>
                   )}
+                  {f.source_signal?.source_url && (
+                    <a
+                      href={f.source_signal.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: 'var(--accent-blue)', fontSize: '.7rem', textDecoration: 'underline' }}
+                      title={f.source_signal.source_url}
+                    >
+                      ↗ {prettyUrl(f.source_signal.source_url)}
+                    </a>
+                  )}
+                  <CiteChain fact_id={f.id} label="chain" />
                 </div>
-              )}
-              {signalsForEntity.length > 0 && (
-                <div>
-                  <div style={{ fontSize: '.68rem', color: '#4f6da3', marginBottom: '.25rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>recent signals</div>
-                  {signalsForEntity.slice(0, 5).map((s) => (
-                    <div key={s.id} style={{ fontSize: '.72rem', color: 'var(--text-2)', marginBottom: '.15rem' }}>
-                      <span className="mono subtle">{s.type}</span>
-                      {s.body_for_embedding && <> · {s.body_for_embedding.slice(0, 100)}…</>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
+              ))}
+            </div>
           )}
         </div>
       )}

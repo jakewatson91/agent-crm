@@ -17,7 +17,8 @@
  */
 
 import { callTool } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import { getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
 interface HnHit {
   objectID: string;       // story id
@@ -35,65 +36,23 @@ interface HnHit {
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
-export const meta: ConnectorMeta = {
-  type: 'hn',
-  label: 'Hacker News',
-  description: 'Watch HN for posts mentioning specific companies. Uses the free Algolia search API.',
-  category: 'preset',
-  emits_signal_source: 'hn',
-  schedule_cron: '0 * * * *',  // hourly
-  config_schema: {
-    fields: [
-      {
-        name: 'watch_entities',
-        label: 'Companies to watch (optional override)',
-        kind: 'entity_picker_multi',
-        help: 'Leave empty to watch every account in the workspace. Set explicitly to scope down.',
-      },
-      {
-        name: 'keywords',
-        label: 'Additional keywords (optional)',
-        kind: 'string_array',
-        help: 'Comma-separated. Narrows the HN search before entity matching. Leave empty for no narrowing.',
-      },
-      {
-        name: 'since_hours',
-        label: 'Look back (hours)',
-        kind: 'number',
-        default: 24,
-        help: 'Fetch posts created in the last N hours.',
-      },
-      {
-        name: 'min_points',
-        label: 'Minimum HN points',
-        kind: 'number',
-        default: 0,
-        help: 'Skip posts below this score. Set higher to reduce noise.',
-      },
-    ],
-  },
-};
+export { hnMeta as meta } from '../registry_meta.js';
 
 const hn: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> => {
   const result: ConnectorResult = { signals_created: 0, entities_created: 0, skipped: 0, errors: [] };
 
   let watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
   if (!watch.length) {
-    // Dynamic watch list: every account in the workspace. Picks up entities
-    // added by Exa/web/yc discovery + manual chat additions automatically.
-    const accountsRes = await ctx.supabase.from('entities')
-      .select('id, name').eq('workspace_id', ctx.workspace_id).eq('kind', 'account')
-      .limit(2000);
-    if (accountsRes.error) {
-      result.errors.push(`failed to load workspace accounts: ${accountsRes.error.message}`);
+    // Dynamic watch list: every active (non-dropped) workspace account.
+    // Picks up new entities from discovery + chat-added accounts automatically;
+    // skips dropped fixtures so we don't waste signal-matching on stale rows.
+    try {
+      watch = await getWatchedAccounts(ctx.supabase, ctx.workspace_id);
+    } catch (e) {
+      result.errors.push(`failed to load workspace accounts: ${e instanceof Error ? e.message : String(e)}`);
       return result;
     }
-    watch = ((accountsRes.data ?? []) as Array<{ id: string; name: string }>)
-      .map((r) => ({ entity_id: r.id, name: r.name }));
-    if (!watch.length) {
-      // No accounts yet. Not an error - just nothing to watch.
-      return result;
-    }
+    if (!watch.length) return result; // no accounts yet — no-op
   }
   const keywords = ((ctx.config.keywords as string[]) ?? []).filter(Boolean);
   const since_hours = (ctx.config.since_hours as number) ?? 24;
@@ -139,11 +98,20 @@ const hn: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
 
   for (const hit of hits) {
     if (seenStoryIds.has(hit.objectID)) { result.skipped++; continue; }
-    const haystack = `${hit.title ?? ''} ${hit.url ?? ''} ${hit.story_text ?? ''}`.toLowerCase();
-    const matched = watch.find((w) => {
-      const candidates = [w.name, ...(w.aliases ?? [])].filter(Boolean).map((s) => s.toLowerCase());
-      return candidates.some((c) => haystack.includes(c));
-    });
+    const haystack = `${hit.title ?? ''} ${hit.url ?? ''} ${hit.story_text ?? ''}`;
+
+    // Word-boundary alias match. Caller may have passed an explicit watch
+    // list with name+aliases (legacy config) — derive aliases for those if
+    // not pre-built; watch list from getWatchedAccounts already carries
+    // a derived alias set.
+    let matched: { entity_id: string; name: string; matched_alias: string } | null = null;
+    for (const w of watch) {
+      const aliases = ('aliases' in w && Array.isArray((w as any).aliases))
+        ? (w as { aliases: string[] }).aliases
+        : buildAliases(w.name, null);
+      const aliasHit = matchAlias(haystack, aliases);
+      if (aliasHit) { matched = { entity_id: w.entity_id, name: w.name, matched_alias: aliasHit }; break; }
+    }
     if (!matched) { result.skipped++; continue; }
 
     const body = `[HN] ${hit.title ?? '(no title)'} (${hit.points ?? 0} points, ${hit.num_comments ?? 0} comments) ${hit.url ?? ''}`;
@@ -158,12 +126,15 @@ const hn: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
         body_for_embedding: body,
         structured_tags: {
           signal_source: 'hn',
+          source_id: ctx.source_id,
           hn_story_id: hit.objectID,
           hn_author: hit.author,
           hn_points: hit.points ?? 0,
           hn_url: hit.url,
           hn_tags: hit._tags,
-          matched_alias: matched.name,
+          matched_alias: matched.matched_alias,
+          matched_entity_name: matched.name,
+          attribution_method: 'word_boundary',
         },
       },
     );

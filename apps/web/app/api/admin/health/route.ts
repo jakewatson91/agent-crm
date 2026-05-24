@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { healthCheck, tokenSummary } from '@agent-crm/tools';
+import { healthCheck, tokenSummary } from '@agent-crm/tools/reads';
 
 export const dynamic = 'force-dynamic';
 

@@ -25,7 +25,7 @@
  * write-side state on entities (the discovered ats hint). Idempotent —
  * re-runs only update when the discovered value changes.
  */
-import { callTool } from '@agent-crm/tools';
+import { callTool, classifyRole, passesHiringFilter, getPolicy } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { getWatchedAccounts } from '../utils.js';
 
@@ -49,24 +49,82 @@ interface JobPosting {
   location?: string | null;
   department?: string | null;
   posted_at?: string | null;
+  // Rich fields — populated when the provider returns them. The enricher
+  // reads description out of body_for_embedding to produce structured
+  // hiring facts (role, tech stack, responsibilities, salary band).
+  description?: string | null;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string | null;
+  salary_period?: string | null;     // 'year' | 'hour' | 'month' | etc.
+  employment_type?: string | null;   // 'full_time' | 'contract' | 'intern' | ...
+  team?: string | null;
 }
 
 interface JobsFetchResult { ok: boolean; jobs: JobPosting[]; status: number }
 
+// Strip HTML to plain text. Job-board HTML is well-formed and shallow; no
+// need for a real parser. Replaces block-level closers with newlines so the
+// LLM doesn't see one giant run-on paragraph.
+function htmlToText(html: string | null | undefined): string {
+  if (!html) return '';
+  return html
+    .replace(/<\/(p|div|li|h\d|br|tr)\s*>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+// Per-job detail fetches (Workable) are capped per entity per run so a single
+// high-volume board can't blow up the cron.
+const MAX_DETAIL_FETCHES_PER_ENTITY = 25;
+// Description truncation before storing on the signal. ~4000 chars is enough
+// for the enricher to spot tech stack + responsibilities + salary range
+// without bloating the signal row.
+const MAX_DESCRIPTION_CHARS = 4000;
+const DESCRIPTION_EXCERPT_FOR_EMBEDDING = 1500;
+
 // ---- Per-provider fetchers ----
 
 async function fetchGreenhouse(slug: string): Promise<JobsFetchResult> {
-  const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs`;
+  // ?content=true returns the description inline so we don't need a per-job fetch.
+  const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=true`;
   const r = await fetch(url);
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const j = await r.json() as { jobs?: Array<{ id: number; title: string; absolute_url: string; location?: { name?: string }; updated_at?: string }> };
-  const jobs: JobPosting[] = (j.jobs ?? []).map((p) => ({
-    external_id: `gh:${p.id}`,
-    title: p.title,
-    url: p.absolute_url,
-    location: p.location?.name ?? null,
-    posted_at: p.updated_at ?? null,
-  }));
+  const j = await r.json() as { jobs?: Array<{
+    id: number;
+    title: string;
+    absolute_url: string;
+    location?: { name?: string };
+    updated_at?: string;
+    content?: string;
+    departments?: Array<{ name?: string }>;
+    pay_input_ranges?: Array<{ min_cents?: number; max_cents?: number; currency_type?: string; interval?: string }>;
+  }> };
+  const jobs: JobPosting[] = (j.jobs ?? []).map((p) => {
+    const pay = p.pay_input_ranges?.[0];
+    return {
+      external_id: `gh:${p.id}`,
+      title: p.title,
+      url: p.absolute_url,
+      location: p.location?.name ?? null,
+      department: p.departments?.[0]?.name ?? null,
+      posted_at: p.updated_at ?? null,
+      description: p.content ? htmlToText(p.content).slice(0, MAX_DESCRIPTION_CHARS) : null,
+      salary_min: pay?.min_cents != null ? Math.round(pay.min_cents / 100) : null,
+      salary_max: pay?.max_cents != null ? Math.round(pay.max_cents / 100) : null,
+      salary_currency: pay?.currency_type ?? null,
+      salary_period: pay?.interval ?? null,
+    };
+  });
   return { ok: true, jobs, status: 200 };
 }
 
@@ -74,48 +132,132 @@ async function fetchLever(slug: string): Promise<JobsFetchResult> {
   const url = `https://api.lever.co/v0/postings/${encodeURIComponent(slug)}?mode=json`;
   const r = await fetch(url);
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const arr = await r.json() as Array<{ id: string; text: string; hostedUrl: string; categories?: { location?: string; team?: string }; createdAt?: number }>;
-  const jobs: JobPosting[] = arr.map((p) => ({
-    external_id: `lv:${p.id}`,
-    title: p.text,
-    url: p.hostedUrl,
-    location: p.categories?.location ?? null,
-    department: p.categories?.team ?? null,
-    posted_at: p.createdAt ? new Date(p.createdAt).toISOString() : null,
-  }));
+  const arr = await r.json() as Array<{
+    id: string;
+    text: string;
+    hostedUrl: string;
+    categories?: { location?: string; team?: string; department?: string; commitment?: string };
+    createdAt?: number;
+    descriptionPlain?: string;
+    description?: string;
+    salaryRange?: { min?: number; max?: number; currency?: string; interval?: string };
+  }>;
+  const jobs: JobPosting[] = arr.map((p) => {
+    const descPlain = p.descriptionPlain ?? (p.description ? htmlToText(p.description) : null);
+    return {
+      external_id: `lv:${p.id}`,
+      title: p.text,
+      url: p.hostedUrl,
+      location: p.categories?.location ?? null,
+      department: p.categories?.department ?? p.categories?.team ?? null,
+      team: p.categories?.team ?? null,
+      employment_type: p.categories?.commitment ?? null,
+      posted_at: p.createdAt ? new Date(p.createdAt).toISOString() : null,
+      description: descPlain ? descPlain.slice(0, MAX_DESCRIPTION_CHARS) : null,
+      salary_min: p.salaryRange?.min ?? null,
+      salary_max: p.salaryRange?.max ?? null,
+      salary_currency: p.salaryRange?.currency ?? null,
+      salary_period: p.salaryRange?.interval ?? null,
+    };
+  });
   return { ok: true, jobs, status: 200 };
 }
 
 async function fetchAshby(slug: string): Promise<JobsFetchResult> {
-  const url = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}`;
+  // includeCompensation=true asks Ashby to include comp on roles that opt in to display it.
+  const url = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}?includeCompensation=true`;
   const r = await fetch(url);
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const j = await r.json() as { jobs?: Array<{ id: string; title: string; jobUrl: string; locationName?: string; departmentName?: string; publishedAt?: string }> };
-  const jobs: JobPosting[] = (j.jobs ?? []).map((p) => ({
-    external_id: `ah:${p.id}`,
-    title: p.title,
-    url: p.jobUrl,
-    location: p.locationName ?? null,
-    department: p.departmentName ?? null,
-    posted_at: p.publishedAt ?? null,
-  }));
+  const j = await r.json() as { jobs?: Array<{
+    id: string;
+    title: string;
+    jobUrl: string;
+    locationName?: string;
+    departmentName?: string;
+    teamName?: string;
+    employmentType?: string;
+    publishedAt?: string;
+    descriptionPlain?: string;
+    descriptionHtml?: string;
+    compensation?: {
+      compensationTierSummary?: string;
+      summaryComponents?: Array<{ minValue?: number; maxValue?: number; currencyCode?: string; interval?: string }>;
+    };
+  }> };
+  const jobs: JobPosting[] = (j.jobs ?? []).map((p) => {
+    const descPlain = p.descriptionPlain ?? (p.descriptionHtml ? htmlToText(p.descriptionHtml) : null);
+    const comp = p.compensation?.summaryComponents?.[0];
+    return {
+      external_id: `ah:${p.id}`,
+      title: p.title,
+      url: p.jobUrl,
+      location: p.locationName ?? null,
+      department: p.departmentName ?? null,
+      team: p.teamName ?? null,
+      employment_type: p.employmentType ?? null,
+      posted_at: p.publishedAt ?? null,
+      description: descPlain ? descPlain.slice(0, MAX_DESCRIPTION_CHARS) : null,
+      salary_min: comp?.minValue ?? null,
+      salary_max: comp?.maxValue ?? null,
+      salary_currency: comp?.currencyCode ?? null,
+      salary_period: comp?.interval ?? null,
+    };
+  });
   return { ok: true, jobs, status: 200 };
 }
 
 async function fetchWorkable(slug: string): Promise<JobsFetchResult> {
+  // List endpoint has no description — only metadata. The description requires
+  // a per-job detail fetch (done lazily for NEW jobs only, capped per run).
   const url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(slug)}/jobs`;
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '' }) });
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const j = await r.json() as { results?: Array<{ id: string; title: string; shortcode?: string; locations?: Array<{ location_str?: string }>; department?: string; published_on?: string }> };
+  const j = await r.json() as { results?: Array<{ id: string; title: string; shortcode?: string; locations?: Array<{ location_str?: string }>; department?: string; published_on?: string; employment_type?: string }> };
   const jobs: JobPosting[] = (j.results ?? []).map((p) => ({
     external_id: `wk:${p.id}`,
     title: p.title,
     url: `https://apply.workable.com/${encodeURIComponent(slug)}/j/${p.shortcode ?? p.id}/`,
     location: p.locations?.[0]?.location_str ?? null,
     department: p.department ?? null,
+    employment_type: p.employment_type ?? null,
     posted_at: p.published_on ?? null,
+    // shortcode is what the detail endpoint keys off — stash it on team for now
+    // so the per-job fetch can find it (consumed and cleared below).
+    team: p.shortcode ?? null,
   }));
   return { ok: true, jobs, status: 200 };
+}
+
+// Workable per-job detail fetch — only called for NEW postings (the seen-jobs
+// diff already filtered most away), capped to MAX_DETAIL_FETCHES_PER_ENTITY.
+async function enrichWorkableJob(slug: string, shortcode: string): Promise<{
+  description?: string | null;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string | null;
+  salary_period?: string | null;
+}> {
+  try {
+    const url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(slug)}/jobs/${encodeURIComponent(shortcode)}`;
+    const r = await fetch(url);
+    if (!r.ok) return {};
+    const j = await r.json() as {
+      description?: string;
+      requirements?: string;
+      benefits?: string;
+      salary?: { salary_from?: number; salary_to?: number; salary_currency?: string };
+    };
+    const combined = [j.description, j.requirements, j.benefits].filter(Boolean).join('\n\n');
+    return {
+      description: combined ? htmlToText(combined).slice(0, MAX_DESCRIPTION_CHARS) : null,
+      salary_min: j.salary?.salary_from ?? null,
+      salary_max: j.salary?.salary_to ?? null,
+      salary_currency: j.salary?.salary_currency ?? null,
+      salary_period: 'year',
+    };
+  } catch {
+    return {};
+  }
 }
 
 const FETCHERS: Record<Provider, (slug: string) => Promise<JobsFetchResult>> = {
@@ -212,6 +354,10 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   const watch = await getWatchedAccounts(ctx.supabase, ctx.workspace_id);
   if (!watch.length) return result;
   const watchIds = watch.map((w) => w.entity_id);
+
+  // Workspace hiring filter — empty/missing = include all (preserves prior behavior).
+  const policy = await getPolicy(ctx.supabase, ctx.workspace_id);
+  const hiringFilter = policy.hiring_filter ?? null;
 
   // Pull full entity rows for the watchlist (chunked to dodge any URL caps).
   const entityById = new Map<string, { id: string; name: string; attributes: Record<string, unknown> }>();
@@ -323,12 +469,46 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       continue;
     }
 
-    // Diff against last-seen job IDs (stored on attributes). New IDs → signals.
+    // Diff against last-seen job IDs (stored on attributes). New IDs → candidates.
     const seenIds = new Set<string>(((ent.attributes.ats_seen_jobs as string[]) ?? []));
     const newJobs = fetchResult.jobs.filter((j) => !seenIds.has(j.external_id));
 
+    let detailFetches = 0;
     for (const job of newJobs) {
-      const body = `${ent.name} is hiring: ${job.title}${job.location ? ` (${job.location})` : ''}${job.department ? ` — ${job.department}` : ''}. ${job.url}`;
+      // 1. Workable per-job detail fetch (capped). The list endpoint doesn't
+      //    include description / salary; without these the classifier still
+      //    works on title alone, but the enricher loses most of its signal.
+      if (provider === 'workable' && job.team && detailFetches < MAX_DETAIL_FETCHES_PER_ENTITY) {
+        const detail = await enrichWorkableJob(slug!, job.team);
+        job.description = detail.description ?? job.description ?? null;
+        job.salary_min = detail.salary_min ?? job.salary_min ?? null;
+        job.salary_max = detail.salary_max ?? job.salary_max ?? null;
+        job.salary_currency = detail.salary_currency ?? job.salary_currency ?? null;
+        job.salary_period = detail.salary_period ?? job.salary_period ?? null;
+        job.team = null;    // we stashed shortcode here; clear it
+        detailFetches += 1;
+      }
+
+      // 2. Classify the role. Cached deploy-wide by title hash — first-ever sighting
+      //    of a title costs one LLM call; every subsequent workspace+entity is free.
+      const classification = await classifyRole(ctx.supabase, ctx.workspace_id, job.title, job.department);
+
+      // 3. Filter. Postings that don't match the workspace filter are dropped
+      //    here — no signal, no enrichment. We still mark them as seen so we
+      //    don't re-classify the same posting next run.
+      if (!passesHiringFilter(classification, hiringFilter)) {
+        result.skipped++;
+        continue;
+      }
+
+      // 4. Build the signal body. The old one-line body gave the enricher
+      //    nothing to chew on; the description excerpt is what lets it produce
+      //    role, tech stack, responsibilities, and salary facts.
+      const headline = `${ent.name} is hiring: ${job.title}${job.location ? ` (${job.location})` : ''}${job.department ? ` — ${job.department}` : ''}.`;
+      const roleLine = `Role: ${classification.family} / ${classification.seniority}${classification.is_exec ? ' (exec)' : ''}.`;
+      const descExcerpt = (job.description ?? '').slice(0, DESCRIPTION_EXCERPT_FOR_EMBEDDING);
+      const body = [headline, roleLine, descExcerpt, job.url].filter(Boolean).join('\n');
+
       const r = await callTool(ctx.supabase, sourceActor, 'create_signal', {
         entity_id: ent.id,
         type: 'hiring_post',
@@ -350,7 +530,18 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
           job_url: job.url,
           job_location: job.location ?? null,
           job_department: job.department ?? null,
+          job_team: job.team ?? null,
           job_posted_at: job.posted_at ?? null,
+          job_description: job.description ?? null,
+          job_employment_type: job.employment_type ?? null,
+          job_salary_min: job.salary_min ?? null,
+          job_salary_max: job.salary_max ?? null,
+          job_salary_currency: job.salary_currency ?? null,
+          job_salary_period: job.salary_period ?? null,
+          role_family: classification.family,
+          role_seniority: classification.seniority,
+          role_is_exec: classification.is_exec,
+          role_filter_passed: true,
           attribution_method: 'ats_direct',
         },
       });
@@ -358,7 +549,9 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       else result.errors.push(`create_signal failed for ${ent.name}/${job.title}: ${r.error}`);
     }
 
-    // Update seen set. Cap to recent 200 to keep the attribute compact.
+    // Update seen set with EVERY current job ID (passed-filter or not), so
+    // filtered-out postings don't get re-classified on the next run. Cap to
+    // recent 200 to keep the attribute compact.
     const allSeen = new Set<string>([...seenIds, ...fetchResult.jobs.map((j) => j.external_id)]);
     const trimmed = [...allSeen].slice(-200);
     await ctx.supabase.from('entities').update({

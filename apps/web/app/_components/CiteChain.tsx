@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { lowConfLabel } from '../_lib/confidence';
 
 interface ChainHop {
   fact_id: string;
@@ -19,6 +20,14 @@ interface ChainHop {
     payload: Record<string, unknown>;
     prompt_hash: string | null;
     created_at: string;
+  } | null;
+  signal: {
+    id: string;
+    type: string;
+    body_excerpt: string | null;
+    source_name: string | null;
+    source_url: string | null;
+    observed_at: string;
   } | null;
 }
 
@@ -98,7 +107,9 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
                 }}>
                   <div className="mono" style={{ color: '#5a7e5f' }}>
                     hop {i}: <span style={{ color: 'var(--text)' }}>{h.fact?.predicate ?? '?'} = {h.fact?.object_text ?? '?'}</span>
-                    {h.fact && <span className="subtle"> (conf={h.fact.confidence})</span>}
+                    {h.fact && lowConfLabel(h.fact.confidence) && (
+                      <span style={{ color: 'var(--accent-coral)' }}> · {lowConfLabel(h.fact.confidence)}</span>
+                    )}
                   </div>
                   {h.source_event && (
                     <div className="mono subtle" style={{ marginTop: '.25rem', fontSize: '.72rem', lineHeight: 1.55 }}>
@@ -107,6 +118,28 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
                       {h.source_event.prompt_hash && (
                         <> · prompt {h.source_event.prompt_hash.slice(0, 12)}…</>
                       )}
+                    </div>
+                  )}
+                  {h.signal && (
+                    <div style={{ marginTop: '.4rem', padding: '.45rem .6rem', background: 'var(--panel)', borderLeft: '2px solid #5a7e5f', borderRadius: 4 }}>
+                      <div className="mono" style={{ fontSize: '.7rem', color: '#5a7e5f', marginBottom: '.2rem' }}>
+                        ↳ from signal
+                      </div>
+                      {h.signal.body_excerpt && (
+                        <div style={{ fontSize: '.75rem', color: 'var(--text)', lineHeight: 1.45, marginBottom: '.3rem' }}>
+                          “{h.signal.body_excerpt}{h.signal.body_excerpt.length >= 280 ? '…' : ''}”
+                        </div>
+                      )}
+                      <div className="mono subtle" style={{ fontSize: '.68rem' }}>
+                        {h.signal.source_name && <>source: {h.signal.source_name} · </>}
+                        {h.signal.source_url && (
+                          <a href={h.signal.source_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-blue)' }}>
+                            open link ↗
+                          </a>
+                        )}
+                        {' · '}
+                        <span suppressHydrationWarning>{new Date(h.signal.observed_at).toLocaleString()}</span>
+                      </div>
                     </div>
                   )}
                   {h.fact?.content_hash && (

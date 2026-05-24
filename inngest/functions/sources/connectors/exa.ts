@@ -3,7 +3,7 @@
  *
  * Solves the JS-hydration problem (raw HTML fetch returns empty shells on most
  * modern sites). Use this for discovery across the open web, especially for:
- *   - Job boards (jobs.yc.com, workatastartup.com, wellfound.com)
+ *   - Listings or directories (job boards, marketplaces, listings sites)
  *   - News / blog mentions
  *   - Competitor research
  *   - Anything where you'd reach for "what's been written recently about X"
@@ -32,7 +32,8 @@
 import { createHash } from 'node:crypto';
 import { callTool } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
 const EXTRACT_MODEL = 'deepseek/deepseek-v4-flash:free';
 const EXA_API = 'https://api.exa.ai/search';
@@ -49,34 +50,7 @@ interface ExaResult {
   score?: number;
 }
 
-export const meta: ConnectorMeta = {
-  type: 'exa',
-  label: 'Exa (semantic web search)',
-  description: 'Search the open web with rendered page contents. Use for hiring discovery, news, anything JS-hydrated. Requires EXA_API_KEY.',
-  category: 'tool',
-  emits_signal_source: 'exa',
-  schedule_cron: '0 */6 * * *',
-  config_schema: {
-    fields: [
-      { name: 'query', label: 'Search query', kind: 'text', required: true,
-        help: 'Free-form. Example: "Founding GTM hire YC startup" or "Series A fintech AI announcement".' },
-      { name: 'intent', label: 'Intent', kind: 'text', default: 'discover',
-        help: '"discover" creates entities per company found. "watch" only emits signals on items mentioning watch_entities.' },
-      { name: 'watch_entities', label: 'Entities to watch (watch mode only)', kind: 'entity_picker_multi',
-        help: 'Leave empty for discover mode.' },
-      { name: 'include_domains', label: 'Restrict to domains (optional)', kind: 'string_array',
-        help: 'e.g. "ycombinator.com, workatastartup.com". Leave empty for the open web.' },
-      { name: 'exclude_domains', label: 'Exclude domains (optional)', kind: 'string_array' },
-      { name: 'roles', label: 'Role keywords (free text)', kind: 'string_array',
-        help: 'For hiring intents. Folded into result-extraction prompt.' },
-      { name: 'keywords', label: 'Other keywords (free text)', kind: 'string_array' },
-      { name: 'num_results', label: 'Max results per run', kind: 'number', default: 25 },
-      { name: 'since_hours', label: 'Look back (hours)', kind: 'number', default: 168 },
-      { name: 'search_type', label: 'Search type', kind: 'text', default: 'auto',
-        help: '"auto" (Exa picks), "keyword", or "neural" (semantic).' },
-    ],
-  },
-};
+export { exaMeta as meta } from '../registry_meta.js';
 
 function normalizeDomain(url: string | undefined | null): string | null {
   if (!url) return null;
@@ -94,15 +68,22 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   const query = (ctx.config.query as string)?.trim();
   if (!query) { result.errors.push('config.query is required'); return result; }
 
-  const watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
+  let watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
   const intentRaw = (ctx.config.intent as string) ?? 'auto';
   const intent: 'watch' | 'discover' = intentRaw === 'discover' ? 'discover'
     : intentRaw === 'watch' ? 'watch'
     : (watch.length > 0 ? 'watch' : 'discover');
 
+  // Watch-mode default: load every active (non-dropped) workspace account when
+  // the caller didn't pass an explicit list. Same pattern as web.ts and hn.ts.
   if (intent === 'watch' && !watch.length) {
-    result.errors.push('intent=watch requires watch_entities to be non-empty');
-    return result;
+    try {
+      watch = await getWatchedAccounts(ctx.supabase, ctx.workspace_id);
+    } catch (e) {
+      result.errors.push(`load active accounts failed: ${e instanceof Error ? e.message : String(e)}`);
+      return result;
+    }
+    if (!watch.length) return result; // no accounts to watch — no-op
   }
 
   const include_domains = (ctx.config.include_domains as string[] ?? []).filter(Boolean);
@@ -112,6 +93,12 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   const search_type = ((ctx.config.search_type as string) ?? 'auto') as 'auto' | 'keyword' | 'neural';
   const roles = (ctx.config.roles as string[] ?? []).filter(Boolean);
   const keywords = (ctx.config.keywords as string[] ?? []).filter(Boolean);
+
+  // Workspace-configured blocklist for media publications / never-target brands.
+  // Defaults to empty so the same code runs vertical-neutral; customers in
+  // different verticals provide their own list via workspaces.policy.
+  const policyRow = await ctx.supabase.from('workspaces').select('policy').eq('id', ctx.workspace_id).maybeSingle();
+  const publicationBlocklist = (((policyRow.data?.policy as Record<string, unknown> | null)?.publication_blocklist) as string[] | undefined ?? []).filter(Boolean);
 
   const startPublishedDate = new Date(Date.now() - since_hours * 3600 * 1000).toISOString();
 
@@ -169,7 +156,7 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   let companyByExaId = new Map<string, { name: string; domain: string | null }>();
   if (intent === 'discover') {
     try {
-      const detailed = await batchExtractCompaniesDetailed(fresh, { roles, keywords }, ((ctx.config.model as string) ?? EXTRACT_MODEL));
+      const detailed = await batchExtractCompaniesDetailed(fresh, { roles, keywords, publicationBlocklist }, ((ctx.config.model as string) ?? EXTRACT_MODEL));
       companyByExaId = detailed.companies;
       if (detailed.silently_dropped.length) {
         result.errors.push(`LLM omitted ${detailed.silently_dropped.length} ids from response (spec violation)`);
@@ -201,14 +188,18 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     let matched_alias: string;
 
     if (intent === 'watch') {
-      const haystack = `${er.title ?? ''} ${er.url} ${er.text ?? ''} ${er.author ?? ''}`.toLowerCase();
-      const matched = watch.find((w) => {
-        const cands = [w.name, ...(w.aliases ?? [])].filter(Boolean).map((s) => s.toLowerCase());
-        return cands.some((c) => haystack.includes(c));
-      });
-      if (!matched) { result.skipped++; continue; }
-      entity_id = matched.entity_id;
-      matched_alias = matched.name;
+      const haystack = `${er.title ?? ''} ${er.url} ${er.text ?? ''} ${er.author ?? ''}`;
+      let pick: { entity_id: string; name: string; alias: string } | null = null;
+      for (const w of watch) {
+        const aliases = ('aliases' in w && Array.isArray((w as any).aliases))
+          ? (w as { aliases: string[] }).aliases
+          : buildAliases(w.name, null);
+        const aliasHit = matchAlias(haystack, aliases);
+        if (aliasHit) { pick = { entity_id: w.entity_id, name: w.name, alias: aliasHit }; break; }
+      }
+      if (!pick) { result.skipped++; continue; }
+      entity_id = pick.entity_id;
+      matched_alias = pick.alias;
     } else {
       const company = companyByExaId.get(er.id);
       if (!company || !company.name) { result.skipped++; continue; }
@@ -247,6 +238,7 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       body_for_embedding: body,
       structured_tags: {
         signal_source: 'exa',
+        source_id: ctx.source_id,
         exa_id: er.id,
         item_url: er.url,
         author: er.author,
@@ -268,7 +260,7 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
 
 export async function batchExtractCompanies(
   results: ExaResult[],
-  hints: { roles: string[]; keywords: string[] },
+  hints: { roles: string[]; keywords: string[]; publicationBlocklist?: string[] },
   model: string,
 ): Promise<Map<string, { name: string; domain: string | null }>> {
   const { companies } = await batchExtractCompaniesDetailed(results, hints, model);
@@ -280,7 +272,7 @@ export async function batchExtractCompanies(
  *  the connector to log spec violations and by debug scripts. */
 export async function batchExtractCompaniesDetailed(
   results: ExaResult[],
-  hints: { roles: string[]; keywords: string[] },
+  hints: { roles: string[]; keywords: string[]; publicationBlocklist?: string[] },
   model: string,
 ): Promise<{
   companies: Map<string, { name: string; domain: string | null }>;
@@ -295,14 +287,29 @@ export async function batchExtractCompaniesDetailed(
   if (hints.keywords.length) filterClauses.push(`Strongly prefer items matching one of: ${hints.keywords.join(' | ')}.`);
   const filterBlock = filterClauses.length ? `\n${filterClauses.join('\n')}\n` : '';
 
-  const sysPrompt = `For each web page, identify the COMPANY most worth tracking:
+  // Workspace-specific brand names to always reject. Comes from
+  // workspaces.policy.publication_blocklist. Empty by default.
+  const blocklistLine = (hints.publicationBlocklist?.length)
+    ? `\nThe following names are publications/content sites this workspace has marked as never-targets — REJECT them with reason "media_publication": ${hints.publicationBlocklist.join(', ')}.\n`
+    : '';
+
+  const sysPrompt = `For each web page, identify the COMPANY most worth tracking as a sales target — a real operating company a seller would want in their pipeline.
 - News/funding: the subject company (the one that raised, launched, or is featured).
 - Job posts: the hiring company.
 - Blog or op-ed: the publisher of the post if a real company; otherwise the company the post is about.
-- Comparisons or listicles ("best X 2026", "7 tools compared"): pick the FIRST 1-2 companies recommended or featured. Do not bail with "too many subjects" - pick the first plausible one.
-- Forum / community discussion threads: extract only if a specific company is clearly the subject.${filterBlock}
+- Comparisons or listicles: pick the FIRST 1-2 companies recommended or featured. Do not bail with "too many subjects" - pick the first plausible one.
+- Forum / community discussion threads: extract only if a specific company is clearly the subject.${filterBlock}${blocklistLine}
 
-NEVER return: a user handle (lowercase one-word), a generic noun ("the team"), a person's name, or an invented company.
+NEVER return:
+- A user handle, slug, or lowercase one-word string.
+- A media publication, news outlet, blog network, content site, or industry-trade publication — even if it is a real company. Publishers write ABOUT companies; they are not themselves the target.
+- A generic noun or pronoun ("the team", "the company", "our customers").
+- A product feature, marketing phrase, or slide-deck buzzword. If the candidate name reads like a tagline rather than a brand, reject as buzzword_phrase.
+- A person's name.
+- An invented or hallucinated company. If you cannot tie the name to text in the page, reject.
+- An article title or descriptive headline ("Best X for Y", "How to Z", "Top N tools"). These are content, not companies.
+
+CAPITALIZATION RULE: a real company name begins with a capital letter and is not a generic phrase. If you would return it in all-lowercase rather than title-case, reject as not_a_company.
 
 EVERY input id MUST appear in exactly one of "companies" or "rejected". Do not omit any.
 
@@ -313,7 +320,7 @@ Return JSON:
 }
 
 reason_code is one of:
-"topic_only_no_subject" | "forum_discussion_no_company" | "doesnt_match_filter" | "non_english" | "paywalled_or_thin_content" | "personal_blog_no_company" | "ambiguous_multi_subject" | "user_handle_not_company" | "person_not_company"`;
+"topic_only_no_subject" | "forum_discussion_no_company" | "doesnt_match_filter" | "non_english" | "paywalled_or_thin_content" | "personal_blog_no_company" | "ambiguous_multi_subject" | "user_handle_not_company" | "person_not_company" | "media_publication" | "not_a_company" | "buzzword_phrase" | "article_title"`;
 
   const userPayload = JSON.stringify(results.map((r) => ({
     id: r.id,
@@ -337,11 +344,15 @@ reason_code is one of:
     rejected?: Array<{ id: string; reason: string }>;
   };
   const companies = new Map<string, { name: string; domain: string | null }>();
+  const rejected = new Map<string, string>();
   for (const c of parsed.companies ?? []) {
     if (!c.id || !c.name) continue;
-    companies.set(c.id, { name: c.name.trim(), domain: c.domain?.trim() || null });
+    const name = c.name.trim();
+    const domain = c.domain?.trim() || null;
+    const reject = validateCompanyName(name, domain, hints.publicationBlocklist ?? []);
+    if (reject) { rejected.set(c.id, reject); continue; }
+    companies.set(c.id, { name, domain });
   }
-  const rejected = new Map<string, string>();
   for (const r of parsed.rejected ?? []) {
     if (r.id && r.reason) rejected.set(r.id, r.reason);
   }

@@ -22,7 +22,7 @@
  */
 
 import { callTool } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
@@ -38,38 +38,7 @@ interface GhEvent {
 
 const HIGH_SIGNAL_TYPES = ['ReleaseEvent', 'PublicEvent', 'CreateEvent', 'MemberEvent', 'ForkEvent'];
 
-export const meta: ConnectorMeta = {
-  type: 'github',
-  label: 'GitHub Events',
-  description: 'Watch GitHub orgs for releases, new repos, new members. Auth via GITHUB_TOKEN env (5000 req/hr) or unauth (60 req/hr).',
-  category: 'preset',
-  emits_signal_source: 'github',
-  schedule_cron: '*/30 * * * *',  // every 30 min
-  config_schema: {
-    fields: [
-      {
-        name: 'watch_entities',
-        label: 'Companies to watch',
-        kind: 'entity_picker_multi',
-        required: true,
-        help: 'Add an alias starting with "github:<org>" (e.g. "github:stripe") for each entity. If absent, uses lowercased entity name.',
-      },
-      {
-        name: 'event_types',
-        label: 'Event types',
-        kind: 'string_array',
-        default: HIGH_SIGNAL_TYPES,
-        help: 'Defaults to release / new repo / new contributor / fork. Add WatchEvent, IssuesEvent, etc. for more noise.',
-      },
-      {
-        name: 'since_hours',
-        label: 'Look back (hours)',
-        kind: 'number',
-        default: 24,
-      },
-    ],
-  },
-};
+export { githubMeta as meta } from '../registry_meta.js';
 
 function resolveOrg(w: WatchEntity): string {
   const aliasOrg = (w.aliases ?? []).find((a) => a.toLowerCase().startsWith('github:'));
@@ -138,6 +107,7 @@ const github: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult
           body_for_embedding: summary,
           structured_tags: {
             signal_source: 'github',
+            source_id: ctx.source_id,
             gh_event_id: ev.id,
             gh_event_type: ev.type,
             gh_org: org,

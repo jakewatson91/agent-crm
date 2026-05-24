@@ -8,7 +8,8 @@
  * so callers can format / threshold however they want.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { cronToMinIntervalMinutes } from './cron.js';
+import { cronToMinIntervalMinutes } from './cron.ts';
+import { getSourceMetrics } from './source_metrics.ts';
 import { createHash } from 'node:crypto';
 
 export type Severity = 'red' | 'yellow' | 'green';
@@ -44,6 +45,13 @@ export const SWEEP_THRESHOLDS = {
   score_min_entities: 20,
 
   coupling_red: 0.50,
+
+  // Per-source dead-weight: source has produced >= N signals in 7d but the
+  // enricher has extracted 0 facts from any of them. Either the matcher
+  // can't link the signals to entities, or no subscription's embedding caught
+  // them, or the enricher saw them and found nothing worth recording.
+  // Whichever it is, the source is spending its budget for no return.
+  dead_weight_min_signals: 5,
 };
 
 const HOUR = 3600_000;
@@ -391,6 +399,41 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
       threshold: `>= ${fmtPct(T.coupling_red)}`,
       action: sev === 'red' ? `new signals not triggering rescore - check enricher to scoreAndAssert path` : undefined,
     });
+  }
+
+  // Per-source dead-weight (7d window). One YELLOW per offending source —
+  // operator can decide which to drop or rewrite. No auto-action here; the
+  // mutation belongs in the L2 introspection loop.
+  //
+  // Guarded on the presence of any agent_dispatch_result events: this event is
+  // what fact_yield reads from, and it was added late. Before the first
+  // enricher run emits one, every source would look dead. Skip until we have
+  // signal — better to be silent than to flag everything.
+  try {
+    const dispatchProbe = await sb.from('events')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspace_id)
+      .eq('action', 'agent_dispatch_result')
+      .gte('created_at', since7d);
+    const dispatchCount = dispatchProbe.count ?? 0;
+    if (dispatchCount > 0) {
+      const metrics7d = await getSourceMetrics(sb, workspace_id, 24 * 7);
+      for (const m of metrics7d) {
+        if (!m.active) continue;
+        if (m.signals < T.dead_weight_min_signals) continue;
+        if (m.fact_yield > 0) continue;
+        out.push({
+          id: `source_dead_weight:${m.name}`,
+          severity: 'yellow',
+          metric: `signals_7d=${m.signals}  fact_yield=0  agent_fire=${(m.agent_fire_rate * 100).toFixed(0)}%`,
+          threshold: `fact_yield > 0 when signals_7d >= ${T.dead_weight_min_signals}`,
+          action: `source "${m.name}" is firing but producing no facts — rewrite query, add a matching subscription, or drop`,
+        });
+      }
+    }
+  } catch (e) {
+    // Non-fatal: sweep should still return the other checks even if metrics fail.
+    console.error('source_dead_weight check failed:', (e as Error)?.message ?? e);
   }
 
   return out;

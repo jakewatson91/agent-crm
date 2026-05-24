@@ -61,7 +61,7 @@ export default function NewWorkspacePage() {
       });
       const j = await r.json();
       if (!r.ok) { setErr(j.error ?? 'create failed'); setSubmitting(false); return; }
-      router.push(`/workspace/${j.workspace_id}/channels`);
+      router.push(`/workspace/${j.workspace_id}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setSubmitting(false);

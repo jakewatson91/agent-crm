@@ -3,13 +3,13 @@
  *
  *   1. WATCH (default when watch_entities is non-empty)
  *      Items are filtered to those mentioning a known entity. Signal goes on that entity.
- *      Use case: "watch the Lenny's Newsletter for posts mentioning {Acme, Beta}".
+ *      Use case: a newsletter or feed for posts mentioning entities you already track.
  *
  *   2. DISCOVER (default when watch_entities is empty)
  *      Each extracted item carries a company_name. The connector dedupes-or-creates
  *      an entity per company name, then emits a signal on that entity.
- *      Use case: "watch jobs.yc.com for GTM hires" — every matching job post creates
- *      or attaches to an entity for the company that posted it.
+ *      Use case: a hiring board scanned for roles — every matching post creates or
+ *      attaches to an entity for the company that posted it.
  *
  * Both modes accept any extra criteria (roles, keywords, locations, etc.) as free-form
  * fields in config. The connector folds them into the LLM extraction prompt as filters.
@@ -19,9 +19,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool } from '@agent-crm/tools';
+import { callTool, compress } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
-import type { Connector, ConnectorContext, ConnectorResult, ConnectorMeta } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
 const EXTRACT_MODEL = 'deepseek/deepseek-v4-flash:free';
 
@@ -36,70 +37,7 @@ export interface ExtractedItem {
   guid: string;
 }
 
-export const meta: ConnectorMeta = {
-  type: 'web',
-  label: 'Web / RSS scrape',
-  description: 'Fetch any URL. Auto-detects RSS; falls back to HTML + LLM extraction. Watch mode filters to known entities; discover mode creates entities per company found. Best for static URLs and RSS feeds.',
-  category: 'tool',
-  emits_signal_source: 'web',
-  schedule_cron: '0 */6 * * *',
-  config_schema: {
-    fields: [
-      {
-        name: 'url',
-        label: 'URL to fetch',
-        kind: 'text',
-        required: true,
-        help: 'e.g. https://acme.com/blog, https://www.ycombinator.com/jobs, https://substack.com/feed.xml',
-      },
-      {
-        name: 'intent',
-        label: 'Intent',
-        kind: 'text',
-        default: 'auto',
-        help: '"watch" (filter to known entities), "discover" (create entities per item), "auto" (watch if watch_entities populated, else discover).',
-      },
-      {
-        name: 'watch_entities',
-        label: 'Entities to watch (watch mode only)',
-        kind: 'entity_picker_multi',
-        help: 'Leave empty for discover mode. Required for watch mode.',
-      },
-      {
-        name: 'roles',
-        label: 'Role keywords (free text)',
-        kind: 'string_array',
-        help: 'Comma-separated. Folded into the extraction prompt as a filter. Example: "Founding GTM, GTM Engineer, Growth, Automation Engineer".',
-      },
-      {
-        name: 'keywords',
-        label: 'Other keywords (free text)',
-        kind: 'string_array',
-        help: 'Comma-separated. Same as roles but for non-role criteria. Example: "remote, equity > 1%, San Francisco".',
-      },
-      {
-        name: 'fetch_mode',
-        label: 'Fetch mode',
-        kind: 'text',
-        default: 'auto',
-        help: '"auto" (detect RSS vs HTML), "rss" (force feed parsing), "html" (force LLM extraction).',
-      },
-      {
-        name: 'since_hours',
-        label: 'Look back (hours)',
-        kind: 'number',
-        default: 168,
-        help: 'Skip items older than this. Default 168 = 1 week.',
-      },
-      {
-        name: 'extraction_prompt',
-        label: 'Extraction hint (HTML mode only)',
-        kind: 'textarea',
-        help: 'Optional. e.g. "Find job listings. Each has a role, company, location, posted date."',
-      },
-    ],
-  },
-};
+export { webMeta as meta } from '../registry_meta.js';
 
 function looksLikeXmlFeed(headers: Headers, body: string): boolean {
   const ct = headers.get('content-type') ?? '';
@@ -168,12 +106,15 @@ async function extractWithLLM(
   opts: { hint: string; intent: 'watch' | 'discover'; roles: string[]; keywords: string[] },
   model: string,
 ): Promise<ExtractedItem[]> {
-  const stripped = html
-    .replace(/<head[\s\S]*?<\/head>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '');
-  const truncated = stripped.slice(0, 30000);
+  // compress() runs HTML→markdown, URL collapse to [ref:N] markers, and
+  // whitespace dedup. Typically cuts char count 60–80% on real pages, which
+  // translates directly into fewer tokens through the extractor model.
+  // Refs are surfaced in the system prompt so the LLM can still resolve URLs.
+  const compressed = await compress(html, { max_chars: 30000 });
+  const truncated = compressed.text;
+  const refsBlock = compressed.refs.length
+    ? `\n\nURL refs (referenced as [ref:N] in body):\n${compressed.refs.map((r) => `[ref:${r.id}] ${r.url}`).join('\n')}`
+    : '';
 
   const filterClauses: string[] = [];
   if (opts.roles.length) filterClauses.push(`ROLE FILTER (case-insensitive substring match): only include items whose role/title matches one of: ${opts.roles.join(' | ')}`);
@@ -202,7 +143,7 @@ Resolve relative URLs against ${sourceUrl}. Skip nav/footer/cookie banners. Max 
       // OpenAI requires the literal word "json" somewhere in the messages when using
       // response_format=json_object. The system prompt already says "Output strictly:" with
       // a JSON shape, but OpenAI's check is text-based and looks for the literal word.
-      { role: 'user', content: `Extract items from this HTML and return JSON in the format described above:\n\n${truncated}` },
+      { role: 'user', content: `Extract items from this page and return JSON in the format described above. The body has been converted to markdown and long URLs replaced with [ref:N] markers — substitute the real URL from the refs table when populating "url".\n\n${truncated}${refsBlock}` },
     ],
   });
   const parsed = JSON.parse(llm.text) as { items: Array<{ title: string; url: string; body: string; published_at?: string; company_name?: string; company_domain?: string }> };
@@ -241,10 +182,10 @@ function looksLikeHandle(name: string): boolean {
   return /^[a-z][a-z0-9_-]+$/.test(s);
 }
 
-/** RSS feeds (TechCrunch, Substacks, etc.) don't tell us which company each post is
- *  about. In discover mode we ask the LLM in one batched call. Returns the same
- *  items array with company_name and company_domain populated when extractable.
- *  Captures rejection reasons for the audit trail. */
+/** RSS feeds don't tell us which company each post is about. In discover mode we
+ *  ask the LLM in one batched call. Returns the same items array with company_name
+ *  and company_domain populated when extractable. Captures rejection reasons for
+ *  the audit trail. */
 export async function enrichItemsWithCompanyName(
   items: ExtractedItem[],
   opts: { hint: string; roles: string[]; keywords: string[] },
@@ -332,7 +273,7 @@ reason_code is one of:
 const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> => {
   const result: ConnectorResult = { signals_created: 0, entities_created: 0, skipped: 0, errors: [] };
   const url = (ctx.config.url as string)?.trim();
-  const watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
+  let watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
   const fetchMode = ((ctx.config.fetch_mode as string) ?? 'auto') as 'auto' | 'rss' | 'html';
   const since_hours = (ctx.config.since_hours as number) ?? 168;
   const extraction_hint = (ctx.config.extraction_prompt as string) ?? '';
@@ -346,9 +287,18 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     : (watch.length > 0 ? 'watch' : 'discover');
 
   if (!url) { result.errors.push('config.url is required'); return result; }
+
+  // Watch-mode default: load every active (non-dropped) workspace account when
+  // the caller didn't pass an explicit list. Setup-first — connector users
+  // don't maintain entity-ID lists by hand. Mirrors HN's behavior.
   if (intent === 'watch' && !watch.length) {
-    result.errors.push('intent=watch requires watch_entities to be non-empty');
-    return result;
+    try {
+      watch = await getWatchedAccounts(ctx.supabase, ctx.workspace_id);
+    } catch (e) {
+      result.errors.push(`load active accounts failed: ${e instanceof Error ? e.message : String(e)}`);
+      return result;
+    }
+    if (!watch.length) return result; // no accounts to watch — no-op
   }
 
   let body: string; let headers: Headers;
@@ -431,6 +381,9 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
 
   const sourceActor = { workspace_id: ctx.workspace_id, actor_kind: 'agent' as const, actor_id: `source:web:${ctx.source_id.slice(0, 8)}` };
 
+  const policyRow = await ctx.supabase.from('workspaces').select('policy').eq('id', ctx.workspace_id).maybeSingle();
+  const publicationBlocklist = (((policyRow.data?.policy as Record<string, unknown> | null)?.publication_blocklist) as string[] | undefined ?? []).filter(Boolean);
+
   for (const it of items) {
     if (seenGuids.has(it.guid)) { result.skipped++; continue; }
 
@@ -438,14 +391,18 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     let matched_alias: string;
 
     if (intent === 'watch') {
-      const haystack = `${it.title} ${it.url} ${it.body}`.toLowerCase();
-      const matched = watch.find((w) => {
-        const candidates = [w.name, ...(w.aliases ?? [])].filter(Boolean).map((s) => s.toLowerCase());
-        return candidates.some((c) => haystack.includes(c));
-      });
-      if (!matched) { result.skipped++; continue; }
-      entity_id = matched.entity_id;
-      matched_alias = matched.name;
+      const haystack = `${it.title} ${it.url} ${it.body}`;
+      let pick: { entity_id: string; name: string; alias: string } | null = null;
+      for (const w of watch) {
+        const aliases = ('aliases' in w && Array.isArray((w as any).aliases))
+          ? (w as { aliases: string[] }).aliases
+          : buildAliases(w.name, null);
+        const aliasHit = matchAlias(haystack, aliases);
+        if (aliasHit) { pick = { entity_id: w.entity_id, name: w.name, alias: aliasHit }; break; }
+      }
+      if (!pick) { result.skipped++; continue; }
+      entity_id = pick.entity_id;
+      matched_alias = pick.alias;
     } else {
       // discover: dedup-or-create entity per company_name
       const companyName = it.company_name?.trim();
@@ -466,6 +423,8 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
         entity_id = existing.id;
         matched_alias = existing.name;
       } else {
+        const reject = validateCompanyName(companyName, companyDomain, publicationBlocklist);
+        if (reject) { result.skipped++; continue; }
         const created = await callTool(ctx.supabase, sourceActor, 'create_account', {
           name: companyName,
           attributes: {
@@ -492,6 +451,7 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       body_for_embedding: `${it.title} — ${it.body}  (${it.url})`,
       structured_tags: {
         signal_source: 'web',
+        source_id: ctx.source_id,
         source_url: url,
         intent,
         fetch_mode: isFeed ? 'rss' : 'html',

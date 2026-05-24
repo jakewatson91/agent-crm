@@ -16,12 +16,56 @@
  * single-tenant fallback.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chatComplete, type ChatCompleteArgs, type ChatCompleteResult } from '@agent-crm/primitives';
-import { getPolicy } from './policy.js';
+import { chatComplete, chatCompleteStream, type ChatCompleteArgs, type ChatCompleteResult, type ChatStreamDelta } from '@agent-crm/primitives';
+import { getPolicy } from './policy.ts';
 
 export interface ChatForWorkspaceArgs extends ChatCompleteArgs {
   /** Lets the helper pick policy.llm.drafter_model when behavior === 'drafter'. */
-  behavior?: 'drafter' | 'enricher' | 'claim_poster' | 'scoring' | 'wizard' | 'intake' | 'connector_extract';
+  behavior?: 'drafter' | 'enricher' | 'claim_poster' | 'scoring' | 'wizard' | 'intake' | 'connector_extract' | 'curator';
+}
+
+async function resolveArgs(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  args: ChatForWorkspaceArgs,
+): Promise<ChatCompleteArgs> {
+  const policy = await getPolicy(supabase, workspace_id);
+  const llm = policy.llm ?? {};
+
+  const envOpenAI       = policy.env?.OPENAI_API_KEY;
+  const envOpenRouter   = policy.env?.OPENROUTER_API_KEY;
+  const envDeepseek     = policy.env?.DEEPSEEK_API_KEY;
+  const envDefaultModel = policy.env?.DEFAULT_CHAT_MODEL;
+  const envDrafterModel = policy.env?.DRAFTER_MODEL;
+
+  let model = args.model;
+  const drafterModel = envDrafterModel || llm.drafter_model;
+  const defaultModel = envDefaultModel || llm.default_chat_model;
+  if (args.behavior === 'drafter' && drafterModel) model = drafterModel;
+  else if (defaultModel && model === args.model) model = defaultModel;
+
+  return {
+    ...args,
+    model,
+    api_keys: {
+      openai: envOpenAI || llm.openai_api_key,
+      openrouter: envOpenRouter || llm.openrouter_api_key,
+      deepseek: envDeepseek || llm.deepseek_api_key,
+    },
+  };
+}
+
+/**
+ * Resolve the deepseek API key for a workspace. Used by the AI SDK migration
+ * (chat intake) which constructs the deepseek provider per-request.
+ * Returns null if no key is configured.
+ */
+export async function resolveDeepseekKey(
+  supabase: SupabaseClient,
+  workspace_id: string,
+): Promise<string | null> {
+  const policy = await getPolicy(supabase, workspace_id);
+  return policy.env?.DEEPSEEK_API_KEY || policy.llm?.deepseek_api_key || null;
 }
 
 export async function chatCompleteForWorkspace(
@@ -29,27 +73,14 @@ export async function chatCompleteForWorkspace(
   workspace_id: string,
   args: ChatForWorkspaceArgs,
 ): Promise<ChatCompleteResult> {
-  const policy = await getPolicy(supabase, workspace_id);
-  const llm = policy.llm ?? {};
+  return chatComplete(await resolveArgs(supabase, workspace_id, args));
+}
 
-  // Pick model: caller > drafter override > workspace default > caller fallback.
-  let model = args.model;
-  if (args.behavior === 'drafter' && llm.drafter_model) model = llm.drafter_model;
-  else if (llm.default_chat_model && model === args.model) {
-    // Only override the caller's model if they passed the legacy gpt-4o-mini default
-    // or didn't pick something specific. We don't want a policy override to silently
-    // change a deliberate per-call choice (e.g. fallback to gpt-4o-mini for JSON-retry).
-    // For now: respect policy default unconditionally; callers who want to pin can
-    // route through chatComplete directly.
-    model = llm.default_chat_model;
-  }
-
-  return chatComplete({
-    ...args,
-    model,
-    api_keys: {
-      openai: llm.openai_api_key,
-      openrouter: llm.openrouter_api_key,
-    },
-  });
+export async function chatCompleteStreamForWorkspace(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  args: ChatForWorkspaceArgs,
+  onDelta: (delta: ChatStreamDelta) => void,
+): Promise<ChatCompleteResult> {
+  return chatCompleteStream(await resolveArgs(supabase, workspace_id, args), onDelta);
 }
