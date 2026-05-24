@@ -20,7 +20,11 @@
     "agent:new": "tsx scripts/create_agent.ts",
     "agent:list": "tsx scripts/list_agents.ts",
     "loop": "tsx scripts/run_loop.ts",
-    "sweep": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/sweep.ts"
+    "sweep": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/sweep.ts",
+    "self-host:bootstrap": "bash self-host/supabase/bootstrap.sh",
+    "self-host:supabase:up": "cd self-host/supabase/local && docker compose up -d",
+    "self-host:supabase:down": "cd self-host/supabase/local && docker compose down",
+    "self-host:migrate": "tsx scripts/apply_all_migrations.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
