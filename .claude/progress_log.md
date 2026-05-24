@@ -1103,3 +1103,34 @@ Files: `supabase/migrations/0029_role_classifications.sql`, `packages/tools/src/
 - Blind-scored quality eval at N=30+ per platform (skim suggested comparable quality, no rigorous test).
 - HubSpot GraphQL endpoint as an alternate read path (verified via web research that HubSpot's official MCP uses REST tool loops, not GraphQL, so the REST comparison is honest).
 - TCO including platform fees in detail — the writeup notes platform fees dominate at small scale but doesn't model every plan tier.
+
+## 2026-05-23 — Twenty-steals Phase 1 (auth + members + API keys + Docker) + Phase 2 partial (kind → is_a fact, dual-state)
+
+### Phase 1 (shipped, commit 0ba887e)
+- Supabase Auth via `@supabase/ssr` magic link. Middleware gates `/workspace/*` + protected `/api/*` (public allowlist: `/login`, `/auth/*`, `/invite/*`, `/api/mcp` Bearer-auth'd, `/api/inngest` signed). New `apps/web/app/_lib/{auth,supabase-server,supabase-browser}.ts`. Login page + OAuth callback route. `app/page.tsx` switched to user-scoped client so RLS filters workspaces to membership.
+- Workspace members + roles + invites. Migration `0030_auth_and_api_keys.sql`: role check `owner|admin|member|viewer` on existing `workspace_members`, new `workspace_invitations` table + RLS. Five member routes (`list/invite/remove/role`) + three invitation routes (`list/accept/revoke`). `/invite/[token]/page.tsx` accept flow. `workspaces/create/route.ts` finally inserts the (owner) row — closes the long-standing gap where `workspace_members` was never written. Settings UI gets Members + API Keys tabs.
+- API keys for `/api/mcp`. Format `acrm_<43-char base64url>`, SHA-256 hashed at rest, prefix-only after creation. `resolveActor(req)` matches Bearer header, looks up `workspace_api_keys WHERE revoked_at IS NULL`, sets workspace_id + actor_kind='user' + actor_id=created_by, touches last_used_at fire-and-forget. Legacy `x-workspace-id` fallback gated on `NODE_ENV !== 'production'`.
+- Docker self-host. `docker-compose.yml` + `apps/web/Dockerfile`. Two services: web + Inngest dev. Documented caveat: Supabase Cloud stays as auth+data layer (full self-host of Supabase is Phase 3). README updated with self-host walkthrough.
+- `scripts/bootstrap_owner.ts <email>` claims existing pre-auth workspaces for a given user. Idempotent.
+
+### Phase 2 partial (shipped same commit, dual-state)
+- Migration `0031_kind_as_fact.sql`. Backfilled `(entity, is_a, kind)` facts for all 2,125 existing entities (0 missing, 100% match on spot-check). New `facts_predicate_object_active_idx`. `workspaces.policy.scorable_types` defaulted to `['account']`. `record_event()` SQL function replaced (preserves 0008 body, adds atomic `is_a` fact insert to `create_account`/`create_contact` branches).
+- New helper `packages/tools/src/entity_types.ts` — `getEntityTypes`, `isEntityOfType`, `getEntityTypesBatch`, `entityIdsOfType`, `listWorkspaceTypes`. Exported from `@agent-crm/tools`.
+- Production read sites migrated to derive type from is_a facts: `packages/tools/src/scoring.ts` (both `scoreEntity` prompt + `scoreAndAssert` gate, now reads `policy.scorable_types`), `packages/tools/src/reads.ts` (`listEntities`/`getEntity`/`lookupEntity` populate `kind` from is_a in the same round trip), `apps/web/app/api/entities/index/route.ts` (returns `types: string[]` per entity), `apps/web/app/workspace/[ws]/entities/page.tsx` + `entities/[entity_id]/page.tsx` (UI walks `types` array).
+
+### Key decision: no registry table
+Original plan sketch said `workspace_object_types` registry. User pushed back ("not sold on enum types"); landed on killing the kind column entirely + asserting types as facts. Reasons documented in plan: parallel data model is two sources of truth; drift/typo concerns surface naturally via the active fact set; aligns with "facts are the data model" thesis.
+
+### Scope reality + decision to stop mid-implementation
+Explore agent estimated 8 read sites for the kind migration. Real count is ~30 (production paths: ~12; scripts/benchmarks: ~12; Inngest connector cron paths: ~9). Migrated the production paths I could verify safely (5 sites). System is now in stable dual-read/dual-write: column still populated by `record_event`, migrated sites read facts, non-migrated sites still read the column. Spot-check confirms column.kind matches the is_a fact for sampled entities. Migration 0032 (drop the column) + `find_similar_entities` RPC rewrite deferred until the rest of the codebase is migrated. Finish plan saved in `enumerated-foraging-spindle.md`.
+
+### Verified end-to-end
+- `/` redirects unauth → `/login`. Magic-link UI renders.
+- `POST /api/mcp` returns 401 without Bearer, 200 with valid `acrm_...` Bearer (25 tools listed), 401 again after revoke.
+- `last_used_at` updates on each Bearer call.
+- Migration 0030 applied cleanly. RLS policies on `workspace_members` + `workspace_invitations` + `workspace_api_keys` confirmed via direct pg query.
+- Migration 0031 applied cleanly. 2,125 entities ↔ 2,125 active is_a facts.
+- Web app typechecks (only pre-existing TS5097 noise in workspace packages, unrelated to this work).
+
+### Files
+Migrations: `0030_auth_and_api_keys.sql`, `0031_kind_as_fact.sql`. New helpers: `apps/web/app/_lib/{auth,supabase-server,supabase-browser}.ts`, `apps/web/middleware.ts`, `packages/tools/src/entity_types.ts`. New routes: `apps/web/app/{login,auth/callback,invite/[token]}/...`, `apps/web/app/api/workspace/{members,invitations,api-keys}/...` (10 routes). New UI: `_components/{MembersSection,ApiKeysSection}.tsx`. New scripts: `scripts/bootstrap_owner.ts`. Infrastructure: `docker-compose.yml`, `apps/web/Dockerfile`. Modified for Phase 2: `packages/tools/src/{scoring,reads,index}.ts`, `apps/web/app/api/entities/index/route.ts`, `apps/web/app/workspace/[ws]/entities/{page,[entity_id]/page}.tsx`. Plan: `enumerated-foraging-spindle.md`.
