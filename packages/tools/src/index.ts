@@ -30,7 +30,7 @@ export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, 
 export { cronToMinIntervalMinutes } from './cron.ts';
 export { compress, estimateTokens, type CompressOptions, type CompressResult, type UrlRef } from './compress.ts';
 export { hasValueAlignedFact } from './action_selector.ts';
-export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, type ChatForWorkspaceArgs } from './chat_workspace.ts';
+export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, resolveChatModel, type ChatForWorkspaceArgs } from './chat_workspace.ts';
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
 export { buildDrafterDecision, type DrafterDecisionOpts } from './prompt_builders.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';

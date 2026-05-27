@@ -17,7 +17,7 @@
  *     extract: {
  *       system_prompt: string,                       // required. Tells LLM what to extract + output shape
  *       batch_size?: number,                         // default 10 items per LLM call
- *       model?: string,                              // default 'gpt-4o-mini'
+ *       model?: string,                              // default 'deepseek-v4-flash'
  *     },
  *     signal?: {
  *       type?: string,                               // default 'custom_http'
@@ -223,7 +223,7 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
   };
 
   const batchSize = Math.max(1, extractSpec.batch_size ?? 10);
-  const model = extractSpec.model ?? 'deepseek/deepseek-v4-flash:free';
+  const model = extractSpec.model ?? 'deepseek-v4-flash';
   const magnitude = signalSpec.magnitude ?? 0.55;
 
   for (let i = 0; i < fresh.length; i += batchSize) {

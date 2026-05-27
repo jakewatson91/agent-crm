@@ -92,9 +92,9 @@ export interface DrafterPolicy {
  * to the corresponding process.env variable so the demo workspace keeps
  * working without a migration.
  *
- * Model routing follows the chatComplete convention:
- *   - bare id (e.g. "gpt-4o-mini")        → OpenAI direct (uses openai_api_key)
- *   - slash-prefixed (e.g. "deepseek/...") → OpenRouter (uses openrouter_api_key)
+ * Model routing follows the chatComplete convention (model_registry.ts):
+ *   - "deepseek/<model>" (or bare) → DeepSeek direct (uses deepseek_api_key)
+ *   - "<vendor>/<model>"           → Vercel AI Gateway (AI_GATEWAY_API_KEY)
  */
 export interface LLMPolicy {
   openai_api_key?: string;

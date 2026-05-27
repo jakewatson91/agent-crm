@@ -631,7 +631,7 @@ Return JSON.`;
 
     try {
       const llm = await chatCompleteForWorkspace(ctx.supabase, ctx.workspace_id, {
-        model: 'deepseek/deepseek-v4-flash:free',
+        model: 'deepseek-v4-flash',
         behavior: 'intake',
         max_tokens: 800,
         response_format: { type: 'json_object' },

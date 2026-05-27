@@ -6,7 +6,7 @@ import { listConnectors } from '@agent-crm/inngest/functions/sources/registry_me
 
 export const runtime = 'nodejs';
 
-const META_MODEL = 'deepseek/deepseek-v4-flash:free';
+const META_MODEL = 'deepseek-v4-flash';
 
 interface ParseReq {
   description: string;

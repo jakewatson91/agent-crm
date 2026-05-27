@@ -180,9 +180,15 @@ importers:
 
   packages/primitives:
     dependencies:
+      '@ai-sdk/deepseek':
+        specifier: ^2.0.35
+        version: 2.0.35(zod@3.25.76)
       '@supabase/supabase-js':
         specifier: ^2.46.0
         version: 2.105.3
+      ai:
+        specifier: ^6.0.185
+        version: 6.0.185(zod@3.25.76)
       zod:
         specifier: ^3.23.0
         version: 3.25.76

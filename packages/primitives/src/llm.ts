@@ -1,12 +1,24 @@
 /**
- * Shared LLM chat-completion helper. Routes to OpenAI or OpenRouter based on
- * the model id:
- *   - Bare ids (e.g. "gpt-4o-mini")            -> OpenAI direct
- *   - Slash-prefixed ids (e.g. "deepseek/...")  -> OpenRouter
+ * Shared LLM chat-completion helper, backed by the Vercel AI SDK.
  *
- * Both providers expose an OpenAI-compatible /chat/completions endpoint so the
- * request and response shapes are identical aside from the base URL and auth header.
+ * The model-id string decides the provider (see model_registry.ts):
+ *   "deepseek/..." → DeepSeek direct, anything else → AI Gateway (one key,
+ *   handles Anthropic/OpenAI/Google/... including their non-OpenAI formats).
+ *
+ * The public surface (ChatCompleteArgs / ChatCompleteResult / chatComplete /
+ * chatCompleteStream) is unchanged, so callers built on the old fetch wrapper
+ * keep working. Messages and tools are translated to the AI SDK shapes here.
  */
+import {
+  generateText,
+  streamText,
+  tool,
+  jsonSchema,
+  stepCountIs,
+  type ModelMessage,
+  type ToolSet,
+} from 'ai';
+import { resolveModel, providerLabel, type ModelKeys } from './model_registry.ts';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -15,7 +27,7 @@ export interface ChatMessage {
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
   // For tool-result turns. tool_call_id pairs back to the assistant's tool_calls[].id.
   tool_call_id?: string;
-  // Display name on tool turns (OpenAI optional; we always set it for clarity).
+  // Display name on tool turns.
   name?: string;
 }
 
@@ -39,136 +51,132 @@ export interface ChatCompleteArgs {
   /** Force a specific tool call or 'auto' (default) / 'none'. */
   tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
   /**
-   * Per-call API-key override. If set and the chosen provider's key is here,
-   * it wins over process.env. Used by the workspace wrapper to inject the
-   * caller's pasted keys without leaking DB knowledge into this package.
+   * Per-call key override (set by chatCompleteForWorkspace) so a workspace can
+   * inject its own pasted key without redeploying. Only `deepseek` is read here;
+   * gateway-routed vendors authenticate via AI_GATEWAY_API_KEY.
    */
-  api_keys?: { openai?: string; openrouter?: string; deepseek?: string };
+  api_keys?: ModelKeys;
 }
 
 export interface ChatCompleteResult {
   text: string;                      // empty string when the model only emitted tool_calls
   tool_calls?: Array<{ id: string; name: string; arguments_json: string }>;
-  finish_reason?: string;            // 'stop' | 'tool_calls' | 'length' | ...
+  finish_reason?: string;            // 'stop' | 'tool-calls' | 'length' | ...
   input_tokens: number;
   output_tokens: number;
-  cached_input_tokens: number;       // OpenAI: from prompt_tokens_details.cached_tokens (0 if no caching)
-  provider: 'openai' | 'openrouter';
+  cached_input_tokens: number;       // 0 when the provider doesn't report prompt caching
+  provider: string;                  // 'deepseek', 'anthropic', 'openai', ... (from the model id)
   model: string;
 }
 
-async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
-  const isOpenRouter = args.model.includes('/');
-  const provider: 'openai' | 'openrouter' = isOpenRouter ? 'openrouter' : 'openai';
+// ---------------------------------------------------------------
+// Translation: our message/tool shapes <-> AI SDK shapes.
+// ---------------------------------------------------------------
 
-  // Per-call override (set by chatCompleteForWorkspace) beats env. Useful for
-  // new customers who paste their own key without redeploying.
-  const overrideKey = isOpenRouter ? args.api_keys?.openrouter : args.api_keys?.openai;
-  const apiKey = overrideKey || (isOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY);
-  if (!apiKey) throw new Error(`Missing ${isOpenRouter ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'} for model ${args.model}`);
-
-  const baseUrl = isOpenRouter ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey}`,
-  };
-  if (isOpenRouter) {
-    headers['HTTP-Referer'] = 'https://github.com/agent-crm';
-    headers['X-Title'] = 'agent-crm';
-  }
-
-  // Re-shape our internal messages into the OpenAI wire format. Tool calls and
-  // tool results need special handling — the API rejects messages where role
-  // and tool_call_id are mismatched.
-  const wireMessages = args.messages.map((m) => {
-    const base: Record<string, unknown> = { role: m.role, content: m.content };
-    if (m.role === 'assistant' && m.tool_calls?.length) base.tool_calls = m.tool_calls;
+function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
+  return messages.map((m): ModelMessage => {
+    if (m.role === 'system') return { role: 'system', content: m.content };
+    if (m.role === 'user') return { role: 'user', content: m.content };
     if (m.role === 'tool') {
-      if (m.tool_call_id) base.tool_call_id = m.tool_call_id;
-      if (m.name) base.name = m.name;
-    }
-    return base;
-  });
-
-  const body: Record<string, unknown> = {
-    model: args.model,
-    messages: wireMessages,
-  };
-  if (args.max_tokens !== undefined) body.max_tokens = args.max_tokens;
-  if (args.temperature !== undefined) body.temperature = args.temperature;
-  if (args.response_format) body.response_format = args.response_format;
-  if (args.tools?.length) {
-    body.tools = args.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
-    if (args.tool_choice) body.tool_choice = args.tool_choice;
-  }
-
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`${provider} ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const j = await res.json() as {
-    choices: Array<{
-      message: {
-        content: string | null;
-        tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+      // The OpenAI-style tool turn carries one result string; AI SDK wants a
+      // typed output part keyed back to the originating tool call.
+      return {
+        role: 'tool',
+        content: [{
+          type: 'tool-result',
+          toolCallId: m.tool_call_id ?? '',
+          toolName: m.name ?? '',
+          output: { type: 'text', value: m.content },
+        }],
       };
-      finish_reason?: string;
-    }>;
-    usage: {
-      prompt_tokens: number;
-      completion_tokens: number;
-      prompt_tokens_details?: { cached_tokens?: number };
-    };
-  };
+    }
+    // assistant
+    if (m.tool_calls?.length) {
+      const parts: Array<Record<string, unknown>> = [];
+      if (m.content) parts.push({ type: 'text', text: m.content });
+      for (const tc of m.tool_calls) {
+        let input: unknown = {};
+        try { input = tc.function.arguments ? JSON.parse(tc.function.arguments) : {}; } catch { input = {}; }
+        parts.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function.name, input });
+      }
+      return { role: 'assistant', content: parts } as ModelMessage;
+    }
+    return { role: 'assistant', content: m.content };
+  });
+}
 
-  const choice = j.choices[0];
-  const toolCallsRaw = choice?.message.tool_calls ?? [];
-  const tool_calls = toolCallsRaw.length
-    ? toolCallsRaw.map((c) => ({ id: c.id, name: c.function.name, arguments_json: c.function.arguments }))
+function toToolSet(specs: ToolSpec[] | undefined): ToolSet | undefined {
+  if (!specs?.length) return undefined;
+  const out: ToolSet = {};
+  for (const s of specs) {
+    // No `execute`: the model returns the tool call and stops; the caller's
+    // ReAct loop runs it and feeds the result back as a tool message.
+    out[s.name] = tool({
+      description: s.description,
+      inputSchema: jsonSchema(s.parameters),
+    });
+  }
+  return out;
+}
+
+function toToolChoice(tc: ChatCompleteArgs['tool_choice']) {
+  if (!tc || tc === 'auto') return undefined;
+  if (tc === 'none') return 'none' as const;
+  return { type: 'tool' as const, toolName: tc.function.name };
+}
+
+// ---------------------------------------------------------------
+// Non-streaming completion.
+// ---------------------------------------------------------------
+
+const FALLBACK_MODEL = 'deepseek/deepseek-v4-pro';
+
+async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
+  const tools = toToolSet(args.tools);
+  const res = await generateText({
+    model: resolveModel(args.model, args.api_keys),
+    messages: toModelMessages(args.messages),
+    maxOutputTokens: args.max_tokens,
+    temperature: args.temperature,
+    tools,
+    toolChoice: tools ? toToolChoice(args.tool_choice) : undefined,
+  });
+
+  const tool_calls = res.toolCalls?.length
+    ? res.toolCalls.map((c) => ({ id: c.toolCallId, name: c.toolName, arguments_json: JSON.stringify(c.input ?? {}) }))
     : undefined;
 
   return {
-    text: choice?.message.content ?? '',
+    text: res.text ?? '',
     tool_calls,
-    finish_reason: choice?.finish_reason,
-    input_tokens: j.usage.prompt_tokens,
-    output_tokens: j.usage.completion_tokens,
-    cached_input_tokens: j.usage.prompt_tokens_details?.cached_tokens ?? 0,
-    provider,
+    finish_reason: res.finishReason,
+    input_tokens: res.usage?.inputTokens ?? 0,
+    output_tokens: res.usage?.outputTokens ?? 0,
+    cached_input_tokens: res.usage?.cachedInputTokens ?? 0,
+    provider: providerLabel(args.model),
     model: args.model,
   };
 }
 
-const FALLBACK_MODEL = 'gpt-4o-mini';
-
 /**
- * Chat completion with two layers of resilience:
+ * Chat completion with JSON resilience (unchanged behavior):
  *   1. Retry once on empty/malformed JSON when response_format=json_object.
- *      OpenRouter open-source models occasionally return empty completions; a single
- *      retry usually gets it right.
- *   2. If the retry still fails AND we're on a non-OpenAI model with json_object,
- *      fall back to gpt-4o-mini. Same prompt, more reliable JSON adherence.
+ *   2. If still bad and not already on it, fall back to deepseek-v4-pro.
+ * Tool-shaped responses skip this (empty content alongside tool_calls is valid).
  */
 export async function chatComplete(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   const wantsJson = args.response_format?.type === 'json_object';
   const usingTools = (args.tools?.length ?? 0) > 0;
 
   let result = await callOnce(args);
-  // When tools are wired, the model may return tool_calls with empty content;
-  // that's a valid response, not a parse failure. Skip the JSON retry path.
   if (usingTools || !wantsJson || isValidJson(result.text)) return result;
 
-  // First retry: same model, same prompt.
   result = await callOnce(args);
   if (isValidJson(result.text)) return result;
 
-  // Final fallback: only if we weren't already on the fallback model.
   if (args.model !== FALLBACK_MODEL) {
     const fb = await callOnce({ ...args, model: FALLBACK_MODEL });
-    if (isValidJson(fb.text)) return fb;
-    return fb; // return whatever we got; caller will surface the error
+    return fb; // return whatever we got; caller surfaces the error
   }
   return result;
 }
@@ -178,152 +186,59 @@ function isValidJson(s: string): boolean {
   try { JSON.parse(s); return true; } catch { return false; }
 }
 
+// ---------------------------------------------------------------
+// Streaming completion (used by the ReAct loop in chat intake).
+// ---------------------------------------------------------------
+
 export type ChatStreamDelta = { kind: 'text' | 'reasoning'; text: string };
 
-/**
- * Streaming variant of chatComplete. Calls onDelta with incremental text
- * chunks as they arrive; tool-call fragments are accumulated server-side and
- * surfaced only in the final return value, since partial tool calls aren't
- * useful to render. The returned ChatCompleteResult matches chatComplete's
- * shape so the ReAct loop can swap between them freely.
- *
- * No retry/fallback layer — streaming + tools is the only path that uses this,
- * and tool-shaped responses don't have the empty-JSON failure mode that
- * chatComplete guards against.
- */
 export async function chatCompleteStream(
   args: ChatCompleteArgs,
   onDelta: (delta: ChatStreamDelta) => void,
 ): Promise<ChatCompleteResult> {
-  const isOpenRouter = args.model.includes('/');
-  const provider: 'openai' | 'openrouter' = isOpenRouter ? 'openrouter' : 'openai';
-
-  const overrideKey = isOpenRouter ? args.api_keys?.openrouter : args.api_keys?.openai;
-  const apiKey = overrideKey || (isOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY);
-  if (!apiKey) throw new Error(`Missing ${isOpenRouter ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'} for model ${args.model}`);
-
-  const baseUrl = isOpenRouter ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey}`,
-  };
-  if (isOpenRouter) {
-    headers['HTTP-Referer'] = 'https://github.com/agent-crm';
-    headers['X-Title'] = 'agent-crm';
-  }
-
-  const wireMessages = args.messages.map((m) => {
-    const base: Record<string, unknown> = { role: m.role, content: m.content };
-    if (m.role === 'assistant' && m.tool_calls?.length) base.tool_calls = m.tool_calls;
-    if (m.role === 'tool') {
-      if (m.tool_call_id) base.tool_call_id = m.tool_call_id;
-      if (m.name) base.name = m.name;
-    }
-    return base;
+  const tools = toToolSet(args.tools);
+  const result = streamText({
+    model: resolveModel(args.model, args.api_keys),
+    messages: toModelMessages(args.messages),
+    maxOutputTokens: args.max_tokens,
+    temperature: args.temperature,
+    tools,
+    toolChoice: tools ? toToolChoice(args.tool_choice) : undefined,
+    // Single model turn: stop once the model finishes (it stops itself on a
+    // tool call since the tools have no execute). The caller drives the loop.
+    stopWhen: stepCountIs(1),
   });
 
-  const body: Record<string, unknown> = {
-    model: args.model,
-    messages: wireMessages,
-    stream: true,
-    stream_options: { include_usage: true },
-  };
-  if (args.max_tokens !== undefined) body.max_tokens = args.max_tokens;
-  if (args.temperature !== undefined) body.temperature = args.temperature;
-  if (args.response_format) body.response_format = args.response_format;
-  if (args.tools?.length) {
-    body.tools = args.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
-    if (args.tool_choice) body.tool_choice = args.tool_choice;
-  }
-
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-  if (!res.ok || !res.body) throw new Error(`${provider} ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`);
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  let text = '';
-  let finishReason: string | undefined;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cachedInputTokens = 0;
-
-  // Tool-call accumulator: keyed by index since OpenAI streams deltas per
-  // index with id only on the first chunk and arguments split across chunks.
-  const toolAcc = new Map<number, { id: string; name: string; arguments: string }>();
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split('\n\n');
-    buffer = frames.pop() ?? '';
-    for (const frame of frames) {
-      const line = frame.split('\n').find((l) => l.startsWith('data: '));
-      if (!line) continue;
-      const payload = line.slice(6).trim();
-      if (payload === '[DONE]') continue;
-      let chunk: {
-        choices?: Array<{
-          delta?: {
-            content?: string | null;
-            reasoning?: string | null;            // OpenRouter shape for thinking models
-            reasoning_content?: string | null;   // DeepSeek-direct shape
-            tool_calls?: Array<{ index: number; id?: string; type?: 'function'; function?: { name?: string; arguments?: string } }>;
-          };
-          finish_reason?: string | null;
-        }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
-      };
-      try { chunk = JSON.parse(payload); } catch { continue; }
-
-      const choice = chunk.choices?.[0];
-      const delta = choice?.delta;
-      const reasoningChunk = delta?.reasoning ?? delta?.reasoning_content;
-      if (reasoningChunk) {
-        onDelta({ kind: 'reasoning', text: reasoningChunk });
-      }
-      if (delta?.content) {
-        text += delta.content;
-        onDelta({ kind: 'text', text: delta.content });
-      }
-      if (delta?.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          const cur = toolAcc.get(tc.index) ?? { id: '', name: '', arguments: '' };
-          if (tc.id) cur.id = tc.id;
-          if (tc.function?.name) cur.name += tc.function.name;
-          if (tc.function?.arguments) cur.arguments += tc.function.arguments;
-          toolAcc.set(tc.index, cur);
-        }
-      }
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-      if (chunk.usage) {
-        inputTokens = chunk.usage.prompt_tokens ?? inputTokens;
-        outputTokens = chunk.usage.completion_tokens ?? outputTokens;
-        cachedInputTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? cachedInputTokens;
-      }
+  for await (const part of result.fullStream) {
+    const p = part as { type: string; text?: string; delta?: string };
+    if (p.type === 'text-delta') {
+      const t = p.text ?? p.delta ?? '';
+      if (t) onDelta({ kind: 'text', text: t });
+    } else if (p.type === 'reasoning-delta') {
+      const t = p.text ?? p.delta ?? '';
+      if (t) onDelta({ kind: 'reasoning', text: t });
     }
   }
 
-  const tool_calls = toolAcc.size
-    ? Array.from(toolAcc.entries())
-        .sort(([a], [b]) => a - b)
-        .map(([, v]) => ({ id: v.id, name: v.name, arguments_json: v.arguments }))
+  const [text, toolCalls, usage, finishReason] = await Promise.all([
+    result.text,
+    result.toolCalls,
+    result.usage,
+    result.finishReason,
+  ]);
+
+  const tool_calls = toolCalls?.length
+    ? toolCalls.map((c) => ({ id: c.toolCallId, name: c.toolName, arguments_json: JSON.stringify(c.input ?? {}) }))
     : undefined;
 
   return {
-    text,
+    text: text ?? '',
     tool_calls,
     finish_reason: finishReason,
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cached_input_tokens: cachedInputTokens,
-    provider,
+    input_tokens: usage?.inputTokens ?? 0,
+    output_tokens: usage?.outputTokens ?? 0,
+    cached_input_tokens: usage?.cachedInputTokens ?? 0,
+    provider: providerLabel(args.model),
     model: args.model,
   };
 }

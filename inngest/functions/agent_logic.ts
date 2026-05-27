@@ -5,9 +5,10 @@
  *   - 'claim_poster' (default): produces post_claim or request_gate
  *   - 'drafter':                  produces post_touch_draft (email-shaped) or request_gate
  *
- * Provider routing: subscription.model decides where the LLM call goes.
- *   - bare model id (e.g. "gpt-4o-mini")            -> OpenAI direct
- *   - slash-prefixed (e.g. "deepseek/...")           -> OpenRouter
+ * Provider routing (see primitives/model_registry.ts): the model id decides.
+ *   - "deepseek/<model>" (or bare) -> DeepSeek direct (api.deepseek.com)
+ *   - "<vendor>/<model>"           -> Vercel AI Gateway (one AI_GATEWAY_API_KEY,
+ *                                     covers Anthropic/OpenAI/Google/...)
  *
  * Prompt cache discipline: the system message contains ONLY workspace-stable
  * content (about, constitution, decision instructions, output format). Per-run
@@ -22,11 +23,11 @@ import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsF
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
 
-// Default routing: every behavior except drafter uses Flash:free via OpenRouter.
-// Drafter is the user-visible output — pay for Pro quality. Both are slash-
-// prefixed → chatComplete sends them to OpenRouter (OPENROUTER_API_KEY).
-const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash:free';
-const DRAFTER_MODEL = 'deepseek/deepseek-v4-pro';
+// Default routing: every behavior except drafter uses Flash. Drafter is the
+// user-visible output — pay for Pro quality. Both go to DeepSeek direct
+// (api.deepseek.com, DEEPSEEK_API_KEY).
+const DEFAULT_MODEL = 'deepseek-v4-flash';
+const DRAFTER_MODEL = 'deepseek-v4-pro';
 
 type AgentBehavior = 'claim_poster' | 'drafter' | 'enricher';
 
@@ -538,7 +539,9 @@ export async function runAgent(
     llm = await chatCompleteForWorkspace(supabase, payload.workspace_id, {
       model,
       behavior,
-      max_tokens: behavior === 'drafter' ? 700 : 400,
+      // DeepSeek-v4 spends output tokens on reasoning before emitting content;
+      // a rich hiring post needs headroom or the JSON body comes back empty.
+      max_tokens: behavior === 'drafter' ? 1500 : 1200,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },

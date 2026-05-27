@@ -41,7 +41,7 @@ const EMPTY: DerivedDefaults = { icp: {}, persona: {}, constitution: '', knowled
 export async function deriveDefaults(about: string): Promise<DerivedDefaults> {
   try {
     const r = await chatComplete({
-      model: 'deepseek/deepseek-v4-flash:free',
+      model: 'deepseek-v4-flash',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: `Customer description:\n${about}` },

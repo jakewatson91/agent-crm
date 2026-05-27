@@ -35,7 +35,7 @@ import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
-const EXTRACT_MODEL = 'deepseek/deepseek-v4-flash:free';
+const EXTRACT_MODEL = 'deepseek-v4-flash';
 const EXA_API = 'https://api.exa.ai/search';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }

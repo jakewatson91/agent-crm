@@ -22,7 +22,7 @@ import { graphProximity } from './graph.ts';
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
 
-const SCORE_MODEL = 'openai/gpt-oss-120b:free';
+const SCORE_MODEL = 'deepseek-v4-flash';
 const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 

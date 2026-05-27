@@ -67,8 +67,7 @@ export interface HiringFilter {
 }
 
 // Match the small-classifier model already in use elsewhere (source_curator).
-// Upgrading to a newer current-gen small model is a separate project-wide task.
-const CLASSIFY_MODEL = 'gpt-4o-mini';
+const CLASSIFY_MODEL = 'deepseek-v4-flash';
 
 function titleHash(title: string, department: string | null | undefined): string {
   const key = `${title.toLowerCase().trim()}|${(department ?? '').toLowerCase().trim()}`;
