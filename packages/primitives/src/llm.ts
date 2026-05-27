@@ -171,11 +171,16 @@ export async function chatComplete(args: ChatCompleteArgs): Promise<ChatComplete
   let result = await callOnce(args);
   if (usingTools || !wantsJson || isValidJson(result.text)) return result;
 
-  result = await callOnce(args);
+  // Empty/non-JSON on a json_object call almost always means a reasoning model
+  // spent its entire output budget on reasoning before emitting any content.
+  // The retry + fallback only help if they get more room than the first try —
+  // same budget = same failure. Give content space after reasoning.
+  const roomy: ChatCompleteArgs = { ...args, max_tokens: Math.max((args.max_tokens ?? 1024) * 3, 4000) };
+  result = await callOnce(roomy);
   if (isValidJson(result.text)) return result;
 
   if (args.model !== FALLBACK_MODEL) {
-    const fb = await callOnce({ ...args, model: FALLBACK_MODEL });
+    const fb = await callOnce({ ...roomy, model: FALLBACK_MODEL });
     return fb; // return whatever we got; caller surfaces the error
   }
   return result;

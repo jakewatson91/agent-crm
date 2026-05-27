@@ -37,3 +37,4 @@ benchmark/v1/results/
 
 # packages/db generated types
 packages/db/src/generated.ts
+.backups/
