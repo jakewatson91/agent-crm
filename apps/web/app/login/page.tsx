@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { getBrowserClient } from '../_lib/supabase-browser';
 
@@ -9,8 +9,19 @@ function LoginInner() {
   const next = params.get('next') ?? '/';
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(params.get('error_description') || params.get('error'));
   const [busy, setBusy] = useState(false);
+
+  // Some auth failures come back in the URL hash (#error=...) instead of the query.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.location.hash) return;
+    const h = new URLSearchParams(window.location.hash.slice(1));
+    const hashErr = h.get('error_description') || h.get('error');
+    if (hashErr) {
+      setErr(hashErr);
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }, []);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();

@@ -1,20 +1,41 @@
 /**
- * Magic-link callback. Exchanges the ?code= param for a session cookie,
- * then redirects to `next` (defaults to /).
+ * Magic-link callback. Establishes a session cookie, then redirects to `next`
+ * (defaults to /). Handles every way Supabase can hand control back:
+ *   - ?error / ?error_description  → link expired/used/denied; forward to /login so it's visible.
+ *   - ?code                        → PKCE flow (default). exchangeCodeForSession.
+ *   - ?token_hash & ?type          → verifyOtp flow (if the email template is switched to it).
+ * Any failure forwards the real message to /login?error=... instead of bouncing silently.
  */
 import { NextResponse } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import type { EmailOtpType } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 
 export const runtime = 'nodejs';
 
+function backToLogin(req: Request, next: string, error?: string) {
+  const u = new URL('/login', req.url);
+  if (next && next !== '/') u.searchParams.set('next', next);
+  if (error) u.searchParams.set('error', error);
+  return NextResponse.redirect(u);
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const code = url.searchParams.get('code');
-  const next = url.searchParams.get('next') ?? '/';
+  const params = url.searchParams;
+  const next = params.get('next') ?? '/';
 
-  if (!code) {
-    return NextResponse.redirect(new URL('/login', req.url));
+  // Supabase handed back an error (expired/already-used link, access denied, etc.).
+  // Forward it so the login page can show *why* instead of looping silently.
+  const handedBackError = params.get('error_description') || params.get('error');
+  if (handedBackError) return backToLogin(req, next, handedBackError);
+
+  const code = params.get('code');
+  const tokenHash = params.get('token_hash');
+  const type = params.get('type');
+
+  if (!code && !tokenHash) {
+    return backToLogin(req, next, 'Sign-in link was missing its code. Request a fresh link.');
   }
 
   const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -25,22 +46,23 @@ export async function GET(req: Request) {
 
   const cookieStore = await cookies();
   const res = NextResponse.redirect(new URL(next, req.url));
+  // getAll/setAll is the current @supabase/ssr interface; the deprecated
+  // get/set/remove trio is the documented cause of "random logout" cookie bugs.
   const supabase = createServerClient(supaUrl, supaKey, {
     cookies: {
-      get(name: string) { return cookieStore.get(name)?.value; },
-      set(name: string, value: string, options: CookieOptions) {
-        res.cookies.set({ name, value, ...options });
+      getAll() {
+        return cookieStore.getAll();
       },
-      remove(name: string, options: CookieOptions) {
-        res.cookies.set({ name, value: '', ...options });
+      setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
+        cookiesToSet.forEach(({ name, value, options }) => res.cookies.set(name, value, options));
       },
     },
   });
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) {
-    const errUrl = new URL('/login', req.url);
-    errUrl.searchParams.set('error', error.message);
-    return NextResponse.redirect(errUrl);
-  }
+
+  const { error } = code
+    ? await supabase.auth.exchangeCodeForSession(code)
+    : await supabase.auth.verifyOtp({ type: (type as EmailOtpType) ?? 'email', token_hash: tokenHash! });
+
+  if (error) return backToLogin(req, next, error.message);
   return res;
 }
