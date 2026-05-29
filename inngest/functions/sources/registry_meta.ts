@@ -73,6 +73,43 @@ export const customHttpMeta: ConnectorMeta = {
   },
 };
 
+export const inboundWebhookMeta: ConnectorMeta = {
+  type: 'inbound_webhook',
+  label: 'Inbound webhook (push)',
+  description:
+    'A push endpoint anything can POST rows to — Clay, Zapier, n8n, a script. Maps incoming JSON to accounts + contacts + facts via a field-mapping spec. Idempotent. POST to /api/ingest/webhook?source=<id> with your workspace API key as a Bearer token.',
+  category: 'tool',
+  emits_signal_source: 'webhook',
+  // Push-only: the dispatcher never pulls this. Set far in the future so the
+  // cadence sweep never flags it as stale.
+  schedule_cron: '0 0 1 1 *',
+  config_schema: {
+    fields: [
+      {
+        name: 'ingest_spec',
+        label: 'Field mapping (JSON)',
+        kind: 'textarea',
+        required: true,
+        help: 'Maps incoming row fields to account/contact/facts. Dot paths resolve against each row. Edit to match what your tool sends.',
+        default: JSON.stringify(
+          {
+            account_name_path: 'company',
+            account_domain_path: 'domain',
+            contact_email_path: 'email',
+            contact_name_path: 'name',
+            contact_role_path: 'title',
+            item_id_path: 'id',
+            fact_map: [],
+            signal: { magnitude: 0.5 },
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  },
+};
+
 export const exaMeta: ConnectorMeta = {
   type: 'exa',
   label: 'Exa (semantic web search)',
@@ -256,6 +293,7 @@ export const atsMeta: ConnectorMeta = {
 export const CONNECTOR_METAS: Record<string, ConnectorMeta> = {
   api_call: apiCallMeta,
   custom_http: customHttpMeta,
+  inbound_webhook: inboundWebhookMeta,
   exa: exaMeta,
   web: webMeta,
   hn: hnMeta,

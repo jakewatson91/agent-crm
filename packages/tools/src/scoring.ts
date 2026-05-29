@@ -454,19 +454,19 @@ export async function scoreAndAssert(
     { predicate: 'icp_fit', value: score.icp_total }, // backward compat
   ];
   for (const s of subScores) {
-    // Use order+limit+maybeSingle instead of plain maybeSingle: if a prior
-    // run left duplicate active rows (>1 with supersedes=null), maybeSingle
-    // alone errors and falls into the "no existing" branch, which writes
-    // ANOTHER active row — compounding the leak. Picking the newest by
-    // observed_at lets us still supersede something instead of inserting.
-    const existing = await supabase.from('facts').select('id, object_text')
+    // The CURRENT fact is the one NOT superseded by any other row.
+    // supersede_fact writes the new row with supersedes = <old id>, so
+    // `supersedes is null` returns the stale ORIGINAL — superseding that forks
+    // the chain. Fetch all rows for the predicate and pick the not-pointed-to
+    // one (newest by observed_at among any that survive a prior leak).
+    const allRows = await supabase.from('facts').select('id, object_text, supersedes, observed_at')
       .eq('workspace_id', actor.workspace_id)
       .eq('subject_entity', entity_id)
       .eq('predicate', s.predicate)
-      .is('supersedes', null)
-      .order('observed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order('observed_at', { ascending: false });
+    const rows = (allRows.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null; observed_at: string }>;
+    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+    const existing = { data: rows.find((r) => !pointedTo.has(r.id)) ?? null };
     const newText = s.value.toFixed(2);
     // Always write — even when the value is unchanged — so observed_at refreshes
     // and the sweep's score_signal_coupling check can see that the scorer ran.

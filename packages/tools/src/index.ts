@@ -41,6 +41,7 @@ export { selectAction, loadActionContext, type Action, type ActionDecision, type
 export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights } from './scoring.ts';
 export { graphProximity, type GraphProximityResult } from './graph.ts';
 export { getEntityTypes, getEntityTypesBatch, isEntityOfType, entityIdsOfType, listWorkspaceTypes } from './entity_types.ts';
+export { ingestRows, getPath, normalizeDomain, hashItem, type IngestSpec, type IngestProvenance, type IngestResult } from './ingest.ts';
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -81,6 +82,7 @@ export async function callTool(
       case 'set_workspace_policy':
       case 'create_account':
       case 'create_contact':
+      case 'create_entity':
       case 'request_gate': {
         const r = await act(supabase, actor, { tool, args, ...meta });
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
@@ -306,6 +308,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     set_workspace_policy: 'Update a workspace persona, ICP, budget, or policy.',
     create_account: 'Create an account entity in the current workspace.',
     create_contact: 'Create a contact entity, optionally linked to an account.',
+    create_entity: 'Create an entity of any kind (e.g. opportunity). The kind is recorded as the entity\'s is_a fact. No channel is created.',
     assert_fact: 'Assert an atomic claim about an entity. Idempotent on content hash.',
     supersede_fact: 'Replace a prior fact with a corrected one. Original is preserved.',
     create_signal: 'Record a typed observation about an entity. Embedding is computed automatically.',

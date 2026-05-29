@@ -31,6 +31,14 @@ export const CreateContactSchema = z.object({
   attributes: z.record(z.unknown()).default({}),
 });
 
+// Generic entity creation for kinds beyond account/contact (e.g. opportunity).
+// The kind is asserted as the entity's is_a fact. No channel is created.
+export const CreateEntitySchema = z.object({
+  name: z.string().min(1),
+  kind: z.string().min(1),
+  attributes: z.record(z.unknown()).default({}),
+});
+
 export const AssertFactSchema = z.object({
   subject_entity: UuidSchema,
   predicate: z.string().min(1),
@@ -180,6 +188,7 @@ export const TOOL_SCHEMAS = {
   set_workspace_policy: SetWorkspacePolicySchema,
   create_account: CreateAccountSchema,
   create_contact: CreateContactSchema,
+  create_entity: CreateEntitySchema,
   assert_fact: AssertFactSchema,
   supersede_fact: SupersedeFactSchema,
   create_signal: CreateSignalSchema,

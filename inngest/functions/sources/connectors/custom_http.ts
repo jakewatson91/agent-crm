@@ -50,8 +50,7 @@
  * mean — that's the spec's job. Vertical-neutral.
  */
 
-import { createHash } from 'node:crypto';
-import { callTool, chatCompleteForWorkspace, entityIdsOfType } from '@agent-crm/tools';
+import { callTool, chatCompleteForWorkspace, entityIdsOfType, normalizeDomain, hashItem } from '@agent-crm/tools';
 // custom_http is per-workspace by construction (sources.workspace_id), so it
 // uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
 // keys and stay on raw chatComplete for now.
@@ -94,6 +93,9 @@ interface ExtractedBatch {
 
 export { customHttpMeta as meta } from '../registry_meta.js';
 
+// Local getPath: an undefined path means "the body itself is the array"
+// (response_path empty), which differs from the ingest core's getPath (where
+// an unset path means "no value"). Kept separate on purpose.
 function getPath(obj: unknown, path: string | undefined): unknown {
   if (!path) return obj;
   let cur: any = obj;
@@ -110,18 +112,6 @@ function interpolateHeaders(headers: Record<string, string>): Record<string, str
     out[k] = v.replace(/\$\{env:([A-Z0-9_]+)\}/g, (_m, name) => process.env[name] ?? '');
   }
   return out;
-}
-
-function normalizeDomain(url: string | undefined | null): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
-    return u.hostname.replace(/^www\./, '').toLowerCase();
-  } catch { return null; }
-}
-
-function hashItem(item: unknown): string {
-  return createHash('sha256').update(JSON.stringify(item)).digest('hex').slice(0, 32);
 }
 
 function parseSpecField<T>(value: unknown, fallback: T): T {
