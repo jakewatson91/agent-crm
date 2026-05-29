@@ -1,3 +1,5 @@
+> **SUPERSEDED (v0).** The `4.22x` figure here was measured on gpt-4o-mini against partly-stubbed HubSpot data. Current verified results across 5 real platforms: `benchmark/v1/WRITEUP.md`, reproducible via `pnpm benchmark:v1:audit`. Retained for history.
+
 # Realistic drafter cost benchmark — agent-crm vs HubSpot
 
 **Task:** Draft a personalized follow-up email to the best contact at an account,

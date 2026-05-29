@@ -48,7 +48,7 @@ const DOGFOOD_PAIN_POINTS = [
 const DOGFOOD_VALUE_PROPS = [
   'When 3 of your agents update the same account at once, all 3 writes land. We benchmarked HubSpot losing 96%.',
   'Every line in this email cites a fact you can trace back to the signal it came from.',
-  'Agents read 1.28x fewer tokens because the system projects rows for agents, not for humans clicking through tabs.',
+  'Agents read several times fewer tokens: one ready-made projection instead of paging through tabs. Benchmarked at 2.6x vs HubSpot, ~5x vs Day.ai and Attio.',
   'The default home screen is empty. You see things only when policy says you should.',
 ];
 const DOGFOOD_TONE_KEYWORDS = ['casual', 'concrete', 'no-jargon', 'short-sentences'];

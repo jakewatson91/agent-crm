@@ -6,6 +6,7 @@
 import { V1_MODEL } from './llm.js';
 import { type WorkloadName } from './workloads.js';
 import type { HubSpotShape } from '../readers/hubspot.js';
+import { cost, DEFAULT_PRICE } from './pricing.js';
 
 export interface RunRow {
   workload: WorkloadName;
@@ -29,9 +30,7 @@ const WORKLOAD_NAMES: WorkloadName[] = ['draft', 'brief', 'score'];
 export function summarize(rows: RunRow[], accounts: string[], runsPerCell: number): string {
   const ok = rows.filter((r) => r.ok);
   const avg = (arr: RunRow[], k: keyof RunRow) => arr.length ? arr.reduce((a, b) => a + (b[k] as number), 0) / arr.length : 0;
-  const PRICING = { input_per_million: 0.14, output_per_million: 0.28, source: 'api-docs.deepseek.com/quick_start/pricing — deepseek-reasoner (v4 thinking mode), cache-miss input (2026-05)' };
-  const cost = (input: number, output: number) =>
-    (input * PRICING.input_per_million / 1_000_000) + (output * PRICING.output_per_million / 1_000_000);
+  // cost + price live in ./pricing.js now (single source of truth, shared with the audit).
 
   const workloadSection = (w: WorkloadName) => {
     const wk = ok.filter((r) => r.workload === w);
@@ -82,7 +81,7 @@ ${hasDayAi ? altShapes.map((s, i) => shapeRow(`dayai ${s}`, dayShapeRows[i])).jo
 **Runs per (workload, platform/shape, account):** ${runsPerCell}
 **Total runs:** ${rows.length} (${ok.length} ok, ${failures.length} failed)
 
-Pricing: ${PRICING.source}. ${PRICING.input_per_million}/M input, ${PRICING.output_per_million}/M output.
+Pricing: ${DEFAULT_PRICE.source}. ${DEFAULT_PRICE.input_per_million}/M input, ${DEFAULT_PRICE.output_per_million}/M output.
 
 ## Per-workload headline
 

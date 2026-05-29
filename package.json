@@ -13,6 +13,8 @@
     "benchmark:run": "tsx benchmark/runners/agent-crm/run.ts && tsx benchmark/runners/hubspot/run.ts && tsx benchmark/report/generate.ts",
     "benchmark:v1": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config benchmark/v1/run.ts",
     "benchmark:v1:seed": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config benchmark/v1/seed.ts",
+    "benchmark:v1:audit": "tsx benchmark/v1/audit_cost.ts",
+    "benchmark:v1:quality": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config benchmark/v1/quality_eval.ts",
     "smoke": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/smoke_test.ts",
     "seed": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/seed_demo.ts",
     "inject": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/inject_claim.ts",

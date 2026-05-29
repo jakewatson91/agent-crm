@@ -1,6 +1,6 @@
 # v1 Benchmark: agent-crm vs incumbent CRMs on agent token cost
 
-**Date:** 2026-05-23  •  **Total runs:** 540 across 5 platforms × 3 workloads × multiple read shapes  •  **All raw data:** `benchmark/v1/results/runs.jsonl`  •  **All receipts:** `benchmark/v1/receipts/`
+**Date:** 2026-05-23  •  **Total runs:** 540 across 5 platforms × 3 workloads × multiple read shapes  •  **All raw data:** `benchmark/v1/results/runs.jsonl`  •  **All receipts:** `benchmark/v1/receipts/`  •  **Method + how to verify:** [METHODOLOGY.md](./METHODOLOGY.md)
 
 ---
 
