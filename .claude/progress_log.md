@@ -1164,3 +1164,96 @@ Started as "loading is slow" and unwound into the scorer being silently dead all
 
 ### Files
 Modified: `packages/tools/src/scoring.ts` (model, skip-write removal, accounts gate), `inngest/functions/agent_logic.ts` (meta fix), `apps/web/app/workspace/[ws]/{layout,entities/page}.tsx`, `apps/web/app/api/{feed,gates}/list/route.ts`. New: `apps/web/app/_components/NavLinkPrefetch.tsx` (replaces deleted `WorkspacePrefetch.tsx`), `scripts/{cleanup_for_new_signal_process,_archive_empty_seed_accounts,_audit_accounts,_check_distribution,_check_thresholds,_check_scoring}.ts`. Memory: `project_scorer_model_openrouter`. Commits: session code already on main; backlog/wrap `fd4b50b`.
+
+## 2026-05-24 — Twenty-steals Phase 3 finished (MCP binary + full local self-host)
+
+Two more Phase 3 items shipped. Item #1 (settings UI reorg) was already done earlier today.
+
+### MCP as external binary (commit `6a05411`)
+New `packages/mcp-server` workspace package. Thin stdio MCP server on `@modelcontextprotocol/sdk@1.29` — forwards `tools/list` + `tools/call` to a workspace's `/api/mcp` over Bearer auth. Tool catalog is loaded from the remote at every `tools/list`, so server upgrades pick up new tools without a client release.
+
+- `src/index.ts` — `buildServer(cfg)` + `runStdio(cfg)`. Tool results returned as a single `text` content block with the structured JSON preserved verbatim.
+- `src/cli.ts` — env-driven bin (`AGENT_CRM_URL`, `AGENT_CRM_API_KEY`, optional `AGENT_CRM_MCP_PATH`). Validates key prefix `acrm_…` before spawning.
+- `package.json` exposes bin `agent-crm-mcp` → `dist/cli.js`. `tsconfig.json` uses NodeNext module/moduleResolution (workspace base uses Bundler, doesn't emit JS).
+- README at `packages/mcp-server/README.md` with Claude Desktop, Cursor, and local-checkout snippets.
+- `apps/web/app/workspace/[ws]/settings/api-keys/page.tsx` now renders a copyable `mcpServers` JSON snippet auto-populated with `window.location.origin`.
+
+Smoke test `scripts/_smoke_mcp_server.ts`: provisions a throwaway key (falls back to first auth user if no workspace owner exists yet — handles fresh deployments), spawns `node dist/cli.js`, drives the MCP handshake (`initialize` → `notifications/initialized` → `tools/list` → `tools/call health_check`), then revokes. **Passed end-to-end on localhost: 25 tools listed, real workspace projection returned over stdio.**
+
+### Full local Supabase self-host, opt-in (commit `33628a6`)
+For users who don't want Supabase Cloud. The full stack (Postgres, GoTrue, PostgREST, Kong, Studio, Realtime, Storage, ~12 containers) runs locally; the app talks to `http://localhost:8000`. Cloud stays default.
+
+- `self-host/supabase/bootstrap.sh` — clones `supabase/supabase` at pinned commit `2c651dd` (via `git fetch --depth 1 origin <sha>` on an init'd repo, since shallow-fetching a SHA needs that dance) into gitignored `local/`. Runs their `utils/generate-keys.sh --update-env` (the bare invocation only prints; --update-env actually writes to .env). Prints the env block to paste into `.env.local`.
+- `scripts/apply_all_migrations.ts` — runs every `supabase/migrations/*.sql` in order against `SUPABASE_DB_URL`. Idempotent via `meta._migrations` ledger. **Hard guard: refuses non-localhost URLs unless `ALLOW_REMOTE_MIGRATE=1`.** This was added after a real foot-gun mid-session (below).
+- pnpm scripts: `self-host:bootstrap`, `self-host:supabase:up`, `self-host:supabase:down`, `self-host:migrate`.
+- README at `self-host/supabase/README.md` walks the workflow, including the Inbucket trick (`localhost:54324`) for magic-link sign-in without real SMTP.
+
+### Foot-gun caught and patched
+While typechecking the migration script via `tsx --eval "import('./scripts/apply_all_migrations.ts')…"`, the module's top-level `main()` ran on import, picked up the prod `SUPABASE_DB_URL` from `.env.local`, and successfully created an empty `meta` schema + `meta._migrations` table in prod before failing on `0001_init.sql` (`relation "workspaces" already exists`) and rolling back the migration body. Service-role pg connection bypassed RLS entirely. Cleaned up with `drop table if exists meta._migrations; drop schema if exists meta;` against prod. **Lesson**: any script that opens a service-role / direct-pg connection from `.env.local` must guard against non-local URLs by default. Added that guard; verified it rejects `db.example.com`. The sandbox classifier blocked subsequent prod queries (correct), but the first one slipped because it was wrapped in tsx and dotenv resolution happens inside the script.
+
+### Did NOT do
+- Did not exercise the 12-container Supabase stack live. First run is a ~2GB image pull and the user will run that the first time they self-host; cleanup of misconfigured volumes is annoying enough that it's better done watching live.
+- Did not publish `@agent-crm/mcp-server` to npm. The `npx -y @agent-crm/mcp-server` snippet in the README needs the package public; local-checkout snippet works today.
+
+### Files
+New: `packages/mcp-server/{package.json,tsconfig.json,src/index.ts,src/cli.ts,README.md,.gitignore}`, `scripts/_smoke_mcp_server.ts`, `scripts/apply_all_migrations.ts`, `self-host/supabase/{bootstrap.sh,README.md,.gitignore}`. Modified: `apps/web/app/workspace/[ws]/settings/api-keys/page.tsx`, `docker-compose.yml` (cross-reference), `package.json` (pnpm scripts), `pnpm-lock.yaml`. Commits: `6a05411` (MCP), `33628a6` (self-host), `2d899ad` (scorer-rescue wrap).
+
+---
+
+## 2026-05-27 — LLM provider layer migrated to Vercel AI SDK (DeepSeek direct + AI Gateway)
+
+Replaced the hand-rolled OpenAI-format `fetch` wrapper in `packages/primitives/src/llm.ts` with the Vercel AI SDK (`generateText`/`streamText`). New `packages/primitives/src/model_registry.ts` resolves a model-id string to an AI SDK `LanguageModel`:
+- `deepseek/<model>` (or a bare id) → **DeepSeek direct** (`createDeepSeek`, `api.deepseek.com`, `DEEPSEEK_API_KEY`) — the high-volume default, no gateway margin.
+- `<vendor>/<model>` (`anthropic/...`, `openai/...`, `google/...`) → **Vercel AI Gateway** via a plain model string + `AI_GATEWAY_API_KEY`. The gateway handles each vendor's native format (incl. Anthropic's `/v1/messages`), which the old fetch wrapper could not.
+
+`chatComplete` / `chatCompleteStream` keep identical signatures, so every caller (drafter, scorer, enricher, connectors, intake ReAct loop) is unchanged — only the engine underneath swapped. Message + tool translation (ChatMessage↔ModelMessage, ToolSpec→`tool({inputSchema: jsonSchema})` with no `execute` so calls return to the caller) lives in `llm.ts`.
+
+Intake route (`apps/web/app/api/agent/intake/route.ts`) dropped its bespoke `createDeepSeek` for `resolveModel` + new `resolveChatModel` helper (workspace chat model from `policy.llm.default_chat_model`, default `deepseek/deepseek-v4-pro`).
+
+**All model constants moved off OpenRouter `:free` tiers and `gpt-4o-mini` onto DeepSeek** — flash for bulk (`scoring.ts`, `classify_role.ts`, `source_curator.ts`, exa/web/custom_http connectors, `generate-spec`, `_derive_defaults`, intake JSON tool), pro for drafter + JSON fallback. OpenRouter and direct-OpenAI chat paths fully removed; `chat_workspace.ts` now threads only the deepseek key. Embeddings stay OpenAI `text-embedding-3-small` (DeepSeek has no embeddings API).
+
+**Verified live against DeepSeek**: plain text (finish stop, token counts correct), JSON mode (valid), tool call (returns `get_weather({city:"Paris"})`), streaming (text deltas + reasoning deltas both captured). Typecheck clean across primitives/tools/inngest/web (only pre-existing `.ts`-extension noise + the pre-existing `ats.ts` error).
+
+`AI_GATEWAY_API_KEY` is NOT set and is not needed until a workspace points a model at a non-DeepSeek vendor. Added `ai` + `@ai-sdk/deepseek` to `packages/primitives` deps.
+
+Memory: `[[project_llm_routing_ai_sdk_gateway]]` (new), with the old `project_scorer_model_openrouter` marked superseded and the "use OpenAI" note corrected.
+
+### Open follow-up
+Settings UI to pick the model + paste provider keys still not built. Model/keys are DB/`policy.llm`-only today; the api-keys settings page manages only `AGENT_CRM_API_KEY`.
+
+### Files
+New: `packages/primitives/src/model_registry.ts`. Modified: `packages/primitives/src/{llm.ts,index.ts,package.json}`, `packages/tools/src/{chat_workspace.ts,classify_role.ts,source_curator.ts,scoring.ts,policy.ts,index.ts}`, `inngest/functions/agent_logic.ts`, `inngest/functions/sources/connectors/{exa.ts,web.ts,custom_http.ts}`, `apps/web/app/api/agent/intake/{route.ts,tools.ts}`, `apps/web/app/api/connectors/generate-spec/route.ts`, `apps/web/app/api/sources/parse/route.ts`, `apps/web/app/api/workspaces/_derive_defaults.ts`, `pnpm-lock.yaml`. Commit `0e8bc8b` on branch `llm-ai-sdk-registry` (not pushed).
+
+## 2026-05-29 — Direction reset + inbound ingestion (commit d1ce7e5)
+
+Strategic pivot (decided with Jake): stop self-sourcing signals; agent-crm is "the agentic CRM" — the system of record (replaces HubSpot) that the customer's existing tools (Clay/Gmail/enrichment) feed INTO. Warp-for-CRM. Discovery connectors (YC/Exa/HN/web/ATS) frozen, not deleted; the post-signal pipeline is the value and is source-agnostic. Plan: `synchronous-pondering-kahan.md`. Memory: `[[project_direction_agentic_crm_ingestion]]`.
+
+Shipped (18 files, commit `d1ce7e5` on `llm-ai-sdk-registry`):
+- `packages/tools/src/ingest.ts` — idempotent `ingestRows` core. Accounts resolve by domain→name (preloaded cache); contacts by email (`linkContactToAccount`); rows dedup cross-run by `item_id`; one signal/row so the pipeline fires.
+- `/api/ingest/webhook` + `inbound_webhook` push connector — Clay/Zapier/any tool POSTs rows. Bearer auth extracted to `apps/web/app/api/_lib/resolve_api_key.ts` (shared with `/api/mcp`). Spec on `sources.config.ingest_spec`.
+- `/api/ingest/import` + `Settings → Import` page — one-time CSV migration, client-side parse + auto-guessed column mapping + optional deal mapping.
+- `create_entity` tool + migration `0033_create_entity.sql` (APPLIED to prod) — opportunity entities; deal_stage/value/close_date as superseded-on-change facts, resolved across re-imports by a `deal_external_id` fact.
+- `custom_http` shares the ingest helpers; Sources page shows the webhook push URL + Bearer hint.
+
+Fixed a pre-existing supersede-convention bug: `getEntity` and `scoreAndAssert` read `supersedes IS NULL` (the stale ORIGINAL). `supersede_fact` writes the new row with `supersedes=<old id>`, so current = the row not pointed-to by any other (convention cite/relations/feed/replay already use). Corrected both; fixes stale deal_stage AND stale/forked scores.
+
+Verified live (throwaway workspaces): idempotency 9/9, deals 3-change no-fork, `get_entity` returns current stage. Migration 0032 confirmed already applied in prod (state doc was stale).
+
+Deferred (fast-follow): live pulls from coexisting tools (Gmail/Calendar/Clay via Composio); authenticated end-to-end click-through of the Import UI.
+
+## 2026-05-29 - Magic-link login: stop swallowing the auth error (silent-bounce fix)
+
+**Symptom:** clicking the magic link sent the user back to the sign-in form with no message, looking like an infinite loop. The flow was fine; the failure *reason* was discarded in two places, so every failure looked identical.
+
+**Diagnosis (confirmed empirically, not guessed):**
+- Real flow is PKCE. Replicated `signInWithOtp` and captured the outbound `/auth/v1/otp` body: it carries `code_challenge` + `code_challenge_method: s256`, so the link arrives as `/auth/callback?code=...` (server-readable), and the `@supabase/ssr` verifier cookie is `path=/`, `sameSite=lax`, 400-day life. Same-browser prompt-click works.
+- Redirect URL is allowlisted. Generated a real link via the admin API and followed the verify redirect; Supabase honored `http://localhost:3000/auth/callback` with no Site-URL fallback, so the allowlist was not the cause.
+- The bug: the callback did `if (!code) redirect('/login')`, dropping Supabase's `?error=` (expired/used/denied), and the login page never read `?error`, so even the forwarded `exchangeCodeForSession` message was thrown away.
+
+**Fix (2 files, branch `llm-ai-sdk-registry`, not committed):**
+- `apps/web/app/auth/callback/route.ts`: forward `?error`/`?error_description` to `/login`; forward the real exchange error; add a `token_hash` + `verifyOtp` branch (cross-browser-safe flow if the email template is switched to it); move to the current `getAll`/`setAll` cookie interface (the deprecated `get`/`set`/`remove` trio is Supabase's documented random-logout cause).
+- `apps/web/app/login/page.tsx`: read and display the error from the query, plus a `#error=` hash fallback.
+
+**Verified live (dev server against prod Supabase):** all three failure paths now 307 to `/login?error=<reason>`. The bogus-code path surfaces Supabase's real text ("PKCE code verifier not found in storage... different browser or device, or storage cleared"). `/login?error=...` renders the message (present in HTML, loading shell gone). Typecheck clean on both files.
+
+**Likely real cause for the user** (the now-visible error confirms which): stale or reused link, or a scanner pre-fetch ("invalid or has expired" -> request a fresh link); or the email opened in a different browser ("code verifier not found" -> same browser, or switch the email template to the `token_hash` flow).
