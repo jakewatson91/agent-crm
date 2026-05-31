@@ -18,6 +18,7 @@ export {
   entitiesFromSubject,
   currentRole,
   activeFacts,
+  excludeSuperseded,
   findEntityByName,
   type RelatedEntity,
   type FactRow as RelationFactRow,

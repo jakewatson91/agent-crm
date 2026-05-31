@@ -72,6 +72,32 @@ async function activeFactsForSubject(
   return rows.filter((r) => !supersededIds.has(r.id));
 }
 
+/**
+ * Filter already-fetched fact rows to those NOT superseded by a newer fact.
+ * Correct for any query direction (subject- or object-side): it asks directly
+ * whether any fact points at these ids via `supersedes`. Use this instead of
+ * `.is('supersedes', null)`, which returns the STALE original — supersede_fact
+ * writes new.supersedes = old.id, so the original keeps supersedes null.
+ */
+export async function excludeSuperseded<T extends { id: string }>(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  rows: T[],
+): Promise<T[]> {
+  if (rows.length === 0) return rows;
+  const { data } = await supabase
+    .from('facts')
+    .select('supersedes')
+    .eq('workspace_id', workspace_id)
+    .in('supersedes', rows.map((r) => r.id));
+  const superseded = new Set(
+    ((data ?? []) as Array<{ supersedes: string | null }>)
+      .map((r) => r.supersedes)
+      .filter((x): x is string => !!x),
+  );
+  return rows.filter((r) => !superseded.has(r.id));
+}
+
 /** Given an account, return all entities linked TO it via any fact (e.g. contacts, opps).
  *  Walks `object_entity = account_id` direction. */
 export async function relatedToEntity(
@@ -172,7 +198,7 @@ export async function currentRole(
 ): Promise<{ predicate: string; fact_id: string; confidence: number } | null> {
   const facts = await activeFactsForSubject(supabase, workspace_id, contact_id);
   const role = facts
-    .filter((f) => f.object_entity === account_id && /^is_.+_of$|^works_at$|^advises$/.test(f.predicate))
+    .filter((f) => f.object_entity === account_id)
     .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))[0];
   if (!role) return null;
   return { predicate: role.predicate, fact_id: role.id, confidence: role.confidence };

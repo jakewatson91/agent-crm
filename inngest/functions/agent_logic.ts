@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, chatCompleteForWorkspace, buildDrafterDecision, scoreFacts, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
@@ -499,9 +499,26 @@ export async function runAgent(
     } catch { /* non-fatal */ }
   }
 
+  // Relationship-edge extraction config (Step 2). Off by default; when on, the
+  // enricher tags entity-objects so the dispatch can resolve them into edges.
+  const enr = (policy.enrichment ?? {}) as { resolve_entities?: boolean; node_types?: string[] };
+  const resolveEntities = !!enr.resolve_entities;
+  const nodeTypes = Array.isArray(enr.node_types) ? enr.node_types : ['account', 'contact', 'product'];
+  let edgeVocab: string[] = [];
+  if (behavior === 'enricher' && resolveEntities) {
+    const ev = await supabase.from('facts').select('predicate')
+      .eq('workspace_id', payload.workspace_id).not('object_entity', 'is', null).limit(1000);
+    const counts: Record<string, number> = {};
+    for (const row of (ev.data ?? []) as Array<{ predicate: string }>) counts[row.predicate] = (counts[row.predicate] ?? 0) + 1;
+    edgeVocab = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([p]) => p);
+  }
+
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp, {
     examples: (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>,
     banned: (policy.enrichment?.banned_predicates ?? []) as string[],
+    resolveEntities,
+    edgeVocab,
+    nodeTypes,
   }, {
     subject_style: policy.drafter?.subject_style,
     paragraph_count: policy.drafter?.paragraph_count,
@@ -511,6 +528,7 @@ export async function runAgent(
     ask_examples: policy.drafter?.ask_examples,
     // forbidden_phrases in the PROMPT (post-LLM sanitize is separate, via banned_phrases).
     forbidden_phrases: policy.outreach?.banned_phrases ?? [],
+    forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
   });
   // Compute the deterministic shortlist for drafters. ~30 token addition; the
   // drafter prompt is told to prefer these but can override when context demands.
@@ -532,7 +550,7 @@ export async function runAgent(
   // matched_theme / matched_evidence come from action_selector. When set, the
   // drafter prompt below uses them as PRIMARY_ANGLE so the LLM leads with the
   // value-prop theme instead of grabbing the first fact in the list.
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, matchedTheme, matchedEvidence, recommended);
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, matchedTheme, matchedEvidence, recommended, behavior === 'drafter');
 
   let llm;
   try {
@@ -631,6 +649,12 @@ export async function runAgent(
         entity_name: ent.data.name,
       },
     }, meta);
+    // Lifecycle: a draft + approval request now exist for this account. Record
+    // the transition so the outreach stage reads cleanly (researched → drafted).
+    // only_advance keeps an already-contacted account from regressing. Non-fatal.
+    try {
+      await setOutreachStage(supabase, actor, ent.data.id, 'drafted', { signal_id: sigData?.id ?? payload.signal_id });
+    } catch { /* non-fatal — a stage-write hiccup must not block the draft */ }
     // Auditable decision post explaining why we drafted. Cites the same facts so the
     // provenance walk works from either the draft or the decision.
     const reasoning = sanitize(((decision as { reasoning?: string }).reasoning ?? '').toString());
@@ -681,16 +705,35 @@ export async function runAgent(
   // Enricher dispatch: assert each extracted fact, then post a one-line summary.
   // assert_fact is content-hashed, so re-asserting an identical fact is idempotent.
   if (behavior === 'enricher') {
-    const facts = (decision.facts ?? []) as Array<{ predicate: string; object_text: string; confidence: number }>;
+    const facts = (decision.facts ?? []) as Array<{ predicate: string; object_text: string; object_type?: string; domain?: string; confidence: number }>;
     let asserted = 0;
     const assertedIds: string[] = [];
     for (const f of facts) {
       if (!f.predicate || !f.object_text) continue;
       const conf = typeof f.confidence === 'number' ? Math.max(0, Math.min(1, f.confidence)) : 0.7;
+      const predicate = f.predicate.toLowerCase().replace(/\s+/g, '_');
+
+      // Edge path: when enabled and the LLM tagged the object as a modeled entity
+      // kind, resolve it to a real entity and write object_entity instead of text.
+      // No-match degrades to object_text so the claim is never lost.
+      let edgeTargetId: string | null = null;
+      if (resolveEntities && f.object_type && nodeTypes.includes(f.object_type) && looksLikeEntityName(f.object_text)) {
+        try {
+          const res = await resolveOrCreateEntity(supabase, actor, {
+            name: f.object_text,
+            object_type: f.object_type,
+            domain: f.domain ?? null,
+            subject_entity: ent.data.id,
+            signal_id: sigData?.id ?? null,
+          });
+          edgeTargetId = res.entity_id;
+        } catch { /* fall through to text */ }
+      }
+
       const r = await callTool(supabase, actor, 'assert_fact', {
         subject_entity: ent.data.id,
-        predicate: f.predicate.toLowerCase().replace(/\s+/g, '_'),
-        object_text: f.object_text,
+        predicate,
+        ...(edgeTargetId ? { object_entity: edgeTargetId } : { object_text: f.object_text }),
         confidence: conf,
         // Bind fact to the signal that triggered this enricher run. The cite
         // chain walker uses this directly; falls back to the parent-event walk
@@ -734,6 +777,14 @@ export async function runAgent(
     // `behavior === 'drafter'` block above. The enricher fires on every signal,
     // which used to burn Hunter credits on hundreds of entities we'd never
     // actually message. Drafter-time lookup ties spend to outbound volume.
+    // Lifecycle: facts were extracted for this account → it has been researched.
+    // Gate on asserted > 0 so an empty enrichment run doesn't claim progress.
+    // only_advance keeps a later re-run from regressing a drafted/contacted account.
+    if (asserted > 0) {
+      try {
+        await setOutreachStage(supabase, actor, ent.data.id, 'researched', { signal_id: sigData?.id ?? payload.signal_id });
+      } catch { /* non-fatal — enrichment already landed */ }
+    }
     // Auto-score: only re-run when the enricher actually asserted new facts.
     // Score is a pure function of facts; identical facts in = identical score out,
     // so skipping when nothing changed saves the LLM + 4 embedding calls per
@@ -823,7 +874,7 @@ function buildSystemPrompt(
   constitution: string,
   persona: unknown,
   icp: unknown,
-  enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[] },
+  enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[]; resolveEntities?: boolean; edgeVocab?: string[]; nodeTypes?: string[] },
   drafterPolicy?: {
     subject_style?: 'one_word' | 'short_phrase' | 'question';
     paragraph_count?: number;
@@ -832,6 +883,7 @@ function buildSystemPrompt(
     tone_keywords?: string[];
     ask_examples?: string[];
     forbidden_phrases?: string[];
+    forbidden_field_terms?: string[];
   },
 ): string {
   const identity = behavior === 'drafter'
@@ -851,6 +903,9 @@ function buildSystemPrompt(
   const enricherDecision = buildEnricherDecision({
     examples: enricherPolicy?.examples ?? [],
     banned: enricherPolicy?.banned ?? [],
+    resolveEntities: enricherPolicy?.resolveEntities,
+    edgeVocab: enricherPolicy?.edgeVocab,
+    nodeTypes: enricherPolicy?.nodeTypes,
   });
   const drafterDecision = buildDrafterDecision({
     subject_style: drafterPolicy?.subject_style,
@@ -860,6 +915,7 @@ function buildSystemPrompt(
     tone_keywords: drafterPolicy?.tone_keywords,
     ask_examples: drafterPolicy?.ask_examples,
     forbidden_phrases: drafterPolicy?.forbidden_phrases,
+    forbidden_field_terms: drafterPolicy?.forbidden_field_terms,
   });
 
   const decisionBlock = behavior === 'drafter' ? drafterDecision
@@ -900,6 +956,9 @@ const DEFAULT_BANNED_PREDICATES = new Set(['is_company', 'is_real', 'exists', 'i
 function buildEnricherDecision(opts: {
   examples: Array<{ predicate: string; object_text: string }>;
   banned: string[];
+  resolveEntities?: boolean;
+  edgeVocab?: string[];
+  nodeTypes?: string[];
 }): string {
   const examples = (opts.examples.length ? opts.examples : DEFAULT_ENRICHER_EXAMPLES)
     .slice(0, 8)
@@ -909,6 +968,19 @@ function buildEnricherDecision(opts: {
   const bannedLine = bannedAll.length
     ? `\n- Never assert these predicates: ${bannedAll.join(', ')}.`
     : '';
+
+  // Relationship-edge instructions. Empty unless the workspace enables it, so the
+  // default prompt stays byte-for-byte unchanged for every existing workspace.
+  const nodeTypeList = opts.nodeTypes ?? ['account', 'contact', 'product'];
+  const vocabLine = opts.edgeVocab && opts.edgeVocab.length
+    ? `Reuse an existing relationship type when one fits: ${opts.edgeVocab.join(', ')}. Coin a new lowercase predicate only when none fits.`
+    : `Name the relationship with a clear lowercase predicate (e.g. customer_of, backed_by, partners_with, integrates_with).`;
+  const relBlock = opts.resolveEntities
+    ? `\n\nRELATIONSHIPS — when object_text names ANOTHER organization, person, or product THIS entity is related to (a customer, investor, partner, competitor, acquirer, employer, etc.), set "object_type" to its kind (${nodeTypeList.join(' / ')}) and, if you know it, set "domain" to its website (e.g. "stripe.com"). ${vocabLine} For any value that is NOT a named entity (a stage, count, description, pain, or a stack item like a programming language), set "object_type" to "literal" and omit domain.`
+    : '';
+  const objSchema = opts.resolveEntities
+    ? `{"predicate":"<verb_or_attribute>","object_text":"<value or entity name>","object_type":"<${nodeTypeList.join('|')}|literal>","domain":"<website if object_type is an org; else omit>","confidence":0.0-1.0}`
+    : `{"predicate":"<verb_or_attribute>","object_text":"<value>","confidence":0.0-1.0}`;
 
   return `A new signal arrived about the account in the user message. Extract atomic factual claims about THIS entity that are supported by the signal AND that the system doesn't already know.
 
@@ -926,7 +998,7 @@ Each claim should be:
 - ATOMIC: one predicate, one object. Not "uses postgres and redis."
 - VERBATIM-GROUNDED: only what's stated or directly implied. No speculation.
 
-Use object_text for the value. Confidence: 0.95 explicit, 0.7 implied. Skip lower.
+Use object_text for the value. Confidence: 0.95 explicit, 0.7 implied. Skip lower.${relBlock}
 
 PAIN EXTRACTION (second pass) — separately from the demographic facts above, extract any pain, frustration, complaint, unmet need, manual-toil pattern, or expressed limitation the source describes. Use predicate "pain_observed" and an object_text that captures the pain in concrete terms, preferring the source's own wording where possible. Each pain_observed entry goes in the SAME facts[] array as the demographic facts above and MUST include the confidence field (0.95 directly stated, 0.7 strongly implied) — same JSON schema, no separate section. Examples (these are SHAPES, not a closed list — extract anything that fits regardless of vertical):
 - pain_observed = "founder writing every outbound email personally, no time to scale"
@@ -936,21 +1008,12 @@ PAIN EXTRACTION (second pass) — separately from the demographic facts above, e
 
 Pain is usually expressed indirectly. Look for: complaints ("we hate / can't / wish"), descriptions of manual work ("we still do X by hand"), references to gaps ("we don't have X yet"), or descriptions of friction ("X takes us Y hours / weeks"). Statements about challenges, constraints, manual workarounds, or what doesn't work today ARE pain — extract them as pain_observed even when stated calmly and factually, not just when emotionally vented. Do not split the same pain across pain_observed and another predicate like has_challenge or seeks_solution; use pain_observed for the pain itself. Skip if the source is purely positive / promotional / announcement-only with no friction language. Confidence 0.95 if directly stated, 0.7 if strongly implied. Do not invent pains that aren't on the page.
 
-HIRING SIGNALS (apply when the signal's structured_tags.kind === "hiring" or signal.type === "hiring_post" — these come from ATS connectors and the signal body contains a job description). In addition to the demographic and pain passes above, extract:
-- hiring_role = "<role family> / <seniority> — <exact title>"   (one fact, e.g. "sales / vp — Head of Sales")
-- hiring_tech_stack = "<technology>"   (one fact per specific technology/tool/language named in the description: e.g. "Salesforce", "Python", "dbt". Generic words like "AI" or "cloud" don't count.)
-- hiring_responsibility = "<one-line responsibility>"   (one fact per major responsibility, up to 3, paraphrased from the description)
-- hiring_salary_range = "$<min>–$<max> <currency>/<period>"   (only when explicit in the description OR signal structured_tags has job_salary_min/max — never invent)
-- hiring_location_mode = "remote" | "hybrid" | "onsite-<city>"   (only when stated)
-- hiring_employment_type = "full_time" | "contract" | "intern" | "<other-as-stated>"   (only when stated)
-- recent_event = "posted <exact title> via <provider>"   (one summary fact, keep this short)
-
-Each of these is its own fact in facts[]. Tech stack and responsibilities expand into multiple facts — don't collapse them. Stick to what the description actually says; if the description is empty or generic, extract only the role + summary and skip the rest. Confidence 0.95 when explicitly stated in the description, 0.7 when strongly implied.
+DEPTH (when the signal carries a rich payload — a long post, a detailed listing, a press release — go deep instead of summarizing). Extract every specific, atomic detail the payload states, following the workspace example shapes above. Pull out each named entity, tool, quantity, date, role, relationship, and stated attribute as its own fact (skip generic filler words that carry no information on their own); paraphrase each distinct claim into one atomic fact; and add one short summary fact of the event itself. Use the predicate names the workspace examples establish; if a detail fits no example shape, name it with a clear lowercase predicate of your own. One predicate, one object — never collapse multiple details into a single fact. If the payload is empty or generic, extract only what's actually there and skip the rest. Confidence 0.95 when explicit, 0.7 when strongly implied.
 
 REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.
 
 Output strictly valid JSON:
-{"facts":[{"predicate":"<verb_or_attribute>","object_text":"<value>","confidence":0.0-1.0},...],"summary":"<1 sentence>","reasoning":"<why these facts, 1-2 sentences>"}
+{"facts":[${objSchema},...],"summary":"<1 sentence>","reasoning":"<why these facts, 1-2 sentences>"}
 
 If nothing genuinely new is extractable, output {"facts":[],"summary":"No new facts; data already known or signal too vague.","reasoning":"<why nothing new>"}`;
 }
@@ -967,6 +1030,10 @@ function buildUserPrompt(
   matchedTheme: string | null = null,
   matchedEvidence: string | null = null,
   recommended: FactScore[] = [],
+  // Drafters get attributes as readable prose so the email never echoes internal
+  // field names ("domain", "stack"). The enricher keeps raw JSON keys — it needs
+  // them to know what's already extracted and avoid re-asserting.
+  proseAttributes = false,
 ): string {
   // Strip embedding from signal (massive vector adds nothing for the LLM and burns tokens).
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
@@ -998,7 +1065,7 @@ ${JSON.stringify(signalForPrompt, null, 2)}
 
 ACCOUNT: ${entity.name}
 ATTRIBUTES (already known — do not re-extract these as facts):
-${JSON.stringify(entity.attributes, null, 2)}
+${proseAttributes ? renderAttributesProse(entity.attributes) : JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}

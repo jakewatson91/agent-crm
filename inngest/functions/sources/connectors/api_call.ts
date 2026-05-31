@@ -194,9 +194,9 @@ const apiCall: Connector = async (ctx: ConnectorContext): Promise<ConnectorResul
           name: companyName,
           attributes: {
             domain: domain ?? `${companyName.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'api_call',
+            _discovered_via: 'api_call',
             discovered_at: new Date().toISOString(),
-            source_url: url,
+            _source_url: url,
           },
         });
         if (!created.ok) { result.errors.push(`create_account failed for ${companyName}: ${created.error}`); continue; }

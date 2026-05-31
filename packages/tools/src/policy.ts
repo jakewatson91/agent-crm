@@ -7,6 +7,7 @@
  * for the original workspace.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DisplayPolicy } from './fact_groups.ts';
 
 export interface OutreachPolicy {
   override_to?: string | null;          // null/undefined = send to real recipient
@@ -82,6 +83,14 @@ export interface DrafterPolicy {
    * ["Worth exploring?", "Open to a 15-min chat?", "Want to see it run?"]
    */
   ask_examples?: string[];
+  /**
+   * Internal field/column names the drafter must never echo into an email
+   * ("domain", "tech_stack", "score", ...). These are THIS workspace's own
+   * field names — a different vertical has different ones — so they're config,
+   * not code. Default empty = rely on the generic "don't name internal fields"
+   * rule in the drafter prompt.
+   */
+  forbidden_field_terms?: string[];
 }
 
 /**
@@ -170,6 +179,25 @@ export interface HiringFilterPolicy {
   always_include_exec?: boolean;
 }
 
+/**
+ * Outreach-lifecycle marker. Records where an account is in the outreach
+ * process as a single fact, written by code at deterministic transition points
+ * (the agent's own actions). The transition KEYS below are universal to any
+ * outbound motion — they describe what the agent did, not a vertical-specific
+ * sales process — so a neutral default is allowed. The customer-facing fact
+ * NAME and the per-transition LABELS live here so nothing is hardcoded:
+ *   - stage_fact_name: which fact records the stage. Default 'outreach_stage'.
+ *   - labels: maps each transition key to the value written. Default: the key.
+ *
+ * Unset / empty → defaults below. A customer can rename the fact or relabel
+ * any stage without a code change.
+ */
+export type OutreachTransition = 'researched' | 'drafted' | 'contacted' | 'replied';
+export interface LifecyclePolicy {
+  stage_fact_name?: string;
+  labels?: Partial<Record<OutreachTransition, string>>;
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
@@ -184,6 +212,8 @@ export interface WorkspacePolicy {
   routing?: RoutingPolicy;
   scoring?: ScoringPolicy;
   hiring_filter?: HiringFilterPolicy;
+  lifecycle?: LifecyclePolicy;
+  display?: DisplayPolicy;
 
   /**
    * Generic env-var bag for this workspace. Flat dict of NAME → value.

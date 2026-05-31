@@ -262,9 +262,9 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
           name,
           attributes: {
             domain: domain ?? `${name.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'custom_http',
+            _discovered_via: 'custom_http',
             discovered_at: new Date().toISOString(),
-            source_url: fetchSpec.url,
+            _source_url: fetchSpec.url,
           },
         });
         if (!created.ok) { result.errors.push(`create_account ${name}: ${created.error}`); continue; }

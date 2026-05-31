@@ -431,9 +431,9 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
           name: companyName,
           attributes: {
             domain: companyDomain ?? `${companyName.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'web',
+            _discovered_via: 'web',
             discovered_at: new Date().toISOString(),
-            source_url: url,
+            _source_url: url,
           },
         });
         if (!created.ok) { result.errors.push(`create_account failed for ${companyName}: ${created.error}`); continue; }

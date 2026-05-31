@@ -219,9 +219,9 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
           name: company.name,
           attributes: {
             domain: domain ?? `${company.name.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'exa',
+            _discovered_via: 'exa',
             discovered_at: new Date().toISOString(),
-            search_query: query,
+            _search_query: query,
           },
         });
         if (!created.ok) { result.errors.push(`create_account failed for ${company.name}: ${created.error}`); continue; }

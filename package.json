@@ -23,6 +23,7 @@
     "agent:list": "tsx scripts/list_agents.ts",
     "loop": "tsx scripts/run_loop.ts",
     "sweep": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/sweep.ts",
+    "hiring:run": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/run_hiring_daily.ts",
     "self-host:bootstrap": "bash self-host/supabase/bootstrap.sh",
     "self-host:supabase:up": "cd self-host/supabase/local && docker compose up -d",
     "self-host:supabase:down": "cd self-host/supabase/local && docker compose down",

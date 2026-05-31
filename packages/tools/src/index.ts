@@ -32,7 +32,7 @@ export { compress, estimateTokens, type CompressOptions, type CompressResult, ty
 export { hasValueAlignedFact } from './action_selector.ts';
 export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, resolveChatModel, type ChatForWorkspaceArgs } from './chat_workspace.ts';
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
-export { buildDrafterDecision, type DrafterDecisionOpts } from './prompt_builders.ts';
+export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts } from './prompt_builders.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
@@ -40,8 +40,12 @@ export { scoreEntity, scoreAndAssert, combineSubScores };
 export { selectAction, loadActionContext, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.ts';
 export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights } from './scoring.ts';
 export { graphProximity, type GraphProximityResult } from './graph.ts';
+export { resolveOrCreateEntity, normalizeEntityName, trigramSim, looksLikeEntityName, type ResolveResult } from './resolve.ts';
 export { getEntityTypes, getEntityTypesBatch, isEntityOfType, entityIdsOfType, listWorkspaceTypes } from './entity_types.ts';
 export { ingestRows, getPath, normalizeDomain, hashItem, type IngestSpec, type IngestProvenance, type IngestResult } from './ingest.ts';
+export { setOutreachStage, DEFAULT_STAGE_FACT_NAME } from './lifecycle.ts';
+export type { LifecyclePolicy, OutreachTransition } from './policy.ts';
+export { factFamilyOf, type FactGroup, type DisplayPolicy } from './fact_groups.ts';
 export type { EntityStatus };
 
 export interface ToolResult {

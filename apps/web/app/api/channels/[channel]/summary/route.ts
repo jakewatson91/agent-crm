@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { getEntityTypes } from '@agent-crm/tools';
+import { getEntityTypes, getPolicy, factFamilyOf } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
 
@@ -36,18 +36,6 @@ interface Fact {
 
 const RECENT_WINDOW_DAYS = 14;
 
-// Fact predicate families. Groups noisy per-dimension scoring facts together
-// and surfaces business attributes (industry, stage, etc.) as the lead.
-const FACT_FAMILIES: Array<{ name: string; match: (p: string) => boolean }> = [
-  { name: 'firmographics', match: (p) => ['industry', 'stage', 'yc_status', 'yc_batch', 'is_hiring', 'team_size', 'location', 'domain'].includes(p) },
-  { name: 'scoring',       match: (p) => p.startsWith('score_') || p === 'icp_fit' || p === 'icp_fit_breakdown' },
-  { name: 'engagement',    match: (p) => ['dropped_until', 'research_triggered', 'contact_lookup_attempted', 'works_at', 'email', 'role'].includes(p) },
-];
-function familyOf(predicate: string): string {
-  for (const f of FACT_FAMILIES) if (f.match(predicate)) return f.name;
-  return 'other';
-}
-
 function dedupKey(it: GroupedItem): string {
   return `${it.kind}::${[...it.cites].sort().join(',')}`;
 }
@@ -59,6 +47,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   const ch = await supabase.from('channels').select('id, title, account_entity_id, workspace_id').eq('id', channel).maybeSingle();
   if (ch.error || !ch.data) return NextResponse.json({ error: 'channel not found' }, { status: 404 });
   const account_id = ch.data.account_entity_id as string;
+
+  const policy = await getPolicy(supabase, ch.data.workspace_id as string);
+  const factGroups = policy.display?.fact_groups ?? [];
 
   const ent = await supabase.from('entities').select('name, attributes').eq('id', account_id).maybeSingle();
   const entKinds = await getEntityTypes(supabase, account_id);
@@ -80,7 +71,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   const activeFacts: Record<string, Fact[]> = {};
   for (const f of factRows) {
     if (supersededIds.has(f.id)) continue;
-    const fam = familyOf(f.predicate);
+    const fam = factFamilyOf(f.predicate, factGroups);
     (activeFacts[fam] ??= []).push({
       id: f.id, predicate: f.predicate, object_text: f.object_text,
       confidence: f.confidence, observed_at: f.observed_at,

@@ -34,6 +34,7 @@ Concrete shape:
 
 ## Architecture / debt
 
+- **Portability fixes before open-sourcing (2026-05-30).** Full list + fixes in `.claude/portability-review-2026-05-30.md`. 6 spots where the hiring-loop session left agent-crm vocabulary / a connector's shape in shared code. HIGH: archive sweep reads `attributes.ats`; `renderAttributesProse` hardcodes connector key names. MEDIUM: drafter jargon field-name list; enricher DEPTH instruction's hiring nouns; `FACT_FAMILIES` hardcoded + duplicated across 2 routes. LOW: lifecycle transition keys/order.
 - **Schema collapse: channels → entities.** Plan filed at repo root `TODO_entity_merge.md`. ~25 files + a migration to drop `channels` and re-point `channel_posts` to `entity_posts`. Defer to focused session.
 - **Per-workspace secrets table with envelope encryption.** API keys currently live on `workspaces.policy` as a stopgap. Long-term: `workspace_secrets` table.
 - **Connector marketplace / sharing across workspaces.** Today connectors are per-workspace rows in `sources`. No way to share a spec across customers.

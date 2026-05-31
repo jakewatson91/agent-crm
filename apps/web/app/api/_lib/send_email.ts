@@ -19,7 +19,8 @@ export interface SendEmailArgs {
   workspace_id: string;
   intended_to: string | null;        // who the agent thinks the email is for
   subject: string;
-  body: string;
+  body: string;                      // plain-text body (always sent as the text part)
+  html?: string;                     // optional sanitized HTML body (rich-text drafts)
 }
 
 export interface SendEmailResult {
@@ -30,7 +31,7 @@ export interface SendEmailResult {
   error?: string;
 }
 
-export async function sendEmail({ supabase, workspace_id, intended_to, subject, body }: SendEmailArgs): Promise<SendEmailResult> {
+export async function sendEmail({ supabase, workspace_id, intended_to, subject, body, html }: SendEmailArgs): Promise<SendEmailResult> {
   const policy = await getPolicy(supabase, workspace_id);
   // Resolution: policy.env.RESEND_API_KEY → legacy policy.outreach.resend_api_key → process.env.
   const apiKey = policy.env?.RESEND_API_KEY ?? policy.outreach?.resend_api_key ?? process.env.RESEND_API_KEY;
@@ -59,7 +60,10 @@ export async function sendEmail({ supabase, workspace_id, intended_to, subject, 
         from: policy.outreach?.from_email ?? 'onboarding@resend.dev',
         to: effective_to,
         subject: finalSubject,
+        // Always include text (deliverability + text-only clients). When the
+        // user formatted a rich draft, html is the primary part.
         text: body,
+        ...(html ? { html } : {}),
       }),
     });
     if (!res.ok) {

@@ -367,8 +367,6 @@ async function queryDrafts(
   return { scope: 'drafts', rows };
 }
 
-const CONTACT_LINK_PREDICATES = ['works_at', 'is_ceo_of', 'is_cto_of', 'is_founder_of', 'is_employee_of', 'advises'];
-
 function isPlaceholderDomain(d: string | undefined | null): boolean {
   if (!d) return true;
   return /\.example$/i.test(d);
@@ -411,8 +409,9 @@ async function queryContacts(
   const rawDomain = (account.attributes?.domain as string | undefined) ?? null;
   const domain = isPlaceholderDomain(rawDomain) ? null : rawDomain;
 
-  // 2) Linked contacts via works_at / is_*_of.
-  const linked = await relatedToEntity(ctx.supabase, ctx.workspace_id, accountId, CONTACT_LINK_PREDICATES);
+  // 2) Linked contacts: any entity linked to the account whose kind is contact.
+  //    Open vocab — the relationship type may be works_at or anything coined.
+  const linked = (await relatedToEntity(ctx.supabase, ctx.workspace_id, accountId)).filter((r) => r.kind === 'contact');
   const linkedIds = new Set(linked.map((r) => r.entity_id));
 
   // 3) Unlinked contacts via email-domain heuristic (only if account has a real domain).
@@ -528,7 +527,7 @@ const createAccountTool: ToolHandler = {
   },
   run: async (ctx, args: { name: string; domain?: string }) => {
     const attributes: Record<string, unknown> = {
-      discovered_via: 'chat_intake',
+      _discovered_via: 'chat_intake',
       discovered_at: new Date().toISOString(),
     };
     if (args.domain) attributes.domain = args.domain;

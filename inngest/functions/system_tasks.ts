@@ -365,6 +365,19 @@ export const entityArchiveSweep = inngest.createFunction(
       for (const r of (factHits.data ?? []) as Array<{ subject_entity: string }>) hasActivity.add(r.subject_entity);
       for (const r of (signalHits.data ?? []) as Array<{ entity_id: string }>) hasActivity.add(r.entity_id);
 
+      // A connector can mark an entity as a recurring watch target by setting the
+      // reserved `_watched_by_source` attribute flag — e.g. the ATS connector
+      // sets it on a company whose job board it re-polls every run. Such an
+      // entity legitimately sits with zero facts/signals between hits (nothing
+      // has passed its filter yet), so the activity checks above don't protect
+      // it. Without this guard the sweep buries the exact accounts a recurring
+      // connector depends on (it archived 48 of 61 board owners once already).
+      // The flag is generic: the sweep names no connector, and any future
+      // connector that adopts an entity for ongoing watching sets the same flag.
+      for (const e of candidates) {
+        if (e.attributes?._watched_by_source) hasActivity.add(e.id);
+      }
+
       const channelIds = ((postHits.data ?? []) as Array<{ id: string; account_entity_id: string }>).map((c) => c.id);
       const channelToEntity = new Map<string, string>(
         ((postHits.data ?? []) as Array<{ id: string; account_entity_id: string }>)

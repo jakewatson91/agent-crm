@@ -1257,3 +1257,34 @@ Deferred (fast-follow): live pulls from coexisting tools (Gmail/Calendar/Clay vi
 **Verified live (dev server against prod Supabase):** all three failure paths now 307 to `/login?error=<reason>`. The bogus-code path surfaces Supabase's real text ("PKCE code verifier not found in storage... different browser or device, or storage cleared"). `/login?error=...` renders the message (present in HTML, loading shell gone). Typecheck clean on both files.
 
 **Likely real cause for the user** (the now-visible error confirms which): stale or reused link, or a scanner pre-fetch ("invalid or has expired" -> request a fresh link); or the email opened in a different browser ("code verifier not found" -> same browser, or switch the email template to the `token_hash` flow).
+
+---
+
+## 2026-05-30 — Hiring loop un-stuck end-to-end + draft UX (rich editor + inline citations) + decide_gate prod fix
+
+Plan: `crystalline-floating-storm.md`. Branch `llm-ai-sdk-registry`, NOT committed/pushed.
+
+**Root cause (the real blocker).** The hiring feed was dead because the daily `entityArchiveSweep` had starved the ATS watchlist, not because of a code throw. Only 61 of 863 accounts (ws af602fa1) ever had a real job board (60 Ashby + 1 Greenhouse); 48 of those got archived by the sweep, which disqualifies entities with zero facts/signals/posts — a board-owner with no role-match yet looks like junk. `getWatchedAccounts` filters `archived_at IS NULL`, so ATS watched only the ~13 active boards, whose jobs it had already deduped → 0 new signals on every run. The "silent error" (last_run_status=error, summary=null) was just the one-off dev script `_run_ats_once.ts` writing status without a summary.
+
+**Fixes (Phases A–D of the plan):**
+- A1: un-archived the 48 board owners; guarded `entityArchiveSweep` (system_tasks.ts) to never archive an entity with `attributes.ats.provider != 'none'`; set `ats_hiring_main.active=true`.
+- A2: `scripts/run_hiring_daily.ts` + `pnpm hiring:run` (finds active ats sources, runs the connector, writes a real last_run_summary).
+- A3: paused 4 catch-all/non-hiring subscriptions (audit_yc_enricher, catchall_enricher, web_signal_enricher, watch_x_posts_icp_companies, icp_enricher_test) + 3 quarterly yc sources → one enricher pass per signal, down from 5+ (the cost lever).
+- B1: removed the hardcoded hiring fact-name block from the enricher prompt (agent_logic.ts); names now flow from `policy.enrichment.example_facts`, seeded as angle-bracket SHAPES for af602fa1, empty default for new workspaces.
+- B2: new `packages/tools/src/lifecycle.ts setOutreachStage(supabase, actor, entity_id, key, opts)` — supersede-upsert (current = row not pointed at by any other's supersedes), only-advance guard by key rank; `policy.lifecycle` carries the fact name + per-key labels (neutral default `outreach_stage`). Wired: enricher→researched (gated on asserted>0), drafter→drafted, approve→contacted. reply→replied wired but dormant (no inbound parser; ties to backlog reply-ingest).
+- C: `renderAttributesProse` in prompt_builders.ts (drops plumbing keys, readable labels) threaded through `buildUserPrompt` so only the drafter gets prose; the enricher keeps raw JSON. Added a no-internal-field-names rule to the drafter prompt.
+- D: approve writes `contacted` (inside the existing try/catch); `policy.outreach.override_to`; `stage`→`funding_stage` config + 14-fact backfill (recomputed content_hash) + added to the 2 firmographics display arrays.
+
+**Verified live (af602fa1, no email until the final approve):** `hiring:run` → 4 new signals, errors=0. Per signal: exactly 1 enricher match (relevant_hires_enricher), deep config-named facts (hiring_tech_stack=Clay/Apollo as separate facts, per-duty hiring_responsibility, pain_observed, recent_event), outreach_stage=researched. Forced drafter → post_touch_draft + gate, outreach_stage=drafted, body with zero field-name jargon. Approve → email sent → contacted + last_outreach_at + 14-day cooldown + clean researched→drafted→contacted supersede chain.
+
+**Migration `0034_decide_gate_actor_cast.sql` — APPLIED to prod.** `record_event`'s decide_gate branch did `decided_by = p_actor_id::uuid`, which throws `invalid input syntax for type uuid: "web"` the moment a human approves via the web UI (actor_id='web'; the rest of the event model uses text sentinels and request_gate already stores p_actor_id as text). Guarded the cast (non-uuid → null); who/when stays in events.actor_id; decided_by is only denormalized (replay reads the event). This was blocking EVERY UI gate approval and only surfaced once the first send cleared Resend. Applied via direct `pg` over IPv6 (the `db.<ref>.supabase.co` host has no A record now — IPv6-only; node-pg defaulted to IPv4 → ENOTFOUND; resolved AAAA + connected by address).
+
+**Draft UX (generic, zero new deps):**
+- Rich-text WYSIWYG: `RichTextEditor.tsx` (contenteditable + B/i/link/bullet via execCommand) → `edited_html`; `html_email.ts` (whitelist sanitize + html→plain-text fallback); `send_email` gained an `html` param (sends html + text); `DraftActions` edit mode uses the editor; `gates/decide` sanitizes and sends html with a derived text fallback. Editor only appears behind the "edit" button on a PENDING draft.
+- Inline citations: `CitedText.tsx` — best-effort deterministic substring match of each cited fact's `object_text` to a span in the draft body, underline + hover popover (fact + source). Reuses `/api/facts/batch` + `/api/facts/[id]/chain` and the existing `WhyThis`/`CiteChain`. Important: all of this is pure relational reads — ZERO LLM calls. The "agent's reasoning" shown is the drafter's existing `reasoning` field (part of its single response), saved as a decision post at draft time, not a new call.
+
+**Resend setup gotcha:** `onboarding@resend.dev` (default sender) only delivers to the account owner's verified address. The send failed to the plan-named agentcrm91; switched `override_to` to jakeawatson91@gmail.com. Real-prospect sending needs a verified domain in Resend + `policy.outreach.from_email`.
+
+**Portability review** written to `.claude/portability-review-2026-05-30.md` — 6 items where this session left agent-crm vocabulary or a connector's shape in shared code (sweep reads attributes.ats; renderAttributesProse hardcodes connector keys; drafter jargon field-name list; enricher DEPTH hiring nouns; FACT_FAMILIES hardcoded+duplicated; lifecycle transition keys/order). To implement next session.
+
+**Not done:** commit + push; deleting scratch `scripts/_*.ts`; the 6 portability fixes.
