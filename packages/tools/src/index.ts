@@ -30,9 +30,9 @@ export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, 
 export { cronToMinIntervalMinutes } from './cron.ts';
 export { compress, estimateTokens, type CompressOptions, type CompressResult, type UrlRef } from './compress.ts';
 export { hasValueAlignedFact } from './action_selector.ts';
-export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, type ChatForWorkspaceArgs } from './chat_workspace.ts';
+export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, resolveChatModel, type ChatForWorkspaceArgs } from './chat_workspace.ts';
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
-export { buildDrafterDecision, type DrafterDecisionOpts } from './prompt_builders.ts';
+export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts } from './prompt_builders.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
 export { findContacts, linkContactToAccount };
@@ -40,7 +40,12 @@ export { scoreEntity, scoreAndAssert, combineSubScores };
 export { selectAction, loadActionContext, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.ts';
 export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights } from './scoring.ts';
 export { graphProximity, type GraphProximityResult } from './graph.ts';
+export { resolveOrCreateEntity, normalizeEntityName, trigramSim, looksLikeEntityName, type ResolveResult } from './resolve.ts';
 export { getEntityTypes, getEntityTypesBatch, isEntityOfType, entityIdsOfType, listWorkspaceTypes } from './entity_types.ts';
+export { ingestRows, getPath, normalizeDomain, hashItem, type IngestSpec, type IngestProvenance, type IngestResult } from './ingest.ts';
+export { setOutreachStage, DEFAULT_STAGE_FACT_NAME } from './lifecycle.ts';
+export type { LifecyclePolicy, OutreachTransition } from './policy.ts';
+export { factFamilyOf, type FactGroup, type DisplayPolicy } from './fact_groups.ts';
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -81,6 +86,7 @@ export async function callTool(
       case 'set_workspace_policy':
       case 'create_account':
       case 'create_contact':
+      case 'create_entity':
       case 'request_gate': {
         const r = await act(supabase, actor, { tool, args, ...meta });
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
@@ -306,6 +312,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     set_workspace_policy: 'Update a workspace persona, ICP, budget, or policy.',
     create_account: 'Create an account entity in the current workspace.',
     create_contact: 'Create a contact entity, optionally linked to an account.',
+    create_entity: 'Create an entity of any kind (e.g. opportunity). The kind is recorded as the entity\'s is_a fact. No channel is created.',
     assert_fact: 'Assert an atomic claim about an entity. Idempotent on content hash.',
     supersede_fact: 'Replace a prior fact with a corrected one. Original is preserved.',
     create_signal: 'Record a typed observation about an entity. Embedding is computed automatically.',

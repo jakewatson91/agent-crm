@@ -109,7 +109,8 @@ async function main() {
 
     // Determine origin
     let source = 'unknown';
-    if (attrs.discovered_via === 'web' || attrs.discovered_via === 'exa') source = String(attrs.discovered_via);
+    const discoveredVia = attrs._discovered_via ?? attrs.discovered_via; // _-prefixed since portability migration 0036
+    if (discoveredVia === 'web' || discoveredVia === 'exa') source = String(discoveredVia);
     else if (attrs.yc_batch) source = 'yc';
     else source = 'seed';
 

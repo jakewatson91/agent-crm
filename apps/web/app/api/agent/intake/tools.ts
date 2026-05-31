@@ -15,6 +15,7 @@ import {
   hasValueAlignedFact, lookupEntity, type ValueTheme, getPolicy,
   chatCompleteForWorkspace, getSourceMetrics,
   findContacts, linkContactToAccount,
+  getEntityTypes, getEntityTypesBatch, entityIdsOfType,
 } from '@agent-crm/tools';
 import { relatedToEntity } from '@agent-crm/primitives';
 import { type ToolSpec } from '@agent-crm/primitives';
@@ -151,13 +152,14 @@ async function queryEntities(
   // 1) Single entity by id — return entity + active facts.
   if (filter.id) {
     const ent = await ctx.supabase.from('entities')
-      .select('id, name, kind, attributes')
+      .select('id, name, attributes')
       .eq('id', filter.id).maybeSingle();
     if (!ent.data) return { scope: 'entities', rows: [], error: 'entity not found' };
     const facts = await ctx.supabase.from('facts')
       .select('id, predicate, object_text, confidence, observed_at')
       .eq('subject_entity', filter.id).is('supersedes', null).limit(50);
-    return { scope: 'entities', rows: [{ ...ent.data, facts: facts.data ?? [] }] };
+    const types = await getEntityTypes(ctx.supabase, filter.id);
+    return { scope: 'entities', rows: [{ ...ent.data, kind: types[0] ?? 'entity', types, facts: facts.data ?? [] }] };
   }
 
   // 2) Name match — fuzzy ILIKE.
@@ -181,12 +183,15 @@ async function queryEntities(
     if (fErr) return { scope: 'entities', error: fErr.message };
     const ids = Array.from(new Set((matchedFacts ?? []).map((f) => f.subject_entity as string)));
     if (ids.length === 0) return { scope: 'entities', rows: [], note: `no entities with ${filter.has_fact.predicate}${filter.has_fact.object_match ? ` ~ "${filter.has_fact.object_match}"` : ''}` };
-    let eq = ctx.supabase.from('entities')
-      .select('id, name, kind, attributes, archived_at').in('id', ids).is('archived_at', null);
-    if (filter.kind) eq = eq.eq('kind', filter.kind);
-    const { data: ents, error: eErr } = await eq;
+    const { data: ents, error: eErr } = await ctx.supabase.from('entities')
+      .select('id, name, attributes, archived_at').in('id', ids).is('archived_at', null);
     if (eErr) return { scope: 'entities', error: eErr.message };
-    return { scope: 'entities', rows: (ents ?? []).slice(0, limit).map((e) => ({ entity_id: e.id, name: e.name, kind: e.kind })) };
+    const entRows = (ents ?? []) as Array<{ id: string; name: string }>;
+    const typesById = await getEntityTypesBatch(ctx.supabase, entRows.map((e) => e.id));
+    const filtered = filter.kind
+      ? entRows.filter((e) => (typesById.get(e.id) ?? []).includes(filter.kind!))
+      : entRows;
+    return { scope: 'entities', rows: filtered.slice(0, limit).map((e) => ({ entity_id: e.id, name: e.name, kind: (typesById.get(e.id) ?? [])[0] ?? 'entity' })) };
   }
 
   // 3) Ranked list — by icp_fit.
@@ -209,17 +214,19 @@ async function queryEntities(
 
   const topIds = ranked.slice(0, limit * 3).map((r) => r.entity_id);
   const entRes = await ctx.supabase.from('entities')
-    .select('id, name, kind, archived_at').in('id', topIds);
-  const byId = new Map<string, { id: string; name: string; kind: string; archived_at: string | null }>();
-  for (const e of (entRes.data ?? []) as Array<{ id: string; name: string; kind: string; archived_at: string | null }>) {
+    .select('id, name, archived_at').in('id', topIds);
+  const byId = new Map<string, { id: string; name: string; archived_at: string | null }>();
+  for (const e of (entRes.data ?? []) as Array<{ id: string; name: string; archived_at: string | null }>) {
     byId.set(e.id, e);
   }
+  const typesById = await getEntityTypesBatch(ctx.supabase, topIds);
   const rows = ranked
     .map((r) => {
       const e = byId.get(r.entity_id);
       if (!e || e.archived_at) return null;
-      if (filter.kind && e.kind !== filter.kind) return null;
-      return { entity_id: r.entity_id, name: e.name, kind: e.kind, icp_fit: r.icp_fit };
+      const kinds = typesById.get(e.id) ?? [];
+      if (filter.kind && !kinds.includes(filter.kind)) return null;
+      return { entity_id: r.entity_id, name: e.name, kind: kinds[0] ?? 'entity', icp_fit: r.icp_fit };
     })
     .filter((x): x is { entity_id: string; name: string; kind: string; icp_fit: number } => x !== null)
     .slice(0, limit);
@@ -360,8 +367,6 @@ async function queryDrafts(
   return { scope: 'drafts', rows };
 }
 
-const CONTACT_LINK_PREDICATES = ['works_at', 'is_ceo_of', 'is_cto_of', 'is_founder_of', 'is_employee_of', 'advises'];
-
 function isPlaceholderDomain(d: string | undefined | null): boolean {
   if (!d) return true;
   return /\.example$/i.test(d);
@@ -397,15 +402,16 @@ async function queryContacts(
   }
 
   const acctRes = await ctx.supabase.from('entities')
-    .select('id, name, kind, attributes')
+    .select('id, name, attributes')
     .eq('id', accountId).maybeSingle();
   if (!acctRes.data) return { scope: 'contacts', rows: [], note: `account ${accountId} not found` };
-  const account = acctRes.data as { id: string; name: string; kind: string; attributes: Record<string, unknown> };
+  const account = acctRes.data as { id: string; name: string; attributes: Record<string, unknown> };
   const rawDomain = (account.attributes?.domain as string | undefined) ?? null;
   const domain = isPlaceholderDomain(rawDomain) ? null : rawDomain;
 
-  // 2) Linked contacts via works_at / is_*_of.
-  const linked = await relatedToEntity(ctx.supabase, ctx.workspace_id, accountId, CONTACT_LINK_PREDICATES);
+  // 2) Linked contacts: any entity linked to the account whose kind is contact.
+  //    Open vocab — the relationship type may be works_at or anything coined.
+  const linked = (await relatedToEntity(ctx.supabase, ctx.workspace_id, accountId)).filter((r) => r.kind === 'contact');
   const linkedIds = new Set(linked.map((r) => r.entity_id));
 
   // 3) Unlinked contacts via email-domain heuristic (only if account has a real domain).
@@ -423,8 +429,9 @@ async function queryContacts(
       .map((f) => f.subject_entity)
       .filter((id) => !linkedIds.has(id))));
     if (candidateIds.length > 0) {
+      const contactIds = new Set(await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'contact'));
       const { data: contactEnts } = await ctx.supabase.from('entities')
-        .select('id').in('id', candidateIds).eq('kind', 'contact').is('archived_at', null);
+        .select('id').in('id', candidateIds.filter((id) => contactIds.has(id))).is('archived_at', null);
       const okIds = new Set((contactEnts ?? []).map((e) => e.id as string));
       for (const f of (emailFacts ?? []) as Array<{ subject_entity: string; object_text: string }>) {
         if (okIds.has(f.subject_entity) && !linkedIds.has(f.subject_entity)) {
@@ -520,7 +527,7 @@ const createAccountTool: ToolHandler = {
   },
   run: async (ctx, args: { name: string; domain?: string }) => {
     const attributes: Record<string, unknown> = {
-      discovered_via: 'chat_intake',
+      _discovered_via: 'chat_intake',
       discovered_at: new Date().toISOString(),
     };
     if (args.domain) attributes.domain = args.domain;
@@ -623,7 +630,7 @@ Return JSON.`;
 
     try {
       const llm = await chatCompleteForWorkspace(ctx.supabase, ctx.workspace_id, {
-        model: 'deepseek/deepseek-v4-flash:free',
+        model: 'deepseek-v4-flash',
         behavior: 'intake',
         max_tokens: 800,
         response_format: { type: 'json_object' },

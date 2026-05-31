@@ -30,7 +30,7 @@
  *   }
  */
 
-import { callTool } from '@agent-crm/tools';
+import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
@@ -136,9 +136,12 @@ const apiCall: Connector = async (ctx: ConnectorContext): Promise<ConnectorResul
   let entitiesByDomain = new Map<string, { id: string; name: string }>();
   let entitiesByName = new Map<string, { id: string; name: string }>();
   if (intent === 'discover') {
-    const ents = await ctx.supabase
-      .from('entities').select('id, name, attributes')
-      .eq('workspace_id', ctx.workspace_id).eq('kind', 'account');
+    const acctIds = await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'account');
+    const ents = acctIds.length === 0
+      ? { data: [] as Array<{ id: string; name: string; attributes: unknown }> }
+      : await ctx.supabase
+          .from('entities').select('id, name, attributes')
+          .in('id', acctIds);
     for (const e of ents.data ?? []) {
       const d = (e.attributes as { domain?: string } | null)?.domain ?? null;
       if (d) entitiesByDomain.set(d.toLowerCase(), { id: e.id as string, name: e.name as string });
@@ -191,9 +194,9 @@ const apiCall: Connector = async (ctx: ConnectorContext): Promise<ConnectorResul
           name: companyName,
           attributes: {
             domain: domain ?? `${companyName.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'api_call',
+            _discovered_via: 'api_call',
             discovered_at: new Date().toISOString(),
-            source_url: url,
+            _source_url: url,
           },
         });
         if (!created.ok) { result.errors.push(`create_account failed for ${companyName}: ${created.error}`); continue; }

@@ -22,7 +22,7 @@ import { graphProximity } from './graph.ts';
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
 
-const SCORE_MODEL = 'openai/gpt-oss-120b:free';
+const SCORE_MODEL = 'deepseek-v4-flash';
 const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 
@@ -158,9 +158,9 @@ export async function scoreEntity(
 ): Promise<EntityScore | null> {
   const [entRes, factsRes, wsRes, graphRes, icpVecs] = await Promise.all([
     supabase.from('entities').select('id, name, attributes').eq('id', entity_id).maybeSingle(),
-    supabase.from('facts').select('predicate, object_text, confidence, observed_at, created_at')
+    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
-      .is('supersedes', null).order('observed_at', { ascending: false }).limit(40),
+      .order('observed_at', { ascending: false }),
     supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle(),
     graphProximity(supabase, workspace_id, entity_id),
     getIcpPerspectiveVectors(supabase, workspace_id),
@@ -168,7 +168,16 @@ export async function scoreEntity(
 
   if (!entRes.data) return null;
   const entity = entRes.data as { name: string; attributes: Record<string, unknown> };
-  const facts = (factsRes.data ?? []) as Array<{ predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string }>;
+  // Candidate entities are thin connection points (name + is_a + domain, no
+  // signals or embedding). Scoring one produces a meaningless number and
+  // pollutes the score distribution. Skip until it is promoted to a full entity.
+  if ((entity.attributes as { candidate?: boolean } | null)?.candidate === true) return null;
+  const rawFacts = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null }>;
+  // Active = not pointed at by another fact's `supersedes` (subject-direction
+  // fetch, so any superseding fact shares this subject and is in the set).
+  // Cap at 40 active facts to bound the LLM prompt, same as the prior limit.
+  const supersededIds = new Set(rawFacts.map((f) => f.supersedes).filter((x): x is string => !!x));
+  const facts = rawFacts.filter((f) => !supersededIds.has(f.id)).slice(0, 40);
   // Entity types come from active is_a facts (predicate = 'is_a'). Used for
   // the prompt label below. Empty array is fine — the prompt degrades.
   const entityTypes = facts
@@ -403,14 +412,16 @@ export async function scoreAndAssert(
   // Workspace policy.scorable_types lists which is_a values are scoreable;
   // default to ['account'] for back-compat with the old kind enum.
   const [typeRes, polRes] = await Promise.all([
-    supabase.from('facts').select('object_text')
+    supabase.from('facts').select('id, object_text, supersedes')
       .eq('workspace_id', actor.workspace_id)
       .eq('subject_entity', entity_id)
-      .eq('predicate', 'is_a')
-      .is('supersedes', null),
+      .eq('predicate', 'is_a'),
     supabase.from('workspaces').select('policy').eq('id', actor.workspace_id).maybeSingle(),
   ]);
-  const entityTypes = ((typeRes.data ?? []) as Array<{ object_text: string | null }>)
+  const typeRows = (typeRes.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null }>;
+  const typeSuperseded = new Set(typeRows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const entityTypes = typeRows
+    .filter((r) => !typeSuperseded.has(r.id))
     .map((r) => r.object_text)
     .filter((s): s is string => !!s);
   const scorableTypes: string[] = Array.isArray(polRes.data?.policy?.scorable_types)
@@ -423,15 +434,14 @@ export async function scoreAndAssert(
   // score that contradicts the drop decision. action_selector already
   // short-circuits at the action layer; this is the same check, earlier.
   const dropRes = await supabase.from('facts')
-    .select('object_text')
+    .select('id, object_text, supersedes')
     .eq('workspace_id', actor.workspace_id)
     .eq('subject_entity', entity_id)
     .eq('predicate', 'dropped_until')
-    .is('supersedes', null)
-    .order('observed_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const dropUntil = (dropRes.data?.object_text as string | null) ?? null;
+    .order('observed_at', { ascending: false });
+  const dropRows = (dropRes.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null }>;
+  const dropSuperseded = new Set(dropRows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const dropUntil = dropRows.find((r) => !dropSuperseded.has(r.id))?.object_text ?? null;
   if (dropUntil) {
     const t = Date.parse(dropUntil);
     if (Number.isFinite(t) && t > Date.now()) return null;
@@ -454,19 +464,19 @@ export async function scoreAndAssert(
     { predicate: 'icp_fit', value: score.icp_total }, // backward compat
   ];
   for (const s of subScores) {
-    // Use order+limit+maybeSingle instead of plain maybeSingle: if a prior
-    // run left duplicate active rows (>1 with supersedes=null), maybeSingle
-    // alone errors and falls into the "no existing" branch, which writes
-    // ANOTHER active row — compounding the leak. Picking the newest by
-    // observed_at lets us still supersede something instead of inserting.
-    const existing = await supabase.from('facts').select('id, object_text')
+    // The CURRENT fact is the one NOT superseded by any other row.
+    // supersede_fact writes the new row with supersedes = <old id>, so
+    // `supersedes is null` returns the stale ORIGINAL — superseding that forks
+    // the chain. Fetch all rows for the predicate and pick the not-pointed-to
+    // one (newest by observed_at among any that survive a prior leak).
+    const allRows = await supabase.from('facts').select('id, object_text, supersedes, observed_at')
       .eq('workspace_id', actor.workspace_id)
       .eq('subject_entity', entity_id)
       .eq('predicate', s.predicate)
-      .is('supersedes', null)
-      .order('observed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order('observed_at', { ascending: false });
+    const rows = (allRows.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null; observed_at: string }>;
+    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+    const existing = { data: rows.find((r) => !pointedTo.has(r.id)) ?? null };
     const newText = s.value.toFixed(2);
     // Always write — even when the value is unchanged — so observed_at refreshes
     // and the sweep's score_signal_coupling check can see that the scorer ran.

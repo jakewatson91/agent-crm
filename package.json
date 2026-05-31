@@ -13,6 +13,8 @@
     "benchmark:run": "tsx benchmark/runners/agent-crm/run.ts && tsx benchmark/runners/hubspot/run.ts && tsx benchmark/report/generate.ts",
     "benchmark:v1": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config benchmark/v1/run.ts",
     "benchmark:v1:seed": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config benchmark/v1/seed.ts",
+    "benchmark:v1:audit": "tsx benchmark/v1/audit_cost.ts",
+    "benchmark:v1:quality": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config benchmark/v1/quality_eval.ts",
     "smoke": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/smoke_test.ts",
     "seed": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/seed_demo.ts",
     "inject": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/inject_claim.ts",
@@ -20,7 +22,12 @@
     "agent:new": "tsx scripts/create_agent.ts",
     "agent:list": "tsx scripts/list_agents.ts",
     "loop": "tsx scripts/run_loop.ts",
-    "sweep": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/sweep.ts"
+    "sweep": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/sweep.ts",
+    "hiring:run": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/run_hiring_daily.ts",
+    "self-host:bootstrap": "bash self-host/supabase/bootstrap.sh",
+    "self-host:supabase:up": "cd self-host/supabase/local && docker compose up -d",
+    "self-host:supabase:down": "cd self-host/supabase/local && docker compose down",
+    "self-host:migrate": "tsx scripts/apply_all_migrations.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

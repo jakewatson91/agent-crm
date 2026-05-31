@@ -3,24 +3,18 @@
  *
  * Production fit-scoring at companies like Clearbit / ZoomInfo / Apollo uses
  * variants of "their customers are your customers" as one of the strongest
- * signals. We have the substrate to do this directly: the same `customer_of`,
- * `partners_with`, `backed_by`, `integrates_with` predicates the enricher
- * already asserts form an explicit edge graph, with provenance, that we can
- * traverse in plain SQL.
+ * signals. We do this directly: any relationship edge the enricher asserts (any
+ * fact whose object is another entity) forms an explicit, open graph, with
+ * provenance, that we traverse in plain SQL. The vocabulary is not fixed — an
+ * edge is any fact with object_entity set, whatever the relationship is named.
  *
- * No GNN needed at our scale (<300 entities). The 1-hop neighborhood mean of
- * `icp_fit` over linked entities captures most of the signal a graph model
- * would learn.
+ * No GNN needed at our scale. The 1-hop neighborhood mean of `icp_fit` over
+ * linked entities captures most of the signal a graph model would learn. The
+ * icp_fit lookup naturally limits the mean to scored (account) neighbors, so a
+ * non-fit edge like works_at contributes nothing.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-
-const EDGE_PREDICATES = [
-  'customer_of',
-  'partners_with',
-  'backed_by',
-  'integrates_with',
-  'invested_by',
-] as const;
+import { excludeSuperseded } from '@agent-crm/primitives';
 
 export interface GraphProximityResult {
   score: number;        // [0, 1] — mean icp_fit of linked entities, 0 if no edges
@@ -41,33 +35,33 @@ export async function graphProximity(
   const empty: GraphProximityResult = { score: 0, edge_count: 0, predicates: {} };
 
   // 1. Edges where this entity is the subject: facts(subject=entity_id, predicate∈EDGES, object_entity!=null)
-  const subjEdges = await supabase
+  const subjRes = await supabase
     .from('facts')
-    .select('predicate, object_entity')
+    .select('id, predicate, object_entity, supersedes')
     .eq('workspace_id', workspace_id)
     .eq('subject_entity', entity_id)
-    .in('predicate', EDGE_PREDICATES as unknown as string[])
-    .is('supersedes', null)
     .not('object_entity', 'is', null);
+  const subjEdges = await excludeSuperseded(supabase, workspace_id,
+    (subjRes.data ?? []) as Array<{ id: string; predicate: string; object_entity: string; supersedes: string | null }>);
 
   // 2. Edges where this entity is the object: facts(object_entity=entity_id, predicate∈EDGES)
-  const objEdges = await supabase
+  const objRes = await supabase
     .from('facts')
-    .select('predicate, subject_entity')
+    .select('id, predicate, subject_entity, supersedes')
     .eq('workspace_id', workspace_id)
-    .eq('object_entity', entity_id)
-    .in('predicate', EDGE_PREDICATES as unknown as string[])
-    .is('supersedes', null);
+    .eq('object_entity', entity_id);
+  const objEdges = await excludeSuperseded(supabase, workspace_id,
+    (objRes.data ?? []) as Array<{ id: string; predicate: string; subject_entity: string; supersedes: string | null }>);
 
   const neighbors = new Map<string, string>();  // entity_id -> predicate that linked it
   const predicates: Record<string, number> = {};
-  for (const e of (subjEdges.data ?? []) as Array<{ predicate: string; object_entity: string }>) {
+  for (const e of subjEdges) {
     if (!neighbors.has(e.object_entity)) {
       neighbors.set(e.object_entity, e.predicate);
       predicates[e.predicate] = (predicates[e.predicate] ?? 0) + 1;
     }
   }
-  for (const e of (objEdges.data ?? []) as Array<{ predicate: string; subject_entity: string }>) {
+  for (const e of objEdges) {
     if (!neighbors.has(e.subject_entity)) {
       neighbors.set(e.subject_entity, e.predicate);
       predicates[e.predicate] = (predicates[e.predicate] ?? 0) + 1;
@@ -78,16 +72,17 @@ export async function graphProximity(
 
   // 3. Look up latest icp_fit for each neighbor.
   const neighborIds = [...neighbors.keys()];
-  const fits = await supabase
+  const fitsRes = await supabase
     .from('facts')
-    .select('subject_entity, object_text')
+    .select('id, subject_entity, object_text, supersedes')
     .eq('workspace_id', workspace_id)
     .eq('predicate', 'icp_fit')
-    .is('supersedes', null)
     .in('subject_entity', neighborIds);
+  const fits = await excludeSuperseded(supabase, workspace_id,
+    (fitsRes.data ?? []) as Array<{ id: string; subject_entity: string; object_text: string; supersedes: string | null }>);
 
   const fitValues: number[] = [];
-  for (const f of (fits.data ?? []) as Array<{ subject_entity: string; object_text: string }>) {
+  for (const f of fits) {
     const v = parseFloat(f.object_text);
     if (!isNaN(v)) fitValues.push(v);
   }

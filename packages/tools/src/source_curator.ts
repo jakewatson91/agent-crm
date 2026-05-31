@@ -38,9 +38,7 @@ export interface CurateOpts {
 }
 
 const ACTOR_ID = 'source_curator';
-// OpenAI per `feedback_use_openai_for_agent_calls` — and the OpenRouter free
-// tier of deepseek rate-limits on the small dispatcher loops the curator runs.
-const CURATOR_MODEL = 'gpt-4o-mini';
+const CURATOR_MODEL = 'deepseek-v4-flash';
 const SAMPLE_SIGNALS = 5;
 const MIN_SIGNALS_MATURE = 5;
 const MIN_SIGNALS_DEAD = 10;

@@ -1,6 +1,18 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { RichTextEditor } from './RichTextEditor';
+
+// Escape plain text and turn newlines into <br> so the draft seeds the rich
+// editor as readable HTML (the drafter emits plain text; formatting is the
+// user's to add here before sending).
+function textToHtml(text: string): string {
+  const esc = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return esc.replace(/\n/g, '<br>');
+}
 
 interface Gate {
   id: string;
@@ -33,7 +45,7 @@ export function DraftActions({ postId, workspaceId, onDecided }: Props) {
   const [gate, setGate] = useState<Gate | null>(null);
   const [mode, setMode] = useState<Mode>('idle');
   const [editedSubject, setEditedSubject] = useState('');
-  const [editedBody, setEditedBody] = useState('');
+  const [editedHtml, setEditedHtml] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +76,7 @@ export function DraftActions({ postId, workspaceId, onDecided }: Props) {
   const condBody = gate.condition?.body ?? '';
   const intendedTo = gate.condition?.to_email ?? null;
 
-  async function decide(decision: 'approve' | 'reject', overrides?: { edited_subject?: string; edited_body?: string; reason?: string }) {
+  async function decide(decision: 'approve' | 'reject', overrides?: { edited_subject?: string; edited_html?: string; reason?: string }) {
     if (!gate) return;
     setBusy(true); setError(null);
     try {
@@ -115,17 +127,12 @@ export function DraftActions({ postId, workspaceId, onDecided }: Props) {
           value={editedSubject}
           onChange={(e) => setEditedSubject(e.target.value)}
           placeholder="subject"
-          style={{ width: '100%', padding: '.4rem .55rem', fontSize: '.85rem', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginBottom: '.4rem' }}
+          style={{ width: '100%', padding: '.4rem .55rem', fontSize: '.85rem', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginBottom: '.5rem' }}
         />
-        <textarea
-          value={editedBody}
-          onChange={(e) => setEditedBody(e.target.value)}
-          rows={8}
-          style={{ width: '100%', padding: '.4rem .55rem', fontSize: '.85rem', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-mono)' }}
-        />
+        <RichTextEditor initialHtml={editedHtml} onChange={setEditedHtml} />
         <div style={{ display: 'flex', gap: '.5rem', marginTop: '.5rem' }}>
           <button
-            onClick={() => decide('approve', { edited_subject: editedSubject, edited_body: editedBody })}
+            onClick={() => decide('approve', { edited_subject: editedSubject, edited_html: editedHtml })}
             disabled={busy}
             style={{ ...PILL_BASE, background: 'var(--accent-green)', color: '#fff', opacity: busy ? 0.4 : 1 }}
           >
@@ -184,7 +191,7 @@ export function DraftActions({ postId, workspaceId, onDecided }: Props) {
         {busy ? 'sending…' : 'accept · send'}
       </button>
       <button
-        onClick={() => { setEditedSubject(condSubject); setEditedBody(condBody); setMode('editing'); }}
+        onClick={() => { setEditedSubject(condSubject); setEditedHtml(textToHtml(condBody)); setMode('editing'); }}
         disabled={busy}
         style={{ ...PILL_BASE, background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--border)' }}
       >

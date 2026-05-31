@@ -30,12 +30,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool } from '@agent-crm/tools';
+import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
-const EXTRACT_MODEL = 'deepseek/deepseek-v4-flash:free';
+const EXTRACT_MODEL = 'deepseek-v4-flash';
 const EXA_API = 'https://api.exa.ai/search';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
@@ -171,9 +171,12 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   let entitiesByDomain = new Map<string, { id: string; name: string }>();
   let entitiesByName = new Map<string, { id: string; name: string }>();
   if (intent === 'discover') {
-    const ents = await ctx.supabase
-      .from('entities').select('id, name, attributes')
-      .eq('workspace_id', ctx.workspace_id).eq('kind', 'account');
+    const acctIds = await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'account');
+    const ents = acctIds.length === 0
+      ? { data: [] as Array<{ id: string; name: string; attributes: unknown }> }
+      : await ctx.supabase
+          .from('entities').select('id, name, attributes')
+          .in('id', acctIds);
     for (const e of ents.data ?? []) {
       const d = (e.attributes as { domain?: string } | null)?.domain ?? null;
       if (d) entitiesByDomain.set(d.toLowerCase(), { id: e.id as string, name: e.name as string });
@@ -216,9 +219,9 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
           name: company.name,
           attributes: {
             domain: domain ?? `${company.name.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'exa',
+            _discovered_via: 'exa',
             discovered_at: new Date().toISOString(),
-            search_query: query,
+            _search_query: query,
           },
         });
         if (!created.ok) { result.errors.push(`create_account failed for ${company.name}: ${created.error}`); continue; }

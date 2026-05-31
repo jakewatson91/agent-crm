@@ -25,7 +25,7 @@
  * write-side state on entities (the discovered ats hint). Idempotent —
  * re-runs only update when the discovered value changes.
  */
-import { callTool, classifyRole, passesHiringFilter, getPolicy } from '@agent-crm/tools';
+import { callTool, classifyRole, passesHiringFilter, getPolicy, type HiringFilter } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { getWatchedAccounts } from '../utils.js';
 
@@ -357,7 +357,9 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
 
   // Workspace hiring filter — empty/missing = include all (preserves prior behavior).
   const policy = await getPolicy(ctx.supabase, ctx.workspace_id);
-  const hiringFilter = policy.hiring_filter ?? null;
+  // policy.hiring_filter is the loose config shape (string[] families); passesHiringFilter
+  // only does membership checks, so the strict HiringFilter type is satisfied at runtime.
+  const hiringFilter = (policy.hiring_filter ?? null) as HiringFilter | null;
 
   // Pull full entity rows for the watchlist (chunked to dodge any URL caps).
   const entityById = new Map<string, { id: string; name: string; attributes: Record<string, unknown> }>();
@@ -439,10 +441,15 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       const newHint: AtsHint = provider && slug
         ? { provider, slug, discovered_at: new Date().toISOString(), verification: 'domain_match' }
         : { provider: 'none', discovered_at: new Date().toISOString(), verification };
+      // Generic watch-target flag the archive sweep reads (see system_tasks.ts).
+      // True once we adopt a real board to re-poll; false when this entity has no
+      // board, so the sweep can reclaim it after the age cutoff.
+      const watched = newHint.provider !== 'none';
       await ctx.supabase.from('entities').update({
-        attributes: { ...ent.attributes, ats: newHint },
+        attributes: { ...ent.attributes, ats: newHint, _watched_by_source: watched },
       }).eq('id', ent.id);
       ent.attributes.ats = newHint;
+      ent.attributes._watched_by_source = watched;
       if (!provider) { result.skipped++; continue; }
       prefetched = { ok: true, jobs: firstJobs, status: 200 };
     }
@@ -463,7 +470,7 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
       // Provider returned non-200 on a known slug — likely the company removed
       // the board or changed slugs. Clear the hint so next run re-probes.
       await ctx.supabase.from('entities').update({
-        attributes: { ...ent.attributes, ats: { provider: 'none', discovered_at: new Date().toISOString() } },
+        attributes: { ...ent.attributes, ats: { provider: 'none', discovered_at: new Date().toISOString() }, _watched_by_source: false },
       }).eq('id', ent.id);
       result.skipped++;
       continue;

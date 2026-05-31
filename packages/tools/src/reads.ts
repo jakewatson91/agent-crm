@@ -219,9 +219,14 @@ export async function getEntity(
   const [entRes, factsRes, sigsRes, channelRes] = await Promise.all([
     supabase.from('entities').select('id, name, attributes')
       .eq('workspace_id', workspace_id).eq('id', entity_id).single(),
-    supabase.from('facts').select('id, predicate, object_text, observed_at, confidence')
-      .eq('workspace_id', workspace_id).eq('subject_entity', entity_id).is('supersedes', null)
-      .order('observed_at', { ascending: false }).limit(50),
+    // Fetch all facts (incl. superseded) so we can pick the CURRENT ones.
+    // supersede_fact writes the new row with supersedes = <old id>, so the
+    // current fact is the one NOT pointed at by any other row's supersedes —
+    // `supersedes is null` returns the stale original. (Same convention used by
+    // relations.ts / feed / replay / cite.)
+    supabase.from('facts').select('id, predicate, object_text, observed_at, confidence, supersedes')
+      .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
+      .order('observed_at', { ascending: false }).limit(500),
     supabase.from('signals').select('id, type, magnitude, observed_at, body_for_embedding')
       .eq('workspace_id', workspace_id).eq('entity_id', entity_id)
       .order('observed_at', { ascending: false }).limit(20),
@@ -230,9 +235,14 @@ export async function getEntity(
 
   if (entRes.error || !entRes.data) throw new Error(`entity not found: ${entRes.error?.message}`);
   const baseEntity = entRes.data as { id: string; name: string; attributes: Record<string, unknown> };
-  // Derive `kind` from is_a facts already in factsRes (no extra query).
-  const isAFacts = ((factsRes.data ?? []) as Array<{ predicate: string; object_text: string | null }>)
-    .filter((f) => f.predicate === 'is_a' && f.object_text);
+
+  // Current facts = those not superseded by any other fetched row.
+  const allFactRows = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; observed_at: string; confidence: number; supersedes: string | null }>;
+  const supersededIds = new Set(allFactRows.map((f) => f.supersedes).filter((x): x is string => !!x));
+  const currentFactRows = allFactRows.filter((f) => !supersededIds.has(f.id)).slice(0, 50);
+
+  // Derive `kind` from the current is_a fact (no extra query).
+  const isAFacts = currentFactRows.filter((f) => f.predicate === 'is_a' && f.object_text);
   const entityKind = (isAFacts[0]?.object_text as string | undefined) ?? 'entity';
   const entity = { ...baseEntity, kind: entityKind };
 
@@ -250,7 +260,7 @@ export async function getEntity(
 
   return {
     entity,
-    facts: ((factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; observed_at: string; confidence: number }>).map((f) => ({
+    facts: currentFactRows.map((f) => ({
       id: f.id, predicate: f.predicate, object: f.object_text, observed_at: f.observed_at, confidence: f.confidence,
     })),
     signals: ((sigsRes.data ?? []) as Array<{ id: string; type: string; magnitude: number; observed_at: string; body_for_embedding: string }>).map((s) => ({

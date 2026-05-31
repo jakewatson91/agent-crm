@@ -26,7 +26,7 @@
  *   }
  */
 
-import { callTool } from '@agent-crm/tools';
+import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
@@ -64,8 +64,11 @@ const githubTrending: Connector = async (ctx: ConnectorContext): Promise<Connect
   // Resolve watch list: config override, else every workspace account.
   let watch = ((ctx.config.watch_entities as WatchEntity[]) ?? []);
   if (!watch.length) {
-    const acctRes = await ctx.supabase.from('entities')
-      .select('id, name').eq('workspace_id', ctx.workspace_id).eq('kind', 'account').limit(2000);
+    const acctIds = (await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'account')).slice(0, 2000);
+    const acctRes = acctIds.length === 0
+      ? { data: [] as Array<{ id: string; name: string }>, error: null as null }
+      : await ctx.supabase.from('entities')
+          .select('id, name').in('id', acctIds);
     if (acctRes.error) {
       result.errors.push(`failed to load workspace accounts: ${acctRes.error.message}`);
       return result;

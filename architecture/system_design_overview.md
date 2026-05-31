@@ -17,7 +17,7 @@ Wedge is the **abstraction layer**. The substrate (Postgres + pgvector + RLS + S
 - Memory hierarchy
 
 Three numbers worth memorizing for the pitch:
-- **1.28× token efficiency** vs reading raw rows from HubSpot
+- **2.6× cheaper per agent action vs HubSpot** (5× vs Day.ai, 5.8× vs Attio; tied with Twenty). Measured in `benchmark/v1`, reproducible via `pnpm benchmark:v1:audit`
 - **96% data loss in HubSpot** under concurrent writes (we lose 0%)
 - **~91% prompt cache hit rate** on agent-run prefixes
 

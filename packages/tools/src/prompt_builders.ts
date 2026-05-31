@@ -8,6 +8,45 @@
  * see exactly what the LLM will be told before saving Settings.
  */
 
+// A handful of keys read better with a human label than raw snake_case. The map
+// is structural (it never touches the value); unknown keys fall back to a title-
+// cased version of the key, so no vertical assumption is baked in.
+const ATTRIBUTE_LABELS: Record<string, string> = {
+  domain: 'Website',
+};
+
+/**
+ * Render an entity's attributes as readable lines for a HUMAN-facing prompt
+ * (the drafter). Drops internal/plumbing keys, timestamps (`*_at`), id fields
+ * (`*_id`), and nested objects/arrays; relabels the few keys that read awkwardly
+ * raw.
+ *
+ * Plumbing detection is structural, never a list of connector key names: any key
+ * starting with `_` is treated as reserved/internal and dropped. Connectors that
+ * stash working state or discovery hints on an entity prefix those keys with `_`
+ * (e.g. `_discovered_via`, `_search_query`) so they never leak into an email and
+ * this renderer stays portable — it knows no connector by name. Object/array
+ * values (embeddings, the ATS hint blob) are dropped by the type check below
+ * regardless of name.
+ *
+ * The enricher does NOT use this — it needs the raw keys to know what's already
+ * extracted. Drafters get prose so the model stops echoing field names like
+ * "domain" or "stack" into the email body.
+ */
+export function renderAttributesProse(attributes: unknown): string {
+  if (!attributes || typeof attributes !== 'object') return '(none)';
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(attributes as Record<string, unknown>)) {
+    if (key.startsWith('_')) continue; // reserved/internal namespace
+    if (key.endsWith('_at') || key.endsWith('_id')) continue;
+    if (value == null || value === '') continue;
+    if (typeof value === 'object') continue; // nested structures aren't prose-worthy
+    const label = ATTRIBUTE_LABELS[key] ?? key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    lines.push(`${label}: ${value}`);
+  }
+  return lines.length ? lines.join('\n') : '(none)';
+}
+
 export interface DrafterDecisionOpts {
   subject_style?: 'one_word' | 'short_phrase' | 'question';
   paragraph_count?: number;
@@ -16,6 +55,14 @@ export interface DrafterDecisionOpts {
   tone_keywords?: string[];
   ask_examples?: string[];
   forbidden_phrases?: string[];
+  /**
+   * Internal field/column names the email must never echo (e.g. "domain",
+   * "tech_stack", "score"). These are THIS workspace's own field names, so they
+   * live in config (policy.drafter.forbidden_field_terms), not in shared code —
+   * a different vertical has different fields. Default empty = rely on the
+   * generic "don't name internal fields" rule alone.
+   */
+  forbidden_field_terms?: string[];
 }
 
 export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
@@ -26,6 +73,7 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
   const tones = (opts.tone_keywords ?? []).filter((s) => s.trim().length > 0);
   const asks = (opts.ask_examples ?? ['Worth exploring?', 'Open to a quick chat?']).filter((s) => s.trim().length > 0);
   const forbidden = (opts.forbidden_phrases ?? []).filter((s) => s.trim().length > 0);
+  const fieldTerms = (opts.forbidden_field_terms ?? []).filter((s) => s.trim().length > 0);
 
   const subjectInstruction = style === 'one_word'
     ? 'SUBJECT — exactly ONE word. A concrete noun, ideally tied to the specific signal that triggered this. Never vague words like "Hello", "Question", "Quick", "Connect".'
@@ -51,6 +99,10 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
     ? `\nFORBIDDEN PHRASES (do NOT use any variant): ${forbidden.map((p) => `"${p}"`).join(', ')}. These are filler. Use a concrete behavior or a number instead.`
     : '';
 
+  const fieldTermsClause = fieldTerms.length
+    ? ` In particular, never name the internal fields this data is stored under (e.g. ${fieldTerms.map((t) => `"${t}"`).join(', ')}).`
+    : '';
+
   return `A new high-fit signal matched your saved filter rule. Draft an outbound email to the account in the user message, following the formula below exactly.
 
 EMAIL FORMULA — in this order, body broken into roughly ${paraCount} short paragraphs separated by blank lines:
@@ -69,6 +121,8 @@ ${forbiddenBlock}
 LEAD-FACT SELECTION — the user message may include a RECOMMENDED FACTS block (a deterministic shortlist scored on ICP match, recency, confidence, prior over-use, and outcome history). When present, prefer one of those facts as your anchor for the problem statement. Override only if the past_touch context demands it — e.g., the prior touch already led with the top recommended fact and you'd be repeating yourself, or the recommended fact conflicts with how the prior touch was framed.
 ${toneBlock}
 RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle. Echo the chosen email in the output's "to_email" field. If no CONTACTS, set "to_email" to null.
+
+NEVER MENTION INTERNAL DATA OR FIELD NAMES — write as a person who researched this company on the open web, not as software reading a record. Do not name any internal field or column the data is stored under, and do not use data-source language ("our system shows", "your profile", "according to our data", "we have you down as", "based on the signal").${fieldTermsClause} Say the real-world thing instead: name the company's actual site, product, or the specific tools they mentioned — not the field that holds them. If you can't say it the way a human researcher would, leave it out.
 
 Voice and hard rules come from the workspace constitution above. Constitution wins over this formula on tone — if the constitution says "no em dashes" or "no jargon," follow that strictly even if the formula's examples use them.
 

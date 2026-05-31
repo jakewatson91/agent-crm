@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
@@ -51,6 +51,9 @@ export default function SourcesPage() {
   const [parsing, setParsing] = useState(false);
   const [metaTokens, setMetaTokens] = useState<{ input: number; output: number } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [origin, setOrigin] = useState('');
+  const [copied, setCopied] = useState<string | null>(null);
+  useEffect(() => { setOrigin(window.location.origin); }, []);
 
   const pageCtx = useMemo<PageContext>(() => {
     const active = sources.filter((s) => s.active).length;
@@ -317,10 +320,37 @@ export default function SourcesPage() {
                   <div style={{ fontSize: '.95rem', color: '#e5e5e5', fontFamily: 'monospace' }}>{s.connector_type} · {s.name}</div>
                   <div style={{ fontSize: '.75rem', color: '#666' }}>{s.schedule_cron} · {s.active ? 'active' : 'paused'}</div>
                 </div>
-                <button onClick={() => runNow(s.id)} disabled={running === s.id} style={{ padding: '.4rem .75rem', background: '#7aa2f7', color: '#000', border: 'none', cursor: 'pointer', fontSize: '.8rem' }}>
-                  {running === s.id ? 'running…' : 'run now'}
-                </button>
+                {s.connector_type === 'inbound_webhook' ? (
+                  <span style={{ fontSize: '.7rem', color: '#7aa2f7', border: '1px solid #2a3a5a', padding: '.2rem .5rem', borderRadius: 4 }}>push source</span>
+                ) : (
+                  <button onClick={() => runNow(s.id)} disabled={running === s.id} style={{ padding: '.4rem .75rem', background: '#7aa2f7', color: '#000', border: 'none', cursor: 'pointer', fontSize: '.8rem' }}>
+                    {running === s.id ? 'running…' : 'run now'}
+                  </button>
+                )}
               </div>
+
+              {s.connector_type === 'inbound_webhook' && (() => {
+                const url = `${origin}/api/ingest/webhook?source=${s.id}`;
+                return (
+                  <div style={{ marginTop: '.6rem', padding: '.6rem .75rem', background: '#0d1117', border: '1px solid #1f2a3a' }}>
+                    <div style={{ fontSize: '.7rem', color: '#888', marginBottom: '.35rem' }}>
+                      Point Clay / Zapier / any tool at this URL. Send rows as JSON; include your workspace API key as a Bearer token.
+                    </div>
+                    <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+                      <code style={{ flex: 1, fontSize: '.72rem', color: '#9ece6a', wordBreak: 'break-all' }}>{url}</code>
+                      <button
+                        onClick={() => { navigator.clipboard?.writeText(url); setCopied(s.id); setTimeout(() => setCopied(null), 1500); }}
+                        style={{ padding: '.25rem .6rem', background: '#1f1f1f', color: '#e5e5e5', border: 'none', cursor: 'pointer', fontSize: '.72rem', flexShrink: 0 }}
+                      >
+                        {copied === s.id ? 'copied' : 'copy'}
+                      </button>
+                    </div>
+                    <div style={{ fontSize: '.68rem', color: '#666', marginTop: '.4rem' }}>
+                      Header: <code style={{ color: '#888' }}>Authorization: Bearer acrm_…</code> · create a key under Settings → API keys
+                    </div>
+                  </div>
+                );
+              })()}
               <div style={{ fontSize: '.75rem', color: '#666', marginTop: '.5rem', fontFamily: 'monospace' }}>
                 config: {JSON.stringify(s.config)}
               </div>

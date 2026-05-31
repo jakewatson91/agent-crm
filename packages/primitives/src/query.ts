@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed, vectorLiteral } from './embed.ts';
+import { excludeSuperseded } from './relations.ts';
 import { QueryArgsSchema, type Cite, type Projection } from './types.ts';
 
 const TOP_K = 12;
@@ -59,14 +60,17 @@ export async function query(
     const { data: rows, error: e2 } = await supabase
       .from('facts')
       .select(`
-        id, predicate, object_text, subject_entity,
+        id, predicate, object_text, subject_entity, supersedes,
         entity_embeddings:entity_embeddings!inner(embedding)
       `)
       .eq('workspace_id', workspace_id)
-      .is('supersedes', null)
       .limit(200);
     if (e2) throw e2;
-    matches = (rows ?? [])
+    const activeRows = await excludeSuperseded(
+      supabase, workspace_id,
+      (rows ?? []) as Array<{ id: string; supersedes: string | null; predicate: string; object_text: string | null }>,
+    );
+    matches = activeRows
       .map((r) => ({
         fact_id: r.id as string,
         predicate: r.predicate as string,

@@ -1,21 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { activeFacts } from '@agent-crm/primitives';
+import { getPolicy, factFamilyOf } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
-
-// Mirrors the families in /api/channels/[channel]/summary. Kept in sync by hand
-// (small enough that duplicating beats threading a shared util through the
-// summary route's local typing).
-const FACT_FAMILIES: Array<{ name: string; match: (p: string) => boolean }> = [
-  { name: 'firmographics', match: (p) => ['industry', 'stage', 'yc_status', 'yc_batch', 'is_hiring', 'team_size', 'location', 'domain'].includes(p) },
-  { name: 'scoring',       match: (p) => p.startsWith('score_') || p === 'icp_fit' || p === 'icp_fit_breakdown' },
-  { name: 'engagement',    match: (p) => ['dropped_until', 'research_triggered', 'contact_lookup_attempted', 'works_at', 'email', 'role'].includes(p) },
-];
-function familyOf(predicate: string): string {
-  for (const f of FACT_FAMILIES) if (f.match(predicate)) return f.name;
-  return 'other';
-}
 
 /**
  * Thin facts read for any entity kind. Account pages use /api/channels/[id]/summary
@@ -37,11 +25,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ entity_
     return NextResponse.json({ error: 'entity not found' }, { status: 404 });
   }
 
-  const facts = await activeFacts(supabase, ent.data.workspace_id as string, entity_id);
+  const workspace_id = ent.data.workspace_id as string;
+  const facts = await activeFacts(supabase, workspace_id, entity_id);
 
+  const policy = await getPolicy(supabase, workspace_id);
+  const groups = policy.display?.fact_groups ?? [];
   const grouped: Record<string, typeof facts> = {};
   for (const f of facts) {
-    const fam = familyOf(f.predicate);
+    const fam = factFamilyOf(f.predicate, groups);
     (grouped[fam] ||= []).push(f);
   }
 

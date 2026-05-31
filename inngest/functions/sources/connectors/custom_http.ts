@@ -17,7 +17,7 @@
  *     extract: {
  *       system_prompt: string,                       // required. Tells LLM what to extract + output shape
  *       batch_size?: number,                         // default 10 items per LLM call
- *       model?: string,                              // default 'gpt-4o-mini'
+ *       model?: string,                              // default 'deepseek-v4-flash'
  *     },
  *     signal?: {
  *       type?: string,                               // default 'custom_http'
@@ -50,8 +50,7 @@
  * mean — that's the spec's job. Vertical-neutral.
  */
 
-import { createHash } from 'node:crypto';
-import { callTool, chatCompleteForWorkspace } from '@agent-crm/tools';
+import { callTool, chatCompleteForWorkspace, entityIdsOfType, normalizeDomain, hashItem } from '@agent-crm/tools';
 // custom_http is per-workspace by construction (sources.workspace_id), so it
 // uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
 // keys and stay on raw chatComplete for now.
@@ -94,6 +93,9 @@ interface ExtractedBatch {
 
 export { customHttpMeta as meta } from '../registry_meta.js';
 
+// Local getPath: an undefined path means "the body itself is the array"
+// (response_path empty), which differs from the ingest core's getPath (where
+// an unset path means "no value"). Kept separate on purpose.
 function getPath(obj: unknown, path: string | undefined): unknown {
   if (!path) return obj;
   let cur: any = obj;
@@ -110,18 +112,6 @@ function interpolateHeaders(headers: Record<string, string>): Record<string, str
     out[k] = v.replace(/\$\{env:([A-Z0-9_]+)\}/g, (_m, name) => process.env[name] ?? '');
   }
   return out;
-}
-
-function normalizeDomain(url: string | undefined | null): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
-    return u.hostname.replace(/^www\./, '').toLowerCase();
-  } catch { return null; }
-}
-
-function hashItem(item: unknown): string {
-  return createHash('sha256').update(JSON.stringify(item)).digest('hex').slice(0, 32);
 }
 
 function parseSpecField<T>(value: unknown, fallback: T): T {
@@ -205,9 +195,12 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
   // Entity lookup caches for the batch (same pattern as api_call).
   const entitiesByDomain = new Map<string, { id: string; name: string }>();
   const entitiesByName = new Map<string, { id: string; name: string }>();
-  const ents = await ctx.supabase
-    .from('entities').select('id, name, attributes')
-    .eq('workspace_id', ctx.workspace_id).eq('kind', 'account');
+  const acctIds = await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'account');
+  const ents = acctIds.length === 0
+    ? { data: [] as Array<{ id: string; name: string; attributes: unknown }> }
+    : await ctx.supabase
+        .from('entities').select('id, name, attributes')
+        .in('id', acctIds);
   for (const e of ents.data ?? []) {
     const d = (e.attributes as { domain?: string } | null)?.domain ?? null;
     if (d) entitiesByDomain.set(d.toLowerCase(), { id: e.id as string, name: e.name as string });
@@ -220,7 +213,7 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
   };
 
   const batchSize = Math.max(1, extractSpec.batch_size ?? 10);
-  const model = extractSpec.model ?? 'deepseek/deepseek-v4-flash:free';
+  const model = extractSpec.model ?? 'deepseek-v4-flash';
   const magnitude = signalSpec.magnitude ?? 0.55;
 
   for (let i = 0; i < fresh.length; i += batchSize) {
@@ -269,9 +262,9 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
           name,
           attributes: {
             domain: domain ?? `${name.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'custom_http',
+            _discovered_via: 'custom_http',
             discovered_at: new Date().toISOString(),
-            source_url: fetchSpec.url,
+            _source_url: fetchSpec.url,
           },
         });
         if (!created.ok) { result.errors.push(`create_account ${name}: ${created.error}`); continue; }

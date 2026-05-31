@@ -1,15 +1,16 @@
 # agent-crm self-host (web + inngest dev server).
 #
-# Data lives on Supabase Cloud (you bring your own project; free tier works).
-# That covers Postgres + Auth + RLS in one go; we don't bundle a local DB
-# because the app's auth uses Supabase Auth cookies and re-implementing it
-# locally is a Phase-2 decision.
+# Data lives on Supabase Cloud by default (you bring your own project; free
+# tier works). That covers Postgres + Auth + RLS in one go.
 #
-# Usage:
+# Don't want to use Supabase Cloud? See self-host/supabase/README.md — it
+# brings up the full Supabase stack locally (Postgres + GoTrue + PostgREST +
+# Kong + Studio) so the app talks to http://localhost:8000 instead of cloud.
+#
+# Usage (Supabase Cloud path):
 #   1. Create a Supabase Cloud project at supabase.com
-#   2. Apply migrations: pnpm exec tsx scripts/apply_migration.ts supabase/migrations/0001_init.sql
-#      (repeat for each file in supabase/migrations/, in order — or use
-#       `supabase db push` if you've linked the project with the supabase CLI)
+#   2. Apply migrations: pnpm self-host:migrate
+#      (or `supabase db push` if you've linked the project with the supabase CLI)
 #   3. cp .env.example .env, fill in the Supabase URL/keys + OpenAI key
 #   4. docker compose up --build
 #   5. Visit http://localhost:3000 — sign in with magic link

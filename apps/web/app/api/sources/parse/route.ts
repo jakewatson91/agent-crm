@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { chatComplete } from '@agent-crm/primitives';
+import { entityIdsOfType } from '@agent-crm/tools';
 import { listConnectors } from '@agent-crm/inngest/functions/sources/registry_meta';
 
 export const runtime = 'nodejs';
 
-const META_MODEL = 'deepseek/deepseek-v4-flash:free';
+const META_MODEL = 'deepseek-v4-flash';
 
 interface ParseReq {
   description: string;
@@ -43,13 +44,14 @@ export async function POST(req: Request) {
   let entityContext = '';
   if (body.workspace_id) {
     const supabase = createServerClient();
-    const { data, error } = await supabase
-      .from('entities')
-      .select('id, name')
-      .eq('workspace_id', body.workspace_id)
-      .eq('kind', 'account')
-      .order('name')
-      .limit(200);
+    const acctIds = (await entityIdsOfType(supabase, body.workspace_id, 'account')).slice(0, 200);
+    const { data, error } = acctIds.length === 0
+      ? { data: [] as Array<{ id: string; name: string }>, error: null as null }
+      : await supabase
+          .from('entities')
+          .select('id, name')
+          .in('id', acctIds)
+          .order('name');
     if (!error && data && data.length) {
       const entityList = data.map((e) => `${e.name} (id=${e.id})`).join('\n');
       entityContext = `\n\nAvailable entities in this workspace (you may pre-select up to 10 for watch_entities if the user described specific companies):\n${entityList}`;

@@ -6,6 +6,7 @@ const TARGET_KIND_BY_TOOL: Record<string, string> = {
   set_workspace_policy: 'workspace',
   create_account: 'entity',
   create_contact: 'entity',
+  create_entity: 'entity',
   assert_fact: 'fact',
   supersede_fact: 'fact',
   create_signal: 'signal',

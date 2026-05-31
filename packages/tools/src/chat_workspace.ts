@@ -7,7 +7,7 @@
  *
  * Resolution order for model:
  *   1. args.model (caller's explicit choice — usually a sensible per-call
- *      default like 'deepseek/deepseek-v4-pro' for the drafter)
+ *      default like 'deepseek-v4-pro' for the drafter)
  *   2. policy.llm.drafter_model (when caller passes `behavior: 'drafter'`)
  *   3. policy.llm.default_chat_model (workspace override)
  *   4. args.model fallback (= the original)
@@ -32,8 +32,6 @@ async function resolveArgs(
   const policy = await getPolicy(supabase, workspace_id);
   const llm = policy.llm ?? {};
 
-  const envOpenAI       = policy.env?.OPENAI_API_KEY;
-  const envOpenRouter   = policy.env?.OPENROUTER_API_KEY;
   const envDeepseek     = policy.env?.DEEPSEEK_API_KEY;
   const envDefaultModel = policy.env?.DEFAULT_CHAT_MODEL;
   const envDrafterModel = policy.env?.DRAFTER_MODEL;
@@ -44,14 +42,12 @@ async function resolveArgs(
   if (args.behavior === 'drafter' && drafterModel) model = drafterModel;
   else if (defaultModel && model === args.model) model = defaultModel;
 
+  // Only the deepseek-direct key flows per-call; gateway-routed vendors
+  // (anthropic/openai/...) authenticate via AI_GATEWAY_API_KEY in the env.
   return {
     ...args,
     model,
-    api_keys: {
-      openai: envOpenAI || llm.openai_api_key,
-      openrouter: envOpenRouter || llm.openrouter_api_key,
-      deepseek: envDeepseek || llm.deepseek_api_key,
-    },
+    api_keys: { deepseek: envDeepseek || llm.deepseek_api_key },
   };
 }
 
@@ -66,6 +62,21 @@ export async function resolveDeepseekKey(
 ): Promise<string | null> {
   const policy = await getPolicy(supabase, workspace_id);
   return policy.env?.DEEPSEEK_API_KEY || policy.llm?.deepseek_api_key || null;
+}
+
+/**
+ * Resolve the chat-intake model + deepseek key for a workspace in one policy
+ * read. Model defaults to deepseek-v4-pro direct; a workspace can point chat at
+ * any model via policy.llm.default_chat_model (e.g. "anthropic/claude-opus-4-7").
+ */
+export async function resolveChatModel(
+  supabase: SupabaseClient,
+  workspace_id: string,
+): Promise<{ model: string; deepseekKey: string | null }> {
+  const policy = await getPolicy(supabase, workspace_id);
+  const model = policy.env?.DEFAULT_CHAT_MODEL || policy.llm?.default_chat_model || 'deepseek/deepseek-v4-pro';
+  const deepseekKey = policy.env?.DEEPSEEK_API_KEY || policy.llm?.deepseek_api_key || null;
+  return { model, deepseekKey };
 }
 
 export async function chatCompleteForWorkspace(

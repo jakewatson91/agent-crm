@@ -11,8 +11,8 @@
  * it on the message.parts array client-side.
  */
 import { createServerClient } from '@agent-crm/db';
-import { resolveDeepseekKey } from '@agent-crm/tools';
-import { createDeepSeek } from '@ai-sdk/deepseek';
+import { resolveChatModel, getEntityTypesBatch } from '@agent-crm/tools';
+import { resolveModel } from '@agent-crm/primitives';
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -137,14 +137,18 @@ export async function POST(req: Request) {
   // the client via a transient data part so useChat can capture it.
   const { conversation_id, isNew } = await resolveThread(supabase, body.workspace_id, body.conversation_id);
 
-  // Resolve workspace deepseek key. Env DEEPSEEK_API_KEY is the single-tenant fallback.
-  const apiKey = await resolveDeepseekKey(supabase, body.workspace_id) ?? process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'no DEEPSEEK_API_KEY configured (set in workspace policy or env)' }), {
+  // Resolve the workspace chat model (default deepseek-v4-pro direct; any model
+  // via policy.llm.default_chat_model). DeepSeek routes direct with the
+  // workspace key; other vendors route through the AI Gateway.
+  const { model: chatModel, deepseekKey } = await resolveChatModel(supabase, body.workspace_id);
+  let languageModel;
+  try {
+    languageModel = resolveModel(chatModel, { deepseek: deepseekKey ?? process.env.DEEPSEEK_API_KEY });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
       status: 500, headers: { 'Content-Type': 'application/json' },
     });
   }
-  const ds = createDeepSeek({ apiKey });
 
   // Build dynamic recent-entity hint from the incoming messages (so the model
   // can resolve pronouns like "them"). Walks tool-result parts in the last
@@ -168,7 +172,7 @@ export async function POST(req: Request) {
       }
 
       const result = streamText({
-        model: ds('deepseek-v4-pro'),
+        model: languageModel,
         system: [SYSTEM_PROMPT, pageContextNote, recentEntityNote]
           .filter(Boolean)
           .join('\n\n'),
@@ -355,10 +359,11 @@ async function buildRecentEntityNote(
   }
   if (ids.size === 0) return null;
   const idList = Array.from(ids).slice(0, RECENT_ENTITY_CAP);
-  const { data } = await supabase.from('entities').select('id, name, kind').in('id', idList);
+  const { data } = await supabase.from('entities').select('id, name').in('id', idList);
   if (!data?.length) return null;
-  const lines = (data as Array<{ id: string; name: string; kind: string }>)
-    .map((e) => `  ${e.id}  ${e.kind}  ${e.name}`)
+  const typesById = await getEntityTypesBatch(supabase, idList);
+  const lines = (data as Array<{ id: string; name: string }>)
+    .map((e) => `  ${e.id}  ${(typesById.get(e.id) ?? [])[0] ?? 'entity'}  ${e.name}`)
     .join('\n');
   return `Recently referenced entities in this conversation (use these ids for pronouns like "them" / "the team"):\n${lines}`;
 }

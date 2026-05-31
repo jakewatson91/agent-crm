@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { callTool, getPolicy } from '@agent-crm/tools';
+import { callTool, getPolicy, setOutreachStage } from '@agent-crm/tools';
 import { sendEmail } from '../../_lib/send_email';
+import { sanitizeEmailHtml, htmlToPlainText } from '../../_lib/html_email';
 
 export const runtime = 'nodejs';
 
@@ -10,9 +11,11 @@ interface DecideReq {
   gate_id: string;
   decision: 'approve' | 'reject' | 'modify';
   // Optional overrides used when the gate is an outreach draft and the user
-  // tweaked the message before clicking accept.
+  // tweaked the message before clicking accept. edited_html is the rich-text
+  // body from the WYSIWYG editor; edited_body stays for plain-text edits.
   edited_subject?: string;
   edited_body?: string;
+  edited_html?: string;
   reason?: string;
 }
 
@@ -51,12 +54,15 @@ export async function POST(req: Request) {
   if (isOutreachApprove) {
     const cond = (gate.condition ?? {}) as { to_email?: string | null; subject?: string; body?: string; entity_id?: string };
     const subject = body.edited_subject ?? cond.subject ?? '';
-    const text = body.edited_body ?? cond.body ?? '';
     const intended_to = cond.to_email ?? null;
+    // Rich-text edit: sanitize the HTML and derive a plain-text fallback from it
+    // so both parts of the email agree. Plain-text edit or no edit: send text only.
+    const html = body.edited_html ? sanitizeEmailHtml(body.edited_html) : null;
+    const text = html ? htmlToPlainText(html) : (body.edited_body ?? cond.body ?? '');
     if (!text) {
       return NextResponse.json({ error: 'gate condition has no body to send' }, { status: 400 });
     }
-    const sendRes = await sendEmail({ supabase, workspace_id: body.workspace_id, intended_to, subject, body: text });
+    const sendRes = await sendEmail({ supabase, workspace_id: body.workspace_id, intended_to, subject, body: text, html: html ?? undefined });
     if (!sendRes.ok) {
       return NextResponse.json({ error: `send failed: ${sendRes.error}` }, { status: 502 });
     }
@@ -65,7 +71,7 @@ export async function POST(req: Request) {
       override_active: sendRes.override_active,
       message_id: sendRes.message_id,
       intended_to,
-      edited: body.edited_subject !== undefined || body.edited_body !== undefined,
+      edited: body.edited_subject !== undefined || body.edited_body !== undefined || body.edited_html !== undefined,
     };
   }
 
@@ -105,6 +111,10 @@ export async function POST(req: Request) {
           object_text: until,
           confidence: 1.0,
         });
+        // Lifecycle: the email is out the door → contacted. setOutreachStage's
+        // only_advance guard makes re-approving a gate a no-op (already contacted),
+        // matching the cooldown's idempotency.
+        await setOutreachStage(supabase, actor, entity_id, 'contacted');
       }
     } else if (channelId) {
       // Non-outreach OR reject path: original outcome post (preserved).

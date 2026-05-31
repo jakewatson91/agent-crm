@@ -19,12 +19,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, compress } from '@agent-crm/tools';
+import { callTool, compress, entityIdsOfType } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
-const EXTRACT_MODEL = 'deepseek/deepseek-v4-flash:free';
+const EXTRACT_MODEL = 'deepseek-v4-flash';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 export interface ExtractedItem {
@@ -367,11 +367,13 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   let entitiesByDomain = new Map<string, { id: string; name: string }>();
   let entitiesByName = new Map<string, { id: string; name: string; domain: string | null }>();
   if (intent === 'discover') {
-    const ents = await ctx.supabase
-      .from('entities')
-      .select('id, name, attributes')
-      .eq('workspace_id', ctx.workspace_id)
-      .eq('kind', 'account');
+    const acctIds = await entityIdsOfType(ctx.supabase, ctx.workspace_id, 'account');
+    const ents = acctIds.length === 0
+      ? { data: [] as Array<{ id: string; name: string; attributes: unknown }> }
+      : await ctx.supabase
+          .from('entities')
+          .select('id, name, attributes')
+          .in('id', acctIds);
     for (const e of ents.data ?? []) {
       const d = (e.attributes as { domain?: string } | null)?.domain ?? null;
       if (d) entitiesByDomain.set(d.toLowerCase(), { id: e.id as string, name: e.name as string });
@@ -429,9 +431,9 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
           name: companyName,
           attributes: {
             domain: companyDomain ?? `${companyName.toLowerCase().replace(/[^a-z0-9]+/g, '')}.example`,
-            discovered_via: 'web',
+            _discovered_via: 'web',
             discovered_at: new Date().toISOString(),
-            source_url: url,
+            _source_url: url,
           },
         });
         if (!created.ok) { result.errors.push(`create_account failed for ${companyName}: ${created.error}`); continue; }

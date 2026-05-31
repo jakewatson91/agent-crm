@@ -14,7 +14,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { callTool } from '@agent-crm/tools';
+import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import { runAgent } from '../inngest/functions/agent_logic.js';
 
 async function main() {
@@ -36,11 +36,13 @@ async function main() {
   console.log(`workspace: ${WS}\n`);
 
   // 1. Pick the b2b_saas account most likely to match the existing icp_fit subscription.
-  const accounts = await supabase
-    .from('entities')
-    .select('id, name, attributes')
-    .eq('workspace_id', WS)
-    .eq('kind', 'account');
+  const acctIds = await entityIdsOfType(supabase, WS, 'account');
+  const accounts = acctIds.length === 0
+    ? { data: [] as Array<{ id: string; name: string; attributes: unknown }>, error: null as null }
+    : await supabase
+        .from('entities')
+        .select('id, name, attributes')
+        .in('id', acctIds);
   if (accounts.error) throw accounts.error;
   const target = accounts.data?.find((a) => (a.attributes as { industry?: string })?.industry === 'b2b_saas');
   if (!target) throw new Error('no b2b_saas account in workspace');

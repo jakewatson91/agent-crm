@@ -76,13 +76,24 @@ export async function entityIdsOfType(
   workspaceId: string,
   type: string,
 ): Promise<string[]> {
-  const { data } = await sb.from('facts')
-    .select('subject_entity')
-    .eq('workspace_id', workspaceId)
-    .eq('predicate', 'is_a')
-    .eq('object_text', type)
-    .is('supersedes', null);
-  return ((data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity);
+  // PostgREST caps a single response at 1000 rows; page through so workspaces
+  // with more than 1000 entities of a type return the full set.
+  const ids: string[] = [];
+  const page = 1000;
+  for (let from = 0; ; from += page) {
+    const { data, error } = await sb.from('facts')
+      .select('subject_entity')
+      .eq('workspace_id', workspaceId)
+      .eq('predicate', 'is_a')
+      .eq('object_text', type)
+      .is('supersedes', null)
+      .range(from, from + page - 1);
+    if (error) throw new Error(`entityIdsOfType failed: ${error.message}`);
+    const rows = (data ?? []) as Array<{ subject_entity: string }>;
+    for (const r of rows) ids.push(r.subject_entity);
+    if (rows.length < page) break;
+  }
+  return ids;
 }
 
 /**

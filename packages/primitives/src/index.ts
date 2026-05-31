@@ -11,12 +11,14 @@ export { gate, decideGate } from './gate.ts';
 export { query } from './query.ts';
 export { cite } from './cite.ts';
 export { chatComplete, chatCompleteStream, type ChatCompleteArgs, type ChatCompleteResult, type ChatMessage, type ChatStreamDelta, type ToolSpec } from './llm.ts';
+export { resolveModel, parseModelId, providerLabel, type ModelKeys } from './model_registry.ts';
 export {
   relatedToEntity,
   contactsAt,
   entitiesFromSubject,
   currentRole,
   activeFacts,
+  excludeSuperseded,
   findEntityByName,
   type RelatedEntity,
   type FactRow as RelationFactRow,

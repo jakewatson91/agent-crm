@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed, vectorLiteral } from '@agent-crm/primitives';
+import { entityIdsOfType } from '@agent-crm/tools';
 
 /**
  * Compute and upsert a default-perspective embedding for an entity. Connectors
@@ -90,20 +91,31 @@ export async function getWatchedAccounts(
   workspace_id: string,
   limit = 5000,
 ): Promise<WatchedAccount[]> {
-  const [accountsRes, dropsRes] = await Promise.all([
-    supabase.from('entities').select('id, name, attributes')
-      .eq('workspace_id', workspace_id).eq('kind', 'account').limit(limit),
-    supabase.from('facts').select('subject_entity, object_text')
-      .eq('workspace_id', workspace_id).eq('predicate', 'dropped_until').is('supersedes', null),
+  const acctIds = (await entityIdsOfType(supabase, workspace_id, 'account')).slice(0, limit);
+  // Chunk the id filter: a single .in() with hundreds of uuids overflows
+  // PostgREST's request URL length and 400s. Skip archived accounts here too.
+  const CHUNK = 200;
+  type AcctRow = { id: string; name: string; attributes: Record<string, unknown> | null };
+  const accountChunks = await Promise.all([
+    ...Array.from({ length: Math.ceil(acctIds.length / CHUNK) }, (_, i) =>
+      supabase.from('entities').select('id, name, attributes')
+        .in('id', acctIds.slice(i * CHUNK, (i + 1) * CHUNK))
+        .is('archived_at', null)),
   ]);
-  if (accountsRes.error) throw new Error(`load accounts failed: ${accountsRes.error.message}`);
+  const dropsRes = await supabase.from('facts').select('subject_entity, object_text')
+    .eq('workspace_id', workspace_id).eq('predicate', 'dropped_until').is('supersedes', null);
+  const accounts: AcctRow[] = [];
+  for (const res of accountChunks) {
+    if (res.error) throw new Error(`load accounts failed: ${res.error.message}`);
+    for (const r of (res.data ?? []) as AcctRow[]) accounts.push(r);
+  }
   const dropped = new Set<string>();
   const now = Date.now();
   for (const f of dropsRes.data ?? []) {
     const t = Date.parse(f.object_text as string);
     if (Number.isFinite(t) && t > now) dropped.add(f.subject_entity as string);
   }
-  return ((accountsRes.data ?? []) as Array<{ id: string; name: string; attributes: Record<string, unknown> | null }>)
+  return accounts
     .filter((r) => !dropped.has(r.id))
     .map((r) => {
       const domain = (r.attributes?.domain as string | undefined) ?? null;

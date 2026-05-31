@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Timestamp } from '../../../_components/Timestamp';
 import { WhyThis } from '../../../_components/WhyThis';
 import { DraftActions } from '../../../_components/DraftActions';
+import { CitedText } from '../../../_components/CitedText';
 
 interface FeedItem {
   id: string;
@@ -213,7 +214,9 @@ function FeedRow({
           fontFamily: isDraft ? 'var(--font-mono)' : 'var(--font-sans)',
         }}
       >
-        {display}
+        {isDraft && item.cites.length > 0
+          ? <CitedText text={display} cites={item.cites} />
+          : display}
       </div>
 
       {isDraft && <DraftActions postId={item.id} workspaceId={ws} />}

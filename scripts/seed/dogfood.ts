@@ -13,7 +13,7 @@
 import type { SeedProfile } from './types.js';
 
 const knowledge_base = `- TRIGGERS: "token bloat", "agent burns my OpenAI budget", "context window cost", "agents read too much"
-  ANGLE: agent-native projection sized for agents not humans. 1.28x token efficiency in head-to-head vs reading raw rows from HubSpot. Cached prefixes hit ~90% on repeated runs.
+  ANGLE: agent-native projection sized for agents not humans. 2.6x fewer tokens per action vs HubSpot in a head-to-head benchmark (5x vs Day.ai, 5.8x vs Attio; tied with Twenty); one bundled read instead of a 3-6 call tool loop.
 
 - TRIGGERS: "agents overwriting each other", "data silently disappears", "race conditions on shared accounts"
   ANGLE: append-only event log + content-addressed facts. In a 50-parallel-writer benchmark, agent-crm persisted 50/50 records; HubSpot persisted 2/50 (96% data loss, all PATCHes returned 200 OK).
