@@ -25,7 +25,7 @@
  * write-side state on entities (the discovered ats hint). Idempotent —
  * re-runs only update when the discovered value changes.
  */
-import { callTool, classifyRole, passesHiringFilter, getPolicy } from '@agent-crm/tools';
+import { callTool, classifyRole, passesHiringFilter, getPolicy, type HiringFilter } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { getWatchedAccounts } from '../utils.js';
 
@@ -357,7 +357,9 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
 
   // Workspace hiring filter — empty/missing = include all (preserves prior behavior).
   const policy = await getPolicy(ctx.supabase, ctx.workspace_id);
-  const hiringFilter = policy.hiring_filter ?? null;
+  // policy.hiring_filter is the loose config shape (string[] families); passesHiringFilter
+  // only does membership checks, so the strict HiringFilter type is satisfied at runtime.
+  const hiringFilter = (policy.hiring_filter ?? null) as HiringFilter | null;
 
   // Pull full entity rows for the watchlist (chunked to dodge any URL caps).
   const entityById = new Map<string, { id: string; name: string; attributes: Record<string, unknown> }>();
