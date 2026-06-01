@@ -19,6 +19,20 @@ const nextConfig = {
   turbopack: {
     resolveExtensions: ['.tsx', '.ts', '.jsx', '.js', '.mjs', '.json'],
   },
+  // Production build runs webpack (build script dropped --turbopack). Workspace .ts
+  // sources import siblings with explicit `./foo.js` specifiers; webpack must remap
+  // the explicit extension to the real .ts/.tsx file. turbopack.resolveExtensions
+  // above only covers EXTENSIONLESS imports, not explicit `.js` -> `.ts`, which is
+  // why the turbopack build failed across the inngest module graph.
+  webpack: (config) => {
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      '.js': ['.ts', '.tsx', '.js'],
+      '.jsx': ['.tsx', '.jsx'],
+      '.mjs': ['.mts', '.mjs'],
+    };
+    return config;
+  },
 };
 
 export default nextConfig;
