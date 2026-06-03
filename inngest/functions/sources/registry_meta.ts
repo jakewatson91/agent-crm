@@ -139,6 +139,28 @@ export const exaMeta: ConnectorMeta = {
   },
 };
 
+export const exaContactsMeta: ConnectorMeta = {
+  type: 'exa_contacts',
+  label: 'Exa (contact signals)',
+  description: 'Pulls a recent web signal for your CONTACTS (people), one targeted search each, so the contact scorer fires on a real detected event. Bounded to high-fit accounts. Requires EXA_API_KEY.',
+  category: 'tool',
+  emits_signal_source: 'exa_contacts',
+  schedule_cron: '0 14 * * *',
+  config_schema: {
+    fields: [
+      { name: 'since_hours', label: 'Look back (hours)', kind: 'number', default: 720,
+        help: 'Recency window for each person search. 720 = 30 days.' },
+      { name: 'max_contacts', label: 'Max contacts per run', kind: 'number', default: 10,
+        help: 'Cost cap. One Exa search (~$0.005) per contact, best-fit first.' },
+      { name: 'min_account_fit', label: 'Min account ICP fit', kind: 'number', default: 0.5,
+        help: 'Only search contacts whose account scores at least this. 0-1.' },
+      { name: 'num_results', label: 'Results per contact', kind: 'number', default: 3 },
+      { name: 'cooldown_hours', label: 'Per-contact cooldown (hours)', kind: 'number', default: 336,
+        help: 'Skip a contact that already got a signal within this window. 336 = 14 days.' },
+    ],
+  },
+};
+
 export const webMeta: ConnectorMeta = {
   type: 'web',
   label: 'Web / RSS scrape',
@@ -295,6 +317,7 @@ export const CONNECTOR_METAS: Record<string, ConnectorMeta> = {
   custom_http: customHttpMeta,
   inbound_webhook: inboundWebhookMeta,
   exa: exaMeta,
+  exa_contacts: exaContactsMeta,
   web: webMeta,
   hn: hnMeta,
   yc: ycMeta,

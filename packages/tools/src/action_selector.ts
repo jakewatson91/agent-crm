@@ -21,10 +21,9 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ScoreBreakdown } from './scoring.ts';
-import type { ValueTheme } from './policy.ts';
-
 export type Action =
   | 'draft_outreach'
+  | 'enrich_contacts'
   | 'watch_only'
   | 'deep_research'
   | 'drop'
@@ -34,47 +33,6 @@ export interface ActionDecision {
   action: Action;
   reason: string;            // 1-line explanation for the decision post
   policy: string;            // short id for analytics / inbox filtering
-  matched_theme?: string | null;  // populated on draft_outreach when a value theme matched
-  matched_evidence?: string | null; // the predicate=value pair that matched
-}
-
-interface ValueMatch {
-  aligned: boolean;
-  theme: string | null;
-  predicate: string | null;
-  evidence: string | null; // "predicate=object_text" for the matched fact
-}
-
-/**
- * Scan facts for at least one match against the workspace's value-prop themes.
- * Matching is case-insensitive substring against `predicate object_text`. Empty
- * themes array short-circuits to aligned=true (gate is off).
- */
-export function hasValueAlignedFact(
-  facts: Array<{ predicate: string; object_text: string | null }>,
-  themes: ValueTheme[],
-): ValueMatch {
-  if (!themes.length) return { aligned: true, theme: null, predicate: null, evidence: null };
-  for (const theme of themes) {
-    let re: RegExp;
-    try {
-      re = new RegExp(theme.pattern, 'i');
-    } catch {
-      continue; // skip malformed pattern; policy is user input
-    }
-    for (const f of facts) {
-      const haystack = `${f.predicate} ${f.object_text ?? ''}`;
-      if (re.test(haystack)) {
-        return {
-          aligned: true,
-          theme: theme.name,
-          predicate: f.predicate,
-          evidence: `${f.predicate}=${(f.object_text ?? '').slice(0, 80)}`,
-        };
-      }
-    }
-  }
-  return { aligned: false, theme: null, predicate: null, evidence: null };
 }
 
 // ---- threshold defaults (overridable via workspace.policy.routing) ----
@@ -90,6 +48,10 @@ export interface ActionThresholds {
   DROP_EVIDENCE_DEPTH: number;
   DROP_SUPPRESSION_DAYS: number;
   WATCH_ICP_TOTAL: number;
+  // contact-aware routing (two-tier scoring)
+  ENRICH_CONTACTS_ACCOUNT_ICP: number;
+  DRAFT_MIN_CONTACT_SCORE: number;
+  ENRICH_CONTACTS_COOLDOWN_DAYS: number;
 }
 
 export const DEFAULT_THRESHOLDS: ActionThresholds = {
@@ -107,6 +69,10 @@ export const DEFAULT_THRESHOLDS: ActionThresholds = {
   DROP_SUPPRESSION_DAYS: 90,
 
   WATCH_ICP_TOTAL: 0.5,
+
+  ENRICH_CONTACTS_ACCOUNT_ICP: 0.6,
+  DRAFT_MIN_CONTACT_SCORE: 0.5,
+  ENRICH_CONTACTS_COOLDOWN_DAYS: 3,
 };
 
 /**
@@ -125,6 +91,9 @@ export function buildThresholds(policy?: {
   drop_evidence_depth_min?: number;
   drop_suppression_days?: number;
   watch_icp_total?: number;
+  enrich_contacts_account_icp?: number;
+  draft_min_contact_score?: number;
+  enrich_contacts_cooldown_days?: number;
 }): ActionThresholds {
   return {
     DRAFT_ICP_TOTAL: policy?.draft_icp_total ?? DEFAULT_THRESHOLDS.DRAFT_ICP_TOTAL,
@@ -138,6 +107,9 @@ export function buildThresholds(policy?: {
     DROP_EVIDENCE_DEPTH: policy?.drop_evidence_depth_min ?? DEFAULT_THRESHOLDS.DROP_EVIDENCE_DEPTH,
     DROP_SUPPRESSION_DAYS: policy?.drop_suppression_days ?? DEFAULT_THRESHOLDS.DROP_SUPPRESSION_DAYS,
     WATCH_ICP_TOTAL: policy?.watch_icp_total ?? DEFAULT_THRESHOLDS.WATCH_ICP_TOTAL,
+    ENRICH_CONTACTS_ACCOUNT_ICP: policy?.enrich_contacts_account_icp ?? DEFAULT_THRESHOLDS.ENRICH_CONTACTS_ACCOUNT_ICP,
+    DRAFT_MIN_CONTACT_SCORE: policy?.draft_min_contact_score ?? DEFAULT_THRESHOLDS.DRAFT_MIN_CONTACT_SCORE,
+    ENRICH_CONTACTS_COOLDOWN_DAYS: policy?.enrich_contacts_cooldown_days ?? DEFAULT_THRESHOLDS.ENRICH_CONTACTS_COOLDOWN_DAYS,
   };
 }
 
@@ -146,14 +118,19 @@ interface SelectArgs {
   entity_id: string;
   breakdown: ScoreBreakdown;
   icp_total: number;
+  /**
+   * Best contact_score over the account's contacts (max). Optional: when
+   * undefined the selector behaves exactly as before (account-only routing),
+   * so callers can adopt it incrementally. When provided, it drives the
+   * priority gate and the enrich_contacts action.
+   */
+  best_contact_score?: number;
   // Recent activity context (already loaded in agent_logic before this call).
   recent_draft_at: string | null;     // most recent touch_draft created_at, or null
   recent_research_at: string | null;  // most recent deep_research trigger, or null
+  recent_contacts_request_at?: string | null; // most recent contacts_requested fact, or null
   dropped_until: string | null;       // dropped_until fact value, or null
   cooldown_until: string | null;      // outreach_cooldown_until fact value, or null
-  // Substantive facts for value-theme matching. Pass [] to disable the gate.
-  facts: Array<{ predicate: string; object_text: string | null }>;
-  value_themes: ValueTheme[];
   /** Per-workspace thresholds. When omitted, DEFAULT_THRESHOLDS apply. */
   thresholds?: ActionThresholds;
 }
@@ -191,9 +168,32 @@ export function selectAction(args: SelectArgs): ActionDecision {
     }
   }
 
-  // 1. Draft if fit, trigger, and evidence all clear the bar AND the entity
-  //    has a fact aligned with a workspace value theme. Without alignment we
-  //    have nothing specific to say — defer to watch_only.
+  // 0c. Two-tier gate: a strong-fit account with no reachable decision-maker
+  //     routes to enrich_contacts — go find/buy a better contact before drafting.
+  //     Only fires when the caller supplied best_contact_score (else skipped, so
+  //     account-only callers are unaffected). Placed before draft so a high-fit
+  //     account never drafts to a weak/missing contact.
+  const contactsReqAge = args.recent_contacts_request_at
+    ? (now - Date.parse(args.recent_contacts_request_at)) / 86400_000
+    : Infinity;
+  if (
+    args.best_contact_score !== undefined &&
+    args.icp_total >= THRESH.ENRICH_CONTACTS_ACCOUNT_ICP &&
+    args.best_contact_score < THRESH.DRAFT_MIN_CONTACT_SCORE &&
+    contactsReqAge >= THRESH.ENRICH_CONTACTS_COOLDOWN_DAYS
+  ) {
+    return {
+      action: 'enrich_contacts',
+      policy: 'good_account_weak_contact',
+      reason: `Enrich contacts: account fit ${args.icp_total.toFixed(2)} is strong but best contact ${args.best_contact_score.toFixed(2)} is below ${THRESH.DRAFT_MIN_CONTACT_SCORE}. Find a real decision-maker before drafting.`,
+    };
+  }
+
+  // 1. Draft if fit, trigger, and evidence all clear the bar. The "is there a
+  //    real on-pitch reason to reach out" judgment lives in signal_strength (an
+  //    LLM rubric scored against the workspace value prop), so the draft bar
+  //    here IS the trigger gate — no separate keyword/theme check. When a contact
+  //    score is supplied it must also clear the bar (else 0c would have caught it).
   const draftAge = args.recent_draft_at
     ? (now - Date.parse(args.recent_draft_at)) / 86400_000
     : Infinity;
@@ -201,23 +201,13 @@ export function selectAction(args: SelectArgs): ActionDecision {
     args.icp_total >= THRESH.DRAFT_ICP_TOTAL &&
     b.signal_strength >= THRESH.DRAFT_SIGNAL_STRENGTH &&
     b.evidence_depth >= THRESH.DRAFT_EVIDENCE_DEPTH &&
-    draftAge >= THRESH.DRAFT_SUPPRESSION_DAYS
+    draftAge >= THRESH.DRAFT_SUPPRESSION_DAYS &&
+    (args.best_contact_score === undefined || args.best_contact_score >= THRESH.DRAFT_MIN_CONTACT_SCORE)
   ) {
-    const match = hasValueAlignedFact(args.facts, args.value_themes);
-    if (match.aligned) {
-      const themeNote = match.theme ? ` Theme: ${match.theme} (${match.evidence}).` : '';
-      return {
-        action: 'draft_outreach',
-        policy: 'qualified_and_triggered',
-        reason: `Drafting: icp_total ${args.icp_total.toFixed(2)}, signal_strength ${b.signal_strength.toFixed(2)}, evidence_depth ${b.evidence_depth.toFixed(2)} all clear the threshold.${themeNote}`,
-        matched_theme: match.theme,
-        matched_evidence: match.evidence,
-      };
-    }
     return {
-      action: 'watch_only',
-      policy: 'no_value_aligned_signal',
-      reason: `Thresholds met (icp ${args.icp_total.toFixed(2)}, signal ${b.signal_strength.toFixed(2)}, evidence ${b.evidence_depth.toFixed(2)}) but no fact matches a value theme. Need a hiring / headcount / token-cost / AI-integration signal before drafting.`,
+      action: 'draft_outreach',
+      policy: 'qualified_and_triggered',
+      reason: `Drafting: icp_total ${args.icp_total.toFixed(2)}, signal_strength ${b.signal_strength.toFixed(2)}, evidence_depth ${b.evidence_depth.toFixed(2)} all clear the threshold.`,
     };
   }
 
@@ -275,6 +265,7 @@ export async function loadActionContext(
 ): Promise<{
   recent_draft_at: string | null;
   recent_research_at: string | null;
+  recent_contacts_request_at: string | null;
   dropped_until: string | null;
   cooldown_until: string | null;
 }> {
@@ -326,10 +317,64 @@ export async function loadActionContext(
     .limit(1)
     .maybeSingle();
 
+  // contacts_requested fact — asserted when enrich_contacts fired, so the
+  // selector doesn't re-request before the pull lands (cooldown window).
+  const contactsReq = await supabase
+    .from('facts')
+    .select('observed_at')
+    .eq('workspace_id', workspace_id)
+    .eq('subject_entity', entity_id)
+    .eq('predicate', 'contacts_requested')
+    .is('supersedes', null)
+    .order('observed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   return {
     recent_draft_at: (draft.data?.created_at as string) ?? null,
     recent_research_at: (research.data?.observed_at as string) ?? null,
+    recent_contacts_request_at: (contactsReq.data?.observed_at as string) ?? null,
     dropped_until: (dropped.data?.object_text as string) ?? null,
     cooldown_until: (cooldown.data?.object_text as string) ?? null,
   };
+}
+
+/**
+ * Best contact_score over an account's contacts (max), for the two-tier gate.
+ * Returns undefined when the account has no linked, scored contacts — selectAction
+ * treats undefined as account-only, so callers can adopt this without changing
+ * behavior until contacts are actually scored.
+ */
+export async function loadBestContactScore(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  account_entity_id: string,
+): Promise<number | undefined> {
+  const linked = await supabase
+    .from('facts')
+    .select('subject_entity')
+    .eq('workspace_id', workspace_id)
+    .eq('predicate', 'works_at')
+    .eq('object_entity', account_entity_id)
+    .is('supersedes', null);
+  const contactIds = (linked.data ?? []).map((r) => r.subject_entity as string);
+  if (!contactIds.length) return undefined;
+
+  // The CURRENT fact in this codebase is the one no other row supersedes (the
+  // newest row points at its predecessor). `supersedes is null` returns the
+  // stale ORIGINAL, so fetch all contact_score rows and pick the not-pointed-to
+  // one per contact.
+  const scores = await supabase
+    .from('facts')
+    .select('id, object_text, supersedes')
+    .eq('workspace_id', workspace_id)
+    .eq('predicate', 'contact_score')
+    .in('subject_entity', contactIds);
+  const rows = (scores.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null }>;
+  const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const vals = rows
+    .filter((r) => !pointedTo.has(r.id))
+    .map((r) => parseFloat(r.object_text as string))
+    .filter((n) => Number.isFinite(n));
+  return vals.length ? Math.max(...vals) : undefined;
 }

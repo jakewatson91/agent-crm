@@ -12,8 +12,8 @@ import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import {
   selectAction, buildThresholds, buildScoreWeights, combineSubScores,
-  hasValueAlignedFact, loadActionContext, getPolicy,
-  type ActionThresholds, type ScoreWeights, type ValueTheme,
+  loadActionContext, loadBestContactScore, getPolicy,
+  type ActionThresholds, type ScoreWeights,
 } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
@@ -34,7 +34,6 @@ interface PerEntity {
   action: string;
   policy: string;
   reason: string;
-  matched_theme?: string | null;
 }
 
 export async function POST(req: Request) {
@@ -46,7 +45,6 @@ export async function POST(req: Request) {
   const policy = await getPolicy(supabase, body.workspace_id);
   const thresholds: ActionThresholds = buildThresholds(body.routing ?? policy.routing);
   const weights: ScoreWeights = buildScoreWeights(body.scoring?.weights ?? policy.scoring?.weights);
-  const themes = (policy.drafter?.value_themes ?? []) as ValueTheme[];
 
   // Pick top-N entities by current icp_fit (cheap proxy for "what the user
   // most cares about right now"). Score facts give us the breakdown.
@@ -73,14 +71,6 @@ export async function POST(req: Request) {
   const nameById = new Map(((entsRes.data ?? []) as Array<{ id: string; name: string }>).map((e) => [e.id, e.name]));
 
   // Group facts per entity.
-  const ADMIN = new Set([
-    'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
-    'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
-    'research_triggered', 'research_completed', 'score_total',
-    'no_reply_marked', 'outreach_rejected_at', 'replied_at',
-    'query', 'intent', 'item_url', 'published_at', 'matched_alias',
-    'topic', 'source_url', 'source_title',
-  ]);
   const factsByEnt = new Map<string, Array<{ predicate: string; object_text: string | null; observed_at: string }>>();
   for (const f of (factsRes.data ?? []) as Array<{ subject_entity: string; predicate: string; object_text: string | null; observed_at: string }>) {
     const arr = factsByEnt.get(f.subject_entity) ?? [];
@@ -116,21 +106,19 @@ export async function POST(req: Request) {
       .eq('workspace_id', body.workspace_id).eq('account_entity_id', r.id).maybeSingle();
     const channelCtx = chan.data?.id
       ? await loadActionContext(supabase, body.workspace_id, r.id, chan.data.id as string)
-      : { recent_draft_at: null, recent_research_at: null, dropped_until: null, cooldown_until: null };
+      : { recent_draft_at: null, recent_research_at: null, recent_contacts_request_at: null, dropped_until: null, cooldown_until: null };
 
-    const substantive = facts
-      .filter((f) => !ADMIN.has(f.predicate) && !f.predicate.startsWith('score_'))
-      .map((f) => ({ predicate: f.predicate, object_text: f.object_text }));
-
+    const bestContactScore = await loadBestContactScore(supabase, body.workspace_id, r.id);
     const decision = selectAction({
       workspace_id: body.workspace_id,
       entity_id: r.id,
       breakdown, icp_total: icpTotal,
+      best_contact_score: bestContactScore,
       recent_draft_at: channelCtx.recent_draft_at,
       recent_research_at: channelCtx.recent_research_at,
+      recent_contacts_request_at: channelCtx.recent_contacts_request_at,
       dropped_until: channelCtx.dropped_until,
       cooldown_until: channelCtx.cooldown_until,
-      facts: substantive, value_themes: themes,
       thresholds,
     });
 
@@ -143,7 +131,6 @@ export async function POST(req: Request) {
       action: decision.action,
       policy: decision.policy,
       reason: decision.reason,
-      matched_theme: (decision as { matched_theme?: string | null }).matched_theme ?? null,
     });
   }
 
@@ -154,6 +141,5 @@ export async function POST(req: Request) {
     distribution,
     samples,
     sample_size: samples.length,
-    matched_value_aligned: hasValueAlignedFact([], themes).aligned, // sanity: themes loaded
   });
 }

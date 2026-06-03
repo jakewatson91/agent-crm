@@ -63,6 +63,12 @@ export interface DrafterDecisionOpts {
    * generic "don't name internal fields" rule alone.
    */
   forbidden_field_terms?: string[];
+  /**
+   * Phase 0 market brief: a small list of current, dated market hooks rendered
+   * as background context in the drafter prompt. Off or empty renders nothing.
+   * Contents live in config (policy.drafter.market_brief), never in shared code.
+   */
+  market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };
 }
 
 export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
@@ -74,6 +80,21 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
   const asks = (opts.ask_examples ?? ['Worth exploring?', 'Open to a quick chat?']).filter((s) => s.trim().length > 0);
   const forbidden = (opts.forbidden_phrases ?? []).filter((s) => s.trim().length > 0);
   const fieldTerms = (opts.forbidden_field_terms ?? []).filter((s) => s.trim().length > 0);
+  // Market brief: background context only. Off or empty contributes nothing, so
+  // the prompt stays byte-identical (and cache-identical) for workspaces that
+  // haven't opted in. Capped at 5 so it can't balloon the cached system prefix.
+  const briefItems = (opts.market_brief?.enabled ? (opts.market_brief.items ?? []) : [])
+    .filter((i) => i && typeof i.text === 'string' && i.text.trim().length > 0)
+    .slice(0, 5);
+  const marketBriefBlock = briefItems.length
+    ? `\n\nMARKET BRIEF (current background context, NOT facts about this account):\n${briefItems
+        .map((i) => {
+          const date = i.date ? ` (${i.date})` : '';
+          const src = i.url ? ` [${i.url}]` : '';
+          return `   - ${i.text.trim()}${date}${src}`;
+        })
+        .join('\n')}\nUSE: when you have no FRESH, specific fact for THIS touch (for example a follow-up where the strongest facts were already used in an earlier email, or a re-engagement after a long gap), you MAY open with ONE of these market shifts as a genuine reason to reach out again, then connect it to them. When you have a fresh, specific account fact to lead with, use that and skip the brief. At most one item, framed as something you've noticed in the market, never a stat dump or a market report.`
+    : '';
 
   const subjectInstruction = style === 'one_word'
     ? 'SUBJECT — exactly ONE word. A concrete noun, ideally tied to the specific signal that triggered this. Never vague words like "Hello", "Question", "Quick", "Connect".'
@@ -119,7 +140,7 @@ ${forbiddenBlock}
 5. ${askBlock}
 
 LEAD-FACT SELECTION — the user message may include a RECOMMENDED FACTS block (a deterministic shortlist scored on ICP match, recency, confidence, prior over-use, and outcome history). When present, prefer one of those facts as your anchor for the problem statement. Override only if the past_touch context demands it — e.g., the prior touch already led with the top recommended fact and you'd be repeating yourself, or the recommended fact conflicts with how the prior touch was framed.
-${toneBlock}
+${toneBlock}${marketBriefBlock}
 RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle. Echo the chosen email in the output's "to_email" field. If no CONTACTS, set "to_email" to null.
 
 NEVER MENTION INTERNAL DATA OR FIELD NAMES — write as a person who researched this company on the open web, not as software reading a record. Do not name any internal field or column the data is stored under, and do not use data-source language ("our system shows", "your profile", "according to our data", "we have you down as", "based on the signal").${fieldTermsClause} Say the real-world thing instead: name the company's actual site, product, or the specific tools they mentioned — not the field that holds them. If you can't say it the way a human researcher would, leave it out.

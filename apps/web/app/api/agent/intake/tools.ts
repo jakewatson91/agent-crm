@@ -11,8 +11,8 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  callTool, scoreAndAssert, selectAction, buildThresholds, loadActionContext,
-  hasValueAlignedFact, lookupEntity, type ValueTheme, getPolicy,
+  callTool, scoreAndAssert, selectAction, buildThresholds, loadActionContext, loadBestContactScore,
+  lookupEntity, getPolicy,
   chatCompleteForWorkspace, getSourceMetrics,
   findContacts, linkContactToAccount,
   getEntityTypes, getEntityTypesBatch, entityIdsOfType,
@@ -707,7 +707,7 @@ const rescoreTool: ToolHandler = {
 const proposeActionTool: ToolHandler = {
   spec: {
     name: 'propose_action',
-    description: 'Evaluate what the action selector would do for this entity right now. Returns the categorical action (draft_outreach / watch_only / deep_research / drop / continue) plus reason and matched value theme if any. Call AFTER rescore_entity.',
+    description: 'Evaluate what the action selector would do for this entity right now. Returns the categorical action (draft_outreach / enrich_contacts / watch_only / deep_research / drop / continue) plus reason and matched value theme if any. enrich_contacts means the account fits but lacks a strong enough contact to email — find a better decision-maker first. Call AFTER rescore_entity.',
     parameters: {
       type: 'object',
       properties: { entity_id: { type: 'string' } },
@@ -740,32 +740,21 @@ const proposeActionTool: ToolHandler = {
     const channel_id = chan.data?.id as string | undefined;
     const channelCtx = channel_id
       ? await loadActionContext(ctx.supabase, ctx.workspace_id, args.entity_id, channel_id)
-      : { recent_draft_at: null, recent_research_at: null, dropped_until: null, cooldown_until: null };
-
-    const ADMIN = new Set([
-      'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
-      'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
-      'research_triggered', 'research_completed', 'score_total',
-      'no_reply_marked', 'outreach_rejected_at', 'replied_at',
-      'query', 'intent', 'item_url', 'published_at', 'matched_alias',
-      'topic', 'source_url', 'source_title',
-    ]);
-    const substantive = facts
-      .filter((f) => !ADMIN.has(f.predicate) && !f.predicate.startsWith('score_'))
-      .map((f) => ({ predicate: f.predicate, object_text: f.object_text }));
+      : { recent_draft_at: null, recent_research_at: null, recent_contacts_request_at: null, dropped_until: null, cooldown_until: null };
 
     const policy = await getPolicy(ctx.supabase, ctx.workspace_id);
-    const themes = (policy.drafter?.value_themes ?? []) as ValueTheme[];
 
+    const bestContactScore = await loadBestContactScore(ctx.supabase, ctx.workspace_id, args.entity_id);
     const decision = selectAction({
       workspace_id: ctx.workspace_id,
       entity_id: args.entity_id,
       breakdown, icp_total: icpTotal,
+      best_contact_score: bestContactScore,
       recent_draft_at: channelCtx.recent_draft_at,
       recent_research_at: channelCtx.recent_research_at,
+      recent_contacts_request_at: channelCtx.recent_contacts_request_at,
       dropped_until: channelCtx.dropped_until,
       cooldown_until: channelCtx.cooldown_until,
-      facts: substantive, value_themes: themes,
       thresholds: buildThresholds(policy.routing),
     });
 
@@ -773,7 +762,6 @@ const proposeActionTool: ToolHandler = {
       icp_total: icpTotal,
       breakdown,
       decision,
-      value_match: hasValueAlignedFact(substantive, themes),
     };
   },
 };

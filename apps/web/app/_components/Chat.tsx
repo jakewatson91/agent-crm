@@ -821,7 +821,6 @@ function ProposeActionResult({ data }: { data: any }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.35rem' }}>
         <span style={{ padding: '.15rem .5rem', background: actionColor[d.action] ?? '#888', color: '#fff', borderRadius: 4, fontSize: '.72rem', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>{d.action}</span>
         <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{d.policy}</span>
-        {d.matched_theme && <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>· theme={d.matched_theme}</span>}
       </div>
       <div style={{ fontSize: '.75rem', color: 'var(--text-2)', marginBottom: '.4rem' }}>{d.reason}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
