@@ -364,7 +364,7 @@ function EntityCard({
   activity: Activity | null;
 }) {
   const oneLiner = describeEntity(entity, activity);
-  const navigable = entity.types.includes('account');
+  const type = primaryType(entity);
 
   const card = (
     <div
@@ -374,13 +374,13 @@ function EntityCard({
         display: 'flex',
         alignItems: 'center',
         gap: '.7rem',
-        cursor: navigable ? 'pointer' : 'default',
-        opacity: navigable ? 1 : 0.85,
+        cursor: 'pointer',
       }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: '.95rem', fontWeight: 500, color: 'var(--text)' }}>
+        <div style={{ fontSize: '.95rem', fontWeight: 500, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '.5rem' }}>
           {entity.name}
+          {type && <span className="badge badge-mute" style={{ fontSize: '.65rem', textTransform: 'lowercase' }}>{type}</span>}
         </div>
         <div className="subtle" style={{ fontSize: '.75rem', marginTop: 2 }}>
           {oneLiner}
@@ -406,7 +406,6 @@ function EntityCard({
     </div>
   );
 
-  if (!navigable) return card;
   return (
     <Link href={`/workspace/${ws}/entities/${entity.id}`} style={{ textDecoration: 'none' }}>
       {card}

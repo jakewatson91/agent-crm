@@ -31,6 +31,7 @@ function getHandlers(): Promise<ServeReturn> {
         fns.systemHealthMonitor,
         fns.rescoreOnIcpChange,
         fns.researchRunner,
+        fns.contactsRunner,
         fns.entityResearchDispatcher,
         fns.silenceSweep,
         fns.entityArchiveSweep,

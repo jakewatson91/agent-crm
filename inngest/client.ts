@@ -68,6 +68,17 @@ export type Events = {
       reason: string;
     };
   };
+  // Action-selector emits this when an account fits but lacks a strong enough
+  // contact to email (two-tier scoring). Triggers a contact-provider pull
+  // scoped to the account's domain, then scores the new contacts.
+  'contacts.requested': {
+    data: {
+      workspace_id: string;
+      entity_id: string;
+      entity_name: string;
+      reason: string;
+    };
+  };
 };
 
 export const inngest = new Inngest({

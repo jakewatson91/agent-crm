@@ -17,7 +17,9 @@ export interface OutreachPolicy {
 }
 
 export interface EnrichmentPolicy {
-  contact_provider?: 'none' | 'hunter';
+  // 'hunter' works today (keyed by HUNTER_API_KEY). 'explorium' is preferred for
+  // young startups but needs the workspace's Explorium key + REST client (pending).
+  contact_provider?: 'none' | 'hunter' | 'explorium';
   /**
    * Hard cap on contact-provider lookups per calendar month for this workspace.
    * Counted via `contact_lookup_attempted` facts asserted this month. When
@@ -39,24 +41,14 @@ export interface EnrichmentPolicy {
 }
 
 /**
- * Drafter policy — gates a draft on having a fact that maps to one of the
- * workspace's value-prop themes. Without this, drafts trigger off generic
- * fit (e.g. "they're on the YC page") which produces low-specificity emails.
- *
- * Each theme has a name (used in the drafter prompt as PRIMARY_ANGLE) and a
- * regex pattern (matched against predicate + object_text on the entity's
- * active facts, case-insensitive). Default `value_themes: []` = gate is off,
- * preserves backward compatibility.
+ * Drafter policy. The "is there a real on-pitch reason to reach out" decision
+ * lives in the LLM signal_strength score (rated against value_props), not a
+ * keyword gate — see action_selector. value_props/pain_points shape the email.
  *
  * cooldown_days: after a draft is sent (gate approved), block re-drafting
  * for this many days via the `outreach_cooldown_until` fact.
  */
-export interface ValueTheme {
-  name: string;
-  pattern: string; // regex source, compiled at use site
-}
 export interface DrafterPolicy {
-  value_themes?: ValueTheme[];
   cooldown_days?: number;
 
   // ---- email formula (new in Phase 3) ----
@@ -91,6 +83,18 @@ export interface DrafterPolicy {
    * rule in the drafter prompt.
    */
   forbidden_field_terms?: string[];
+  /**
+   * Phase 0 market brief. A small, hand-written list of current, dated market
+   * hooks injected into the drafter's system prompt as background context.
+   * The shape is here; the contents live on workspaces.policy and default to off.
+   * No automated sourcing yet: items are written by hand (later, a refresh job
+   * can patch this same field). Behind `enabled`, so absent or off renders
+   * nothing and the prompt stays byte-identical to today.
+   */
+  market_brief?: {
+    enabled?: boolean;
+    items?: Array<{ text: string; url?: string; date?: string }>;
+  };
 }
 
 /**
@@ -141,6 +145,14 @@ export interface RoutingPolicy {
   drop_suppression_days?: number;
 
   watch_icp_total?: number;
+
+  // ---- contact-aware routing (two-tier scoring) ----
+  /** Account fit bar above which a weak/missing contact routes to enrich_contacts. Default 0.6. */
+  enrich_contacts_account_icp?: number;
+  /** Min best-contact score required to draft (vs enrich a better contact). Default 0.5. */
+  draft_min_contact_score?: number;
+  /** Days to wait before re-requesting a contact pull for the same account. Default 3. */
+  enrich_contacts_cooldown_days?: number;
 }
 
 /**
@@ -161,6 +173,41 @@ export interface ScoringPolicy {
     graph_proximity?: number;
   };
   rrf_gate?: number;
+}
+
+/**
+ * Contact-scoring weights. Same six slots as ScoringPolicy, remapped in meaning
+ * for a person (the scorer reuses the ScoreBreakdown struct):
+ *   industry_match  -> persona match (role vs target buyer roles)
+ *   stage_match     -> decision power (seniority / authority)
+ *   signal_strength -> contact-level signal (job change, social post)
+ *   graph_proximity -> parent account fit (one-way: contact <- account)
+ * Account scoring is unaffected — contacts store `contact_score`, never `icp_fit`.
+ */
+export interface ContactScoringPolicy {
+  weights?: {
+    persona_match?: number;
+    decision_power?: number;
+    signal_strength?: number;
+    evidence_depth?: number;
+    recency?: number;
+    account_fit?: number;
+  };
+}
+
+/**
+ * Persona targeting — who counts as a buyer for this workspace. Drives the
+ * contact scorer's persona_match. VERTICAL-NEUTRAL: empty by default, so a
+ * fresh workspace falls back to seniority as the proxy (a senior person is a
+ * plausible decision-maker) and never assumes a vertical. Each customer fills
+ * in their own buyer roles.
+ *
+ * target_roles: regex / substring patterns matched against the contact's role
+ *   text (case-insensitive), e.g. ["founder", "head of (sales|growth)"].
+ */
+export interface PersonaPolicy {
+  target_roles?: string[];
+  decision_power_hint?: string;
 }
 
 /**
@@ -211,6 +258,10 @@ export interface WorkspacePolicy {
   llm?: LLMPolicy;
   routing?: RoutingPolicy;
   scoring?: ScoringPolicy;
+  contact_scoring?: ContactScoringPolicy;
+  personas?: PersonaPolicy;
+  /** Which is_a types get scored. Default ['account']. Add 'contact' to enable contact scoring. */
+  scorable_types?: string[];
   hiring_filter?: HiringFilterPolicy;
   lifecycle?: LifecyclePolicy;
   display?: DisplayPolicy;
@@ -263,7 +314,6 @@ export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrich
     contact_provider: 'none',
   },
   drafter: {
-    value_themes: [],
     cooldown_days: 14,
   },
   llm: {},

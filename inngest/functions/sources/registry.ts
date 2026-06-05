@@ -3,6 +3,7 @@ import apiCall, { meta as apiCallMeta } from './connectors/api_call.js';
 import customHttp, { meta as customHttpMeta } from './connectors/custom_http.js';
 import inboundWebhook, { meta as inboundWebhookMeta } from './connectors/inbound_webhook.js';
 import exa, { meta as exaMeta } from './connectors/exa.js';
+import exaContacts, { meta as exaContactsMeta } from './connectors/exa_contacts.js';
 import web, { meta as webMeta } from './connectors/web.js';
 import hn, { meta as hnMeta } from './connectors/hn.js';
 import yc, { meta as ycMeta } from './connectors/yc.js';
@@ -30,6 +31,7 @@ export const CONNECTORS: Record<string, { run: Connector; meta: ConnectorMeta }>
   custom_http: { run: customHttp, meta: customHttpMeta },
   inbound_webhook: { run: inboundWebhook, meta: inboundWebhookMeta },
   exa: { run: exa, meta: exaMeta },
+  exa_contacts: { run: exaContacts, meta: exaContactsMeta },
   web: { run: web, meta: webMeta },
   hn: { run: hn, meta: hnMeta },
   yc: { run: yc, meta: ycMeta },

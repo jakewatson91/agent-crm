@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
@@ -254,10 +254,6 @@ export async function runAgent(
     }
   }
 
-  // Value-theme match info from action_selector — hoisted so the drafter
-  // prompt below can read it after the action_selector block scope closes.
-  let matchedTheme: string | null = null;
-  let matchedEvidence: string | null = null;
   if (behavior === 'drafter') {
     // Workspace policy: hard suppression-list match. Orthogonal to scoring, so
     // it still lives here, not in action_selector.
@@ -330,47 +326,30 @@ export async function runAgent(
     const icpTotal = readScoreFact('score_total', readScoreFact('icp_fit'));
 
     const ctx = await loadActionContext(supabase, payload.workspace_id, ent.data.id, channel_id);
-    // Strip admin / score / lookup-cache / source-bookkeeping facts before
-    // passing to action_selector — value-theme matching should see real claims
-    // about the entity, not connector breadcrumbs. The Exa pipeline asserts
-    // facts like `query=...`, `intent=discover`, `item_url=...` which are the
-    // search context that surfaced the entity, not facts about it.
-    const ADMIN_FOR_THEMES = new Set([
-      'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
-      'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
-      'research_triggered', 'research_completed', 'score_total',
-      'no_reply_marked', 'outreach_rejected_at', 'replied_at',
-      // Source bookkeeping — value statements about the SEARCH, not the entity:
-      'query', 'intent', 'item_url', 'published_at', 'matched_alias',
-      'topic', 'source_url', 'source_title',
-    ]);
-    const substantiveFacts = activeFacts
-      .filter((f) => !ADMIN_FOR_THEMES.has(f.predicate) && !f.predicate.startsWith('score_'))
-      .map((f) => ({ predicate: f.predicate, object_text: f.object_text }));
-    const valueThemes = policy.drafter?.value_themes ?? [];
+    // Two-tier gate input: best contact_score over this account's contacts.
+    // Undefined when no scored contacts → selectAction stays account-only.
+    const bestContactScore = await loadBestContactScore(supabase, payload.workspace_id, ent.data.id);
     const thresholds = buildThresholds(policy.routing);
     const decision = selectAction({
       workspace_id: payload.workspace_id,
       entity_id: ent.data.id,
       breakdown: scoreBreakdown,
       icp_total: icpTotal,
+      best_contact_score: bestContactScore,
       recent_draft_at: ctx.recent_draft_at,
       recent_research_at: ctx.recent_research_at,
+      recent_contacts_request_at: ctx.recent_contacts_request_at,
       dropped_until: ctx.dropped_until,
       cooldown_until: ctx.cooldown_until,
-      facts: substantiveFacts,
-      value_themes: valueThemes,
       thresholds,
     });
-    matchedTheme = (decision as { matched_theme?: string | null }).matched_theme ?? null;
-    matchedEvidence = (decision as { matched_evidence?: string | null }).matched_evidence ?? null;
 
     if (decision.action !== 'draft_outreach') {
       // Only post state-changing actions to the channel. watch_only and continue
       // produce no observable change, so they're audit-trail events only — the
       // feed stays focused on actions the user cares about.
       const cites = activeFacts.filter((f) => f.predicate.startsWith('score_')).map((f) => f.id);
-      const STATE_CHANGING: ReadonlySet<typeof decision.action> = new Set(['deep_research', 'drop']);
+      const STATE_CHANGING: ReadonlySet<typeof decision.action> = new Set(['deep_research', 'drop', 'enrich_contacts']);
       if (STATE_CHANGING.has(decision.action)) {
         await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
           `[${decision.action}] ${decision.reason}`, cites);
@@ -401,6 +380,28 @@ export async function runAgent(
         try {
           await inngest.send({
             name: 'research.requested',
+            data: {
+              workspace_id: payload.workspace_id,
+              entity_id: ent.data.id,
+              entity_name: ent.data.name,
+              reason: decision.reason,
+            },
+          });
+        } catch { /* non-fatal: next rescore tick can retry */ }
+      } else if (decision.action === 'enrich_contacts') {
+        // Mark the request so we don't re-fire every tick before the pull lands.
+        // action_selector reads this via recent_contacts_request_at.
+        await callTool(supabase, actor, 'assert_fact', {
+          subject_entity: ent.data.id,
+          predicate: 'contacts_requested',
+          object_text: new Date().toISOString(),
+          confidence: 1.0,
+        });
+        // Fire the event the contacts-runner consumes to pull decision-makers
+        // for this account via the workspace's configured contact provider.
+        try {
+          await inngest.send({
+            name: 'contacts.requested',
             data: {
               workspace_id: payload.workspace_id,
               entity_id: ent.data.id,
@@ -529,6 +530,7 @@ export async function runAgent(
     // forbidden_phrases in the PROMPT (post-LLM sanitize is separate, via banned_phrases).
     forbidden_phrases: policy.outreach?.banned_phrases ?? [],
     forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
+    market_brief: policy.drafter?.market_brief,
   });
   // Compute the deterministic shortlist for drafters. ~30 token addition; the
   // drafter prompt is told to prefer these but can override when context demands.
@@ -547,10 +549,7 @@ export async function runAgent(
       });
     } catch { /* non-fatal */ }
   }
-  // matched_theme / matched_evidence come from action_selector. When set, the
-  // drafter prompt below uses them as PRIMARY_ANGLE so the LLM leads with the
-  // value-prop theme instead of grabbing the first fact in the list.
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, matchedTheme, matchedEvidence, recommended, behavior === 'drafter');
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, recommended, behavior === 'drafter');
 
   let llm;
   try {
@@ -627,7 +626,13 @@ export async function runAgent(
   if (decision.action === 'post_touch_draft' && behavior === 'drafter') {
     const subject = sanitize((decision.subject as string) ?? '');
     const body = sanitize((decision.body as string) ?? '');
-    const toEmail = ((decision as { to_email?: string | null }).to_email ?? '').toString().trim();
+    // Recipient the LLM picked from linked contacts. When the account has no
+    // linked contact email, fall back to the workspace routing address
+    // (outreach.override_to) so the draft is addressed to where it would
+    // actually send, instead of a confusing null. The send path already
+    // reroutes everything to override_to anyway.
+    const llmTo = ((decision as { to_email?: string | null }).to_email ?? '').toString().trim();
+    const toEmail = llmTo || (policy.outreach?.override_to ?? '').toString().trim();
     const toLine = toEmail ? `To: ${toEmail}\n` : '';
     const composed = subject ? `${toLine}Subject: ${subject}\n\n${body}` : `${toLine}${body}`;
     const r = await callTool(supabase, actor, 'post_to_channel', {
@@ -884,6 +889,7 @@ function buildSystemPrompt(
     ask_examples?: string[];
     forbidden_phrases?: string[];
     forbidden_field_terms?: string[];
+    market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };
   },
 ): string {
   const identity = behavior === 'drafter'
@@ -916,6 +922,7 @@ function buildSystemPrompt(
     ask_examples: drafterPolicy?.ask_examples,
     forbidden_phrases: drafterPolicy?.forbidden_phrases,
     forbidden_field_terms: drafterPolicy?.forbidden_field_terms,
+    market_brief: drafterPolicy?.market_brief,
   });
 
   const decisionBlock = behavior === 'drafter' ? drafterDecision
@@ -1027,8 +1034,6 @@ function buildUserPrompt(
   activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number }>,
   pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [],
   contacts: Array<{ name: string; email: string; role: string }> = [],
-  matchedTheme: string | null = null,
-  matchedEvidence: string | null = null,
   recommended: FactScore[] = [],
   // Drafters get attributes as readable prose so the email never echoes internal
   // field names ("domain", "stack"). The enricher keeps raw JSON keys — it needs
@@ -1049,10 +1054,6 @@ function buildUserPrompt(
     ? `\nCONTACTS (linked to this account — pick the best fit for the role you're targeting):\n${contacts.map((c) => `  ${c.name} <${c.email}>${c.role ? ` — ${c.role}` : ''}`).join('\n')}\n`
     : '';
 
-  const angleBlock = matchedTheme
-    ? `\nPRIMARY ANGLE (locked by upstream action_selector — your draft MUST lead with this):\n  theme: ${matchedTheme}\n  evidence: ${matchedEvidence ?? '(see active facts)'}\nDo not pivot to a different angle. The first paragraph of the body should reference this specific fact.\n`
-    : '';
-
   const recommendedBlock = recommended.length
     ? `\nRECOMMENDED FACTS (deterministic shortlist — prefer one of these as your lead unless the past_touch context demands otherwise):\n${recommended.map((r) => `  ${r.id} (score=${r.score.toFixed(2)}): ${r.why}`).join('\n')}\n`
     : '';
@@ -1069,7 +1070,7 @@ ${proseAttributes ? renderAttributesProse(entity.attributes) : JSON.stringify(en
 
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}
-${pastOutcomesBlock}${contactsBlock}${recommendedBlock}${angleBlock}
+${pastOutcomesBlock}${contactsBlock}${recommendedBlock}
 Decide.`;
 }
 
@@ -1103,11 +1104,11 @@ const BANNED_PHRASES: Array<{ re: RegExp; replace: string }> = [
   { re: /\bworld[- ]class\b/gi, replace: '' },
   { re: /\bnext[- ]gen(eration)?\b/gi, replace: '' },
   { re: /\b(quickly|easily|effortlessly)\b/gi, replace: '' },
-  // Anti-pitch filler. Drafts that lean on these say nothing concrete and read like a templated AI tells.
-  { re: /\bAI[- ]native CRM\b/gi, replace: '' },
-  { re: /\bagent[- ]native (CRM|architecture|approach|platform|system)\b/gi, replace: '' },
-  { re: /\boptimizes? (agent )?(workflows?|operations|processes?)\b/gi, replace: '' },
-  { re: /\bbuilt (specifically )?for agents\b/gi, replace: '' },
+  // Generic marketing slop — vertical-neutral, so it stays as a code default.
+  // Product- or vertical-SPECIFIC pitch phrases (e.g. a workspace selling an
+  // "AI-native CRM" / "agent-native platform") do NOT belong here — those are
+  // that customer's own words and live in policy.outreach.banned_phrases, which
+  // stacks on top via the extraBanned arg below. Keep this list portable.
   { re: /\bpurpose[- ]built (for|to)\b/gi, replace: '' },
   { re: /\bredefin(e|ing) the way\b/gi, replace: '' },
   { re: /\breimagin(e|ing)\b/gi, replace: '' },
