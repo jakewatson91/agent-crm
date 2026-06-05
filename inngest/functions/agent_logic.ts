@@ -626,7 +626,13 @@ export async function runAgent(
   if (decision.action === 'post_touch_draft' && behavior === 'drafter') {
     const subject = sanitize((decision.subject as string) ?? '');
     const body = sanitize((decision.body as string) ?? '');
-    const toEmail = ((decision as { to_email?: string | null }).to_email ?? '').toString().trim();
+    // Recipient the LLM picked from linked contacts. When the account has no
+    // linked contact email, fall back to the workspace routing address
+    // (outreach.override_to) so the draft is addressed to where it would
+    // actually send, instead of a confusing null. The send path already
+    // reroutes everything to override_to anyway.
+    const llmTo = ((decision as { to_email?: string | null }).to_email ?? '').toString().trim();
+    const toEmail = llmTo || (policy.outreach?.override_to ?? '').toString().trim();
     const toLine = toEmail ? `To: ${toEmail}\n` : '';
     const composed = subject ? `${toLine}Subject: ${subject}\n\n${body}` : `${toLine}${body}`;
     const r = await callTool(supabase, actor, 'post_to_channel', {
