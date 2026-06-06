@@ -30,6 +30,7 @@
     "self-host:migrate": "tsx scripts/apply_all_migrations.ts"
   },
   "devDependencies": {
+    "@esbuild/darwin-arm64": "^0.28.0",
     "@types/node": "^22.0.0",
     "dotenv": "^17.4.2",
     "tsx": "^4.20.0",
