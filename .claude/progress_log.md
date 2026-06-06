@@ -1342,3 +1342,53 @@ Picked up `HANDOFF_2026-06-01.md`. Found the "drafter post-processor" (item 1) a
 - **Removed the `value_themes` regex gate (item 3, reframed with Jake).** It was a redundant, hand-written-regex, setup-heavy gate duplicating a decision the LLM `signal_strength` score already makes. Deleted `hasValueAlignedFact` + the gate in `action_selector.ts`, the `value_themes`/`ValueTheme` plumbing across agent_logic.ts, routing-preview, intake/tools.ts, policy.ts, index.ts, and the dead `matched_theme` UI in Chat.tsx. Drafts now gate on signal_strength only. Fed `policy.drafter.value_props`/`pain_points` into the signal_strength rubric (scoring.ts) so the trigger judges against the real pitch — no separate list. Verified: cleared-threshold account routes draft_outreach with no regex; scoreEntity runs clean.
 
 **Open:** af602fa1 has empty `value_props`/`pain_points`, so the signal_strength refinement is dormant there (falls back to ABOUT/ICP — no regression). Populating them is a positioning call (agent-crm's pitch to tiny-team founders). Item 5 (threshold calibration) still blocked on outcome data. Plan: `.claude/plans/curious-noodling-treehouse.md`. Typechecks clean (tools/inngest/web); did not run full next build.
+
+## 2026-06-05 — Automation was dead for days; diagnosed the host, then a full drafter-quality overhaul
+
+Jake opened furious: "every session I tell you I want this running by itself and there's one new signal in days." Diagnosed it end to end, then spent the rest of the session making the emails not embarrassing.
+
+**Automation root cause = the host, not the pipeline.** `scripts/_diag_sources.ts` (new) showed the one active source (`ats_hiring_main`) last ran 111.6h ago vs a 24h cron, and only 1 of 18 sources is active (rest deliberately frozen). The hourly Inngest dispatcher had stopped firing entirely. Two compounding causes: (1) Render free-tier slept because the cron-job.org `/api/health` keepalive lapsed; (2) prod ran pre-OpenRouter-removal code — the AI-SDK router (DeepSeek direct + Gateway) only existed on `llm-ai-sdk-registry`, never merged to `main`, so the live sources 429'd on OpenRouter. Proved the pipeline itself is healthy by running `pnpm hiring:run` locally against prod Supabase: 2 fresh signals, 0 errors, 86s (first new data since May 30). Curled the live host (`agent-crm-fm1f.onrender.com`): `/api/inngest` answered 401 in 25s (cold-start wake), `/api/health` timed out — confirmed asleep + stale. Jake chose "fix the host" over a local scheduler or paid host. Committed the entities/drafter fixes, **merged `llm-ai-sdk-registry` → `main` (12 commits) and pushed** (web build verified green first). Remaining host steps are dashboard-only (Jake's hands): redeploy, drop `OPENROUTER_API_KEY`, resync Inngest, restore keepalive, reconnect auto-deploy.
+
+**Entities page openable (committed + on main).** Only `account` cards were clickable; contacts/products/etc. rendered as dead divs. Now every entity links to the existing detail page and shows its type as a badge. (`apps/web/app/workspace/[ws]/entities/page.tsx`.)
+
+**Drafter quality overhaul (uncommitted, dev-tested across 5 real accounts).** Jake: "the emails are all basically the same, you hardcoded an example." Investigated — not hardcoded, but the formula handed the LLM literal opener examples ("Hope you don't mind the cold connect") that it parroted verbatim, plus the drafter config was *empty* so the pitch fell back to the architecture-heavy ABOUT. Fixes, in order of how Jake pushed:
+- Removed the hardcoded opener examples (was a portability violation too).
+- Added a rule to ground the callout in the actual signal text — then corrected when Jake pointed out it grabbed *irrelevant* signal (a Substack AI-safety article): the callout must be real evidence of a pain we solve, connected to ABOUT, else refuse via `request_gate`. Substack now correctly refuses.
+- Populated the empty `policy.drafter` config (`pain_points`, `value_props`, `tone`) with buyer-felt, cost-led angles from the ICP — **resolves the 2026-06-02 dormancy**.
+- Rewrote `workspaces.about`: agent-first, graph-based, each of the four claims (lower token cost / more accurate / fewer hallucinations / built-in audit) explained by mechanism and backed by REAL v1 benchmark numbers pulled from the repo (2,950 tok @ 1 call vs HubSpot ~11,100 @ 4 calls ≈ 4×; 0.28 vs 0.94 unsupported claims/draft, with the honest "even with Twenty" caveat kept; provenance chain depth vs HubSpot's 0 hops). Plain voice, no jargon, no em dashes.
+- Added a no-fabrication rule after a draft invented "3x more demos."
+- Added a GENERAL rule "DON'T BEND THE SIGNAL TO FIT THE PITCH — signals cut both ways" after Jake flagged a weak FurtherAI draft that bent "hiring an Enterprise Sales Director" (counter-evidence: they're building a real sales team) into a false fit and lectured the prospect. Re-ran: the drafter dropped the Sales-Director angle on its own and anchored on the Solutions-Engineer CRM-toil signal instead. Rule is product-agnostic.
+- `agent_logic.ts` sanitizer strips leaked `${}`/`{{}}`/`<>` template tokens; `to_email` falls back to `outreach.override_to`.
+
+**"icp" relabeled to "score" everywhere** (feed badge, entity cards, sort dropdown, chat result cards). The displayed `icp_fit` was always an alias of the composite `icp_total` — Jake was right that raw ICP shouldn't drive decisions; it never did (the gate keys off the composite, default ≥0.65). The "emails at 0.57" were manual triggers bypassing `selectAction`.
+
+**Config discoverability gap surfaced.** Jake: "where the fuck do I edit this config?" — it lives at Settings → Workspace → About (prose box that re-derives pains/value_props on save), and Thresholds tab for the routing cutoffs. Set `override_to` = agentcrm91@gmail.com.
+
+**Resolved from prior open items:** the 2026-06-02 "af602fa1 has empty `value_props`/`pain_points`, signal_strength refinement dormant" — now populated.
+
+Memory written: `project_automation_dies_on_render` (the recurring host-failure pattern + the diagnose-fast playbook). New scripts (untracked, kept): `scripts/_diag_sources.ts`, `scripts/_draft_variation_test.ts`, `scripts/_update_about.ts`.
+
+## 2026-06-05 — Performance: eliminated redundant auth round-trips + server-side cache
+
+Jake: "the platform is so goddammed slow, 1-3s per page load, not the 90s."
+
+**Root cause analysis.** Three compounding problems, none of which prior fixes touched structurally:
+
+1. **Three sequential remote calls per navigation** before the page renders: middleware `auth.getUser()` (Supabase auth API) → layout `requireUser()` calls `auth.getUser()` again (second auth API call) → `getWorkspaceRole()` queries `workspace_members` (third remote call). In Next.js App Router, the workspace layout re-executes as a Server Component on every soft navigation (gates → entities etc.) — every tab click paid all three.
+
+2. **No server-side caching on any read API route.** All four heavy routes (gates, entities, feed, health) hit Supabase on every request. `Cache-Control` headers from a previous fix only helped returning browsers; the first request of each session was always a full round-trip. The health endpoint was doing 7+ parallel calls per request but each `attributionMetrics`/`actionDistribution` re-queried channels independently (4× redundant fetch).
+
+3. **`revalidateOnFocus: true` in SWR.** Every browser tab focus triggered all hooks to refetch. Combined with no server cache, this slammed Supabase constantly.
+
+**Fixes shipped:**
+
+- `auth.ts`: `getUser()` now calls `auth.getSession()` (local JWT decode, no remote call). Safe because middleware already ran `auth.getUser()` on the same request and redirected invalid sessions. `getWorkspaceRole()` wrapped in `unstable_cache` (5-min TTL, keyed by user+workspace) + `React.cache()` (per-request dedup). Net: 3 remote calls per nav → 1 cookie read + cached role lookup.
+- `unstable_cache` on all four read APIs: gates/list (15s), entities/index (30s), feed/list (20s), admin/health (60s). Server serves from memory after first hit — no Supabase for repeated loads within TTL.
+- Health endpoint: channels fetched once, passed into all four attribution/action functions. Removed `force-dynamic`.
+- Entities/index: parallelized `is_a` facts + `icp_fit` facts into Round 1 (alongside entities + policy). Was 4 sequential rounds; now 2.
+- SWR: `revalidateOnFocus: false`, `dedupingInterval: 10_000`.
+- `Cache-Control: private, s-maxage=N, stale-while-revalidate=M` on all read routes.
+
+**Open (not done this session):** `revalidateTag()` calls not wired to mutation routes. After approving a gate, the `unstable_cache` for 'gates' won't be invalidated — user will see stale data for up to 15s. Need `revalidateTag('gates')` in `gates/decide/route.ts` and similar for any other write path. Added to project_state.md known issues.
+
+Committed: `e483bc7`. Pushed to main.
