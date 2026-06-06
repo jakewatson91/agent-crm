@@ -792,7 +792,7 @@ function RescoreResult({ data }: { data: any }) {
   return (
     <ResultCard label="rescore_entity">
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
-        <span>icp_total</span>
+        <span>score</span>
         <ScoreChip value={data.icp_total ?? 0} />
       </div>
       {data.breakdown && (
@@ -824,7 +824,7 @@ function ProposeActionResult({ data }: { data: any }) {
       </div>
       <div style={{ fontSize: '.75rem', color: 'var(--text-2)', marginBottom: '.4rem' }}>{d.reason}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
-        <span style={{ fontSize: '.7rem', color: 'var(--text-3)' }}>icp_total</span>
+        <span style={{ fontSize: '.7rem', color: 'var(--text-3)' }}>score</span>
         <ScoreChip value={data.icp_total ?? 0} />
       </div>
       {breakdown && (

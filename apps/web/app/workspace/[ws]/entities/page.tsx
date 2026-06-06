@@ -306,7 +306,7 @@ function Controls({
       </select>
       <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortBy)} style={selStyle}>
         <option value="activity">recent activity</option>
-        <option value="icp">icp fit</option>
+        <option value="icp">score</option>
         <option value="name">name</option>
       </select>
     </div>
@@ -398,9 +398,9 @@ function EntityCard({
             borderRadius: 4,
             whiteSpace: 'nowrap',
           }}
-          title="ICP fit"
+          title="composite score (signal, evidence, recency, fit, graph)"
         >
-          icp {icp.toFixed(2)}
+          score {icp.toFixed(2)}
         </span>
       )}
     </div>

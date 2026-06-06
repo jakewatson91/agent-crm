@@ -3,6 +3,7 @@
  * pre-aggregated for the /workspace/[ws]/feed page.
  */
 import { NextResponse } from 'next/server';
+import { unstable_cache } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
 
 export const runtime = 'nodejs';
@@ -24,7 +25,7 @@ interface FeedItem {
   dup_count: number;
 }
 
-const getFeedItems = async (ws: string): Promise<FeedItem[]> => {
+const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
   const supabase = createServerClient();
 
   // Fire posts (with entity name joined) + icp_fit facts in parallel.
@@ -122,10 +123,18 @@ const getFeedItems = async (ws: string): Promise<FeedItem[]> => {
   );
 };
 
+const getFeedItems = unstable_cache(
+  _getFeedItems,
+  ['feed-items'],
+  { revalidate: 20, tags: ['feed'] },
+);
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const ws = url.searchParams.get('workspace_id');
   if (!ws) return NextResponse.json({ error: 'workspace_id required' }, { status: 400 });
   const items = await getFeedItems(ws);
-  return NextResponse.json({ items });
+  return NextResponse.json({ items }, {
+    headers: { 'Cache-Control': 'private, s-maxage=20, stale-while-revalidate=60' },
+  });
 }

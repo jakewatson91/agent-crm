@@ -6,6 +6,7 @@
  * arrays-of-entries (not Maps) so SWR can cache + serialize the payload cleanly.
  */
 import { NextResponse } from 'next/server';
+import { unstable_cache } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
 
 export const runtime = 'nodejs';
@@ -63,11 +64,11 @@ function isJunkName(name: string, domain: string, publicationBlocklist: string[]
   return false;
 }
 
-const getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
+const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
   const supabase = createServerClient();
 
-  // Round 1: workspace policy + entities are independent — fire together.
-  const [policyRow, entitiesRes] = await Promise.all([
+  // Round 1: fire all workspace-scoped reads in parallel — no entity IDs needed.
+  const [policyRow, entitiesRes, typeFacts, fitFacts] = await Promise.all([
     supabase.from('workspaces').select('policy').eq('id', ws).maybeSingle(),
     supabase
       .from('entities')
@@ -75,7 +76,17 @@ const getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
       .eq('workspace_id', ws)
       .is('archived_at', null)
       .order('name'),
+    supabase.from('facts')
+      .select('subject_entity, object_text')
+      .eq('workspace_id', ws)
+      .eq('predicate', 'is_a')
+      .is('supersedes', null),
+    supabase.from('facts')
+      .select('subject_entity, object_text, supersedes, id')
+      .eq('workspace_id', ws)
+      .eq('predicate', 'icp_fit'),
   ]);
+
   const publicationBlocklist = (((policyRow.data?.policy as Record<string, unknown> | null)?.publication_blocklist) as string[] | undefined ?? []).filter(Boolean);
   const rawEntities = ((entitiesRes.data ?? []) as Array<{ id: string; name: string; attributes: Record<string, unknown>; updated_at: string }>).filter((e) => {
     const dom = (e.attributes?.['domain'] as string | undefined) ?? '';
@@ -84,23 +95,14 @@ const getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
     return true;
   });
 
-  const ids = rawEntities.map((e) => e.id);
+  const ids = new Set(rawEntities.map((e) => e.id));
 
-  // Round 1.5: types come from is_a facts. Batch in one query.
   const typesByEntity = new Map<string, string[]>();
-  if (ids.length) {
-    const { data: typeFacts } = await supabase.from('facts')
-      .select('subject_entity, object_text')
-      .eq('workspace_id', ws)
-      .eq('predicate', 'is_a')
-      .is('supersedes', null)
-      .in('subject_entity', ids);
-    for (const f of (typeFacts ?? []) as Array<{ subject_entity: string; object_text: string | null }>) {
-      if (!f.object_text) continue;
-      const arr = typesByEntity.get(f.subject_entity) ?? [];
-      arr.push(f.object_text);
-      typesByEntity.set(f.subject_entity, arr);
-    }
+  for (const f of (typeFacts.data ?? []) as Array<{ subject_entity: string; object_text: string | null }>) {
+    if (!f.object_text || !ids.has(f.subject_entity)) continue;
+    const arr = typesByEntity.get(f.subject_entity) ?? [];
+    arr.push(f.object_text);
+    typesByEntity.set(f.subject_entity, arr);
   }
   const entities: EntityRow[] = rawEntities.map((e) => ({
     ...e,
@@ -109,23 +111,20 @@ const getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
 
   const accountIds = entities.filter((e) => e.types.includes('account')).map((e) => e.id);
 
-  // Round 2: facts (icp_fit per entity) + channels (per account) are independent.
+  // Round 2: channels depend on accountIds derived above.
   const icpMap = new Map<string, number>();
   const lastActivity = new Map<string, Activity>();
-  const [factsRes, chansRes] = await Promise.all([
-    ids.length
-      ? supabase.from('facts').select('subject_entity, object_text, supersedes, id').eq('workspace_id', ws).eq('predicate', 'icp_fit').in('subject_entity', ids)
-      : Promise.resolve({ data: [] as unknown[] }),
+  const [chansRes] = await Promise.all([
     accountIds.length
       ? supabase.from('channels').select('id, account_entity_id').eq('workspace_id', ws).in('account_entity_id', accountIds)
       : Promise.resolve({ data: [] as unknown[] }),
   ]);
 
   const superseded = new Set(
-    ((factsRes.data ?? []) as Array<{ supersedes: string | null }>).map((f) => f.supersedes).filter(Boolean) as string[],
+    ((fitFacts.data ?? []) as Array<{ supersedes: string | null }>).map((f) => f.supersedes).filter(Boolean) as string[],
   );
-  for (const f of (factsRes.data ?? []) as Array<{ subject_entity: string; object_text: string; id: string }>) {
-    if (superseded.has(f.id)) continue;
+  for (const f of (fitFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; id: string }>) {
+    if (superseded.has(f.id) || !ids.has(f.subject_entity)) continue;
     const v = parseFloat(f.object_text);
     if (!isNaN(v) && !icpMap.has(f.subject_entity)) icpMap.set(f.subject_entity, v);
   }
@@ -157,10 +156,18 @@ const getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
   };
 };
 
+const getEntitiesPageData = unstable_cache(
+  _getEntitiesPageData,
+  ['entities-page'],
+  { revalidate: 30, tags: ['entities'] },
+);
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const ws = url.searchParams.get('workspace_id');
   if (!ws) return NextResponse.json({ error: 'workspace_id required' }, { status: 400 });
   const data = await getEntitiesPageData(ws);
-  return NextResponse.json(data);
+  return NextResponse.json(data, {
+    headers: { 'Cache-Control': 'private, s-maxage=30, stale-while-revalidate=120' },
+  });
 }

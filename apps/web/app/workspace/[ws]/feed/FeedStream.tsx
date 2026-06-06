@@ -186,9 +186,9 @@ function FeedRow({
               background: 'var(--panel-2)',
               borderRadius: 4,
             }}
-            title="latest icp_fit"
+            title="composite score (signal, evidence, recency, fit, graph)"
           >
-            icp {item.icp_fit.toFixed(2)}
+            score {item.icp_fit.toFixed(2)}
           </span>
         )}
         {item.dup_count > 1 && (

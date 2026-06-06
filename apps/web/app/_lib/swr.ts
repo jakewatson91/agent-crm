@@ -18,11 +18,10 @@ export async function jsonFetcher<T = unknown>(url: string): Promise<T> {
 
 export const DEFAULT_SWR: SWRConfiguration = {
   fetcher: jsonFetcher,
-  // Workspace data: tab switches should feel instant. Tolerate slight staleness.
-  revalidateOnFocus: true,
+  revalidateOnFocus: false,
   revalidateIfStale: true,
   keepPreviousData: true,
-  dedupingInterval: 2000,
+  dedupingInterval: 10_000,
 };
 
 export { useSWR };

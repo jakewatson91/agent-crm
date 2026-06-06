@@ -1121,6 +1121,11 @@ const BANNED_PHRASES: Array<{ re: RegExp; replace: string }> = [
  *  we don't trust them to be regex). */
 function sanitizeText(s: string, extraBanned: string[] = []): string {
   let out = s
+    // Strip leaked template tokens — ${x}, {{x}}, <x> merge fields. A human-written
+    // email never contains these; they're model slips echoing internal/source data.
+    .replace(/\$\{[^}]*\}/g, '')
+    .replace(/\{\{[^}]*\}\}/g, '')
+    .replace(/<[^>\n]{1,40}>/g, '')
     .replace(/\s*—\s*/g, ', ')
     .replace(/\s*–\s*/g, ', ');
   for (const { re, replace } of BANNED_PHRASES) {

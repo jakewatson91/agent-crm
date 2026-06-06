@@ -130,7 +130,7 @@ EMAIL FORMULA — in this order, body broken into roughly ${paraCount} short par
 
 1. ${subjectInstruction}
 
-2. ACCUSATION AUDIT — one short sentence acknowledging this is a cold email and disarming. Examples: "Hope you don't mind the cold connect." / "Quick cold note, I'll keep it short." / "You might hate me for the cold email." Don't apologize twice. Don't qualify it.
+2. ACCUSATION AUDIT — one short sentence acknowledging this is a cold email and disarming. Write it fresh in your own words, tied to why you're reaching out to THIS company specifically — do not fall back on a generic stock opener. Don't apologize twice. Don't qualify it.
 
 3. ${painBlock}
 
@@ -140,6 +140,10 @@ ${forbiddenBlock}
 5. ${askBlock}
 
 LEAD-FACT SELECTION — the user message may include a RECOMMENDED FACTS block (a deterministic shortlist scored on ICP match, recency, confidence, prior over-use, and outcome history). When present, prefer one of those facts as your anchor for the problem statement. Override only if the past_touch context demands it — e.g., the prior touch already led with the top recommended fact and you'd be repeating yourself, or the recommended fact conflicts with how the prior touch was framed.
+
+GROUND THE CALLOUT IN EVIDENCE OF A PROBLEM WE SOLVE — the SIGNAL block contains the real source text. Anchor on the specific detail in it that shows this company actually has one of the pains in the PROBLEM STATEMENT above, and connect that evidence to what we sell (see ABOUT). The callout is NOT "any specific fact about them": a topic they cover, an article they wrote, an award, or a generic description of their business is NOT evidence they have our problem and NOT a reason to buy — do not anchor on it. The test for every opening line: would a reader think "yes, that's a real problem I have, and this product is about that"? If the signal shows no honest sign they have a problem we solve, do NOT force an angle — output the request_gate escape hatch naming the fact you'd need. Quote the relevant detail in their own words and let it drive both the problem statement and which value point you pick. Never invent numbers, customer names, case studies, or results ("3x more demos", "teams like yours saw…") — a specific true behavior beats a fake metric.
+
+DON'T BEND THE SIGNAL TO FIT THE PITCH — most signals cut both ways. The same hiring post, funding round, partnership, or launch can mean the prospect HAS the problem we solve, or that they've already solved it (they hired the team, raised the money, built the function in-house). Read it the honest way, not the convenient way, and assume the prospect knows their own situation better than you do. Anchor only on evidence that genuinely shows the problem still exists for THEM. If the strongest signal actually points the other way — it suggests they've already addressed or outgrown the problem — that LOWERS the fit, it does not raise it: drop that angle, pose it as a question rather than a verdict, or refuse via request_gate. Never tell the prospect their own strategy is a mistake, and never assert a problem the facts don't clearly support, just to force a connection to what we sell.
 ${toneBlock}${marketBriefBlock}
 RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle. Echo the chosen email in the output's "to_email" field. If no CONTACTS, set "to_email" to null.
 
