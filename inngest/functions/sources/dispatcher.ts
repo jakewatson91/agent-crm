@@ -107,11 +107,21 @@ export const sourceRun = inngest.createFunction(
       // existed long enough for that to be meaningful. The created_at check
       // protects brand-new sources from getting killed before their first
       // signal lands.
+      //
+      // ONLY for metered (paid-API) connectors — the whole point is to stop
+      // burning Exa/Hunter credits on a query that finds nothing. Free diff
+      // connectors (ats, hn, github, ...) watch a fixed list of companies; a
+      // week with no new job post / event is their normal idle state, not a
+      // dead query. Auto-killing one is permanent: the dispatcher only ticks
+      // active sources, so a deactivated free source never runs again and the
+      // workspace silently stops getting fed. That death spiral is exactly
+      // what stalled ats_hiring_main.
+      const isMetered = connector.meta.cost === 'metered';
       const { data: srcMeta } = await supabase
         .from('sources').select('created_at').eq('id', source.id).single();
       const createdAt = srcMeta?.created_at ? new Date(srcMeta.created_at as string) : null;
       const olderThan7d = createdAt && (Date.now() - createdAt.getTime()) > 7 * 86400 * 1000;
-      const shouldDeactivate = (signals7d ?? 0) === 0 && olderThan7d;
+      const shouldDeactivate = isMetered && (signals7d ?? 0) === 0 && olderThan7d;
 
       const update: Record<string, unknown> = {
         last_run_at: new Date().toISOString(),

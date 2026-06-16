@@ -116,6 +116,7 @@ export const exaMeta: ConnectorMeta = {
   description: 'Search the open web with rendered page contents. Use for hiring discovery, news, anything JS-hydrated. Requires EXA_API_KEY.',
   category: 'tool',
   emits_signal_source: 'exa',
+  cost: 'metered', // each search costs Exa credits
   schedule_cron: '0 */6 * * *',
   config_schema: {
     fields: [
@@ -145,6 +146,7 @@ export const exaContactsMeta: ConnectorMeta = {
   description: 'Pulls a recent web signal for your CONTACTS (people), one targeted search each, so the contact scorer fires on a real detected event. Bounded to high-fit accounts. Requires EXA_API_KEY.',
   category: 'tool',
   emits_signal_source: 'exa_contacts',
+  cost: 'metered', // one Exa search per contact
   schedule_cron: '0 14 * * *',
   config_schema: {
     fields: [

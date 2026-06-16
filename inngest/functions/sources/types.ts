@@ -30,6 +30,18 @@ export interface ConnectorMeta {
    *  must match this value to fire on signals from this connector. Surfaced to the
    *  meta-agent so it doesn't invent variant strings (yc_directory vs yc, etc.). */
   emits_signal_source: string;
+  /** Does each run cost money (per-call API credits)?
+   *  - 'metered': hits a paid API (Exa, Hunter). A run that finds nothing is
+   *    wasted spend, so the yield monitor may auto-deactivate it after a quiet
+   *    stretch to stop burning credits.
+   *  - 'free' (default): no per-call cost (public job boards, free tokens,
+   *    push webhooks). These are diff connectors over a fixed watchlist — a week
+   *    with zero new items is the NORMAL idle state, not a dead query, so they
+   *    must NEVER auto-deactivate. Killing one means it never runs again and
+   *    silently stops feeding the workspace.
+   *  Unspecified = 'free' (a source never silently kills itself unless it's
+   *  explicitly a credit-burner). */
+  cost?: 'free' | 'metered';
   /** Default cron schedule */
   schedule_cron: string;
   /** JSON schema for the config UI to render the form */
