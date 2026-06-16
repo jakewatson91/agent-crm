@@ -3,7 +3,8 @@
  * and gates /workspace/* + protected /api/* routes on session presence.
  *
  * Public routes:
- *   /login, /auth/*, /invite/*, /api/mcp (Bearer-auth'd), /api/inngest (signed).
+ *   /login, /auth/*, /invite/*, /api/mcp (Bearer-auth'd), /api/inngest (signed),
+ *   /api/health (keepalive pings — must return 200, not 307-redirect to login).
  */
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
@@ -15,6 +16,7 @@ const PUBLIC_PATHS = [
   '/api/auth/',
   '/api/mcp',
   '/api/inngest',
+  '/api/health',
   '/favicon.ico',
 ];
 
