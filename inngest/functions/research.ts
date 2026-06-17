@@ -44,11 +44,24 @@ export const researchRunner = inngest.createFunction(
         .is('supersedes', null)
         .limit(20);
       const keywords: string[] = [];
+      const seen = new Set<string>();
       for (const f of (facts.data ?? []) as Array<{ predicate: string; object_text: string | null }>) {
-        if (!f.object_text) continue;
-        if (/stack|uses|integrat|customer|target|industry|vertical|hiring/.test(f.predicate)) {
-          keywords.push(f.object_text);
-        }
+        const val = f.object_text?.trim();
+        if (!val) continue;
+        // Skip scoring/bookkeeping predicates. They name-match the topic regex
+        // ("score_industry_match") but carry a number, not a search term.
+        if (/^score_/.test(f.predicate) || /_breakdown$/.test(f.predicate)) continue;
+        if (!/stack|uses|integrat|customer|target|industry|vertical|hiring/.test(f.predicate)) continue;
+        // Skip non-descriptive values that pollute the query: pure numbers (scores),
+        // boolean flags, and dates/timestamps. Keep real phrases like "B2B".
+        if (/^[\d.]+$/.test(val)) continue;
+        if (/^(true|false|yes|no)$/i.test(val)) continue;
+        if (/^\d{4}-\d{2}-\d{2}/.test(val)) continue;
+        if (val.length < 3) continue;
+        const key = val.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        keywords.push(val);
       }
       const query = [entity_name, ...keywords.slice(0, 3)].join(' ').slice(0, 300);
 

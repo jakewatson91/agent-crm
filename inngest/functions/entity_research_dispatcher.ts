@@ -21,6 +21,24 @@ import { createServerClient } from '@agent-crm/db';
 import { callTool, entityIdsOfType } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
+// PostgREST builds `.in(col, ids)` into the request URL. Past a few hundred ids
+// the URL exceeds the server limit and the request silently returns 0 rows with
+// NO error — which previously made this dispatcher load zero scores/engagement
+// and mis-tier every account as cold. Chunk every large-id `.in()` through this.
+const IN_CHUNK = 200;
+async function chunkedIn<T>(
+  ids: string[],
+  run: (chunk: string[]) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < ids.length; i += IN_CHUNK) {
+    const { data, error } = await run(ids.slice(i, i + IN_CHUNK));
+    if (error) throw new Error(error.message);
+    if (data) out.push(...data);
+  }
+  return out;
+}
+
 const TIER_CADENCE_HOURS = { hot: 24, default: 24 * 7, cold: 24 * 30 } as const;
 const HOT_ICP_THRESHOLD = 0.5;
 const HOT_SIGNAL_THRESHOLD = 0.7;
@@ -56,28 +74,27 @@ export const entityResearchDispatcher = inngest.createFunction(
 
       for (const ws of workspaces) {
         const allAcctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 5000);
-        const acctRes = allAcctIds.length === 0
-          ? { data: [] as Array<{ id: string; name: string }> }
-          : await supabase
-              .from('entities').select('id, name')
-              .in('id', allAcctIds);
-        const accounts = (acctRes.data ?? []) as Array<{ id: string; name: string }>;
+        const accounts = await chunkedIn<{ id: string; name: string }>(allAcctIds, (chunk) =>
+          supabase.from('entities').select('id, name').in('id', chunk));
         if (!accounts.length) continue;
         total_evaluated += accounts.length;
         const acctIds = accounts.map((a) => a.id);
 
         // Batched fact load — every predicate we care about, in one query.
         // Active facts only (supersedes is null).
-        const factRes = await supabase
-          .from('facts')
-          .select('subject_entity, predicate, object_text, observed_at')
-          .eq('workspace_id', ws.id)
-          .in('subject_entity', acctIds)
-          .in('predicate', [
-            'icp_fit', 'score_total', 'score_signal_strength', 'dropped_until',
-            'research_triggered', 'research_completed',
-          ])
-          .is('supersedes', null);
+        const factRows = await chunkedIn<{ subject_entity: string; predicate: string; object_text: string | null; observed_at: string }>(
+          acctIds,
+          (chunk) => supabase
+            .from('facts')
+            .select('subject_entity, predicate, object_text, observed_at')
+            .eq('workspace_id', ws.id)
+            .in('subject_entity', chunk)
+            .in('predicate', [
+              'icp_fit', 'score_total', 'score_signal_strength', 'dropped_until',
+              'research_triggered', 'research_completed',
+            ])
+            .is('supersedes', null),
+        );
 
         interface EntityState {
           score_total: number | null;
@@ -89,7 +106,7 @@ export const entityResearchDispatcher = inngest.createFunction(
         for (const a of accounts) {
           stateByEntity.set(a.id, { score_total: null, signal_strength: null, dropped_until: null, last_research_at: 0 });
         }
-        for (const f of (factRes.data ?? []) as Array<{ subject_entity: string; predicate: string; object_text: string | null; observed_at: string }>) {
+        for (const f of factRows) {
           const s = stateByEntity.get(f.subject_entity);
           if (!s) continue;
           const ts = Date.parse(f.observed_at);
@@ -117,21 +134,19 @@ export const entityResearchDispatcher = inngest.createFunction(
         // of account entity IDs considered "actively engaged."
         const engaged = new Set<string>();
 
-        const chanRes = await supabase
-          .from('channels').select('id, account_entity_id')
-          .eq('workspace_id', ws.id).in('account_entity_id', acctIds);
-        const channels = (chanRes.data ?? []) as Array<{ id: string; account_entity_id: string }>;
+        const channels = await chunkedIn<{ id: string; account_entity_id: string }>(acctIds, (chunk) =>
+          supabase.from('channels').select('id, account_entity_id')
+            .eq('workspace_id', ws.id).in('account_entity_id', chunk));
         const entityByChannel = new Map(channels.map((c) => [c.id, c.account_entity_id]));
         const channelIds = channels.map((c) => c.id);
 
         if (channelIds.length) {
           // touch_draft / outcome posts
-          const postRes = await supabase
-            .from('channel_posts').select('channel_id, id, kind, created_at')
-            .in('channel_id', channelIds)
-            .in('kind', ['touch_draft', 'outcome'])
-            .gte('created_at', engagementSince);
-          const engagementPosts = (postRes.data ?? []) as Array<{ channel_id: string; id: string }>;
+          const engagementPosts = await chunkedIn<{ channel_id: string; id: string }>(channelIds, (chunk) =>
+            supabase.from('channel_posts').select('channel_id, id, kind, created_at')
+              .in('channel_id', chunk)
+              .in('kind', ['touch_draft', 'outcome'])
+              .gte('created_at', engagementSince));
           for (const p of engagementPosts) {
             const eid = entityByChannel.get(p.channel_id);
             if (eid) engaged.add(eid);
@@ -139,17 +154,16 @@ export const entityResearchDispatcher = inngest.createFunction(
 
           // Approved gates referencing posts on these channels.
           // Two-step: posts on channels → gates against those post ids.
-          const allPostsRes = await supabase
-            .from('channel_posts').select('id, channel_id').in('channel_id', channelIds);
-          const allPosts = (allPostsRes.data ?? []) as Array<{ id: string; channel_id: string }>;
+          const allPosts = await chunkedIn<{ id: string; channel_id: string }>(channelIds, (chunk) =>
+            supabase.from('channel_posts').select('id, channel_id').in('channel_id', chunk));
           if (allPosts.length) {
             const postToChannel = new Map(allPosts.map((p) => [p.id, p.channel_id]));
-            const gateRes = await supabase
-              .from('gates').select('channel_post_id, decision, decided_at')
-              .in('channel_post_id', allPosts.map((p) => p.id))
-              .eq('decision', 'approve')
-              .gte('decided_at', engagementSince);
-            for (const g of (gateRes.data ?? []) as Array<{ channel_post_id: string }>) {
+            const gateRows = await chunkedIn<{ channel_post_id: string }>(allPosts.map((p) => p.id), (chunk) =>
+              supabase.from('gates').select('channel_post_id, decision, decided_at')
+                .in('channel_post_id', chunk)
+                .eq('decision', 'approve')
+                .gte('decided_at', engagementSince));
+            for (const g of gateRows) {
               const cid = postToChannel.get(g.channel_post_id);
               const eid = cid ? entityByChannel.get(cid) : undefined;
               if (eid) engaged.add(eid);
@@ -165,11 +179,11 @@ export const entityResearchDispatcher = inngest.createFunction(
         const repliedContacts = ((touchRes.data ?? []) as Array<{ contact_entity_id: string }>)
           .map((t) => t.contact_entity_id);
         if (repliedContacts.length) {
-          const worksAtRes = await supabase
-            .from('facts').select('subject_entity, object_entity')
-            .eq('workspace_id', ws.id).eq('predicate', 'works_at')
-            .is('supersedes', null).in('subject_entity', repliedContacts);
-          for (const f of (worksAtRes.data ?? []) as Array<{ object_entity: string | null }>) {
+          const worksAtRows = await chunkedIn<{ object_entity: string | null }>(repliedContacts, (chunk) =>
+            supabase.from('facts').select('subject_entity, object_entity')
+              .eq('workspace_id', ws.id).eq('predicate', 'works_at')
+              .is('supersedes', null).in('subject_entity', chunk));
+          for (const f of worksAtRows) {
             if (f.object_entity && stateByEntity.has(f.object_entity)) engaged.add(f.object_entity);
           }
         }
