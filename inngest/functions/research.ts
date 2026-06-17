@@ -12,7 +12,7 @@
  * fact (audit trail preserves what we tried).
  */
 import { createServerClient } from '@agent-crm/db';
-import { embed, vectorLiteral } from '@agent-crm/primitives';
+import { callTool } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 const EXA_API = 'https://api.exa.ai/search';
@@ -79,13 +79,11 @@ export const researchRunner = inngest.createFunction(
         });
         if (!r.ok) {
           const msg = (await r.text()).slice(0, 200);
-          await supabase.from('facts').insert({
-            workspace_id, subject_entity: entity_id,
+          await callTool(supabase, actor, 'assert_fact', {
+            subject_entity: entity_id,
             predicate: 'research_error',
             object_text: `Exa ${r.status}: ${msg}`,
             confidence: 1.0,
-            content_hash: `research_error:${Date.now()}`,
-            source_event_id: 0, // best-effort; non-fatal write
           });
           return { ok: false, reason: `Exa ${r.status}` };
         }
@@ -115,13 +113,13 @@ export const researchRunner = inngest.createFunction(
         const body = [er.title, er.text].filter(Boolean).join('\n').slice(0, 1500);
         if (!body) continue;
         try {
-          const vec = await embed(body);
-          await supabase.from('signals').insert({
-            workspace_id,
+          // create_signal builds the event, computes the embedding, and sets
+          // source_event_id — a raw insert can't (signals.source_event_id is
+          // NOT NULL, and facts.source_event_id is a FK to events).
+          const sig = await callTool(supabase, actor, 'create_signal', {
             entity_id,
             type: 'research_result',
             magnitude: 0.6,
-            embedding: vectorLiteral(vec) as unknown as string,
             body_for_embedding: body,
             structured_tags: {
               signal_source: 'research',
@@ -129,10 +127,8 @@ export const researchRunner = inngest.createFunction(
               url: er.url,
               triggered_by: reason,
             },
-            source_event_id: null,
-            observed_at: er.publishedDate ?? new Date().toISOString(),
           });
-          created++;
+          if (sig.ok) created++;
         } catch {
           // skip; partial failure is acceptable for a research pull
         }
@@ -140,18 +136,13 @@ export const researchRunner = inngest.createFunction(
 
       // Mark research as completed — action_selector will skip re-triggering
       // for the cooldown window.
-      await supabase.from('facts').insert({
-        workspace_id, subject_entity: entity_id,
+      await callTool(supabase, actor, 'assert_fact', {
+        subject_entity: entity_id,
         predicate: 'research_completed',
         object_text: `${created} new results from "${query.slice(0, 60)}"`,
         confidence: 1.0,
-        content_hash: `research_completed:${entity_id}:${Date.now()}`,
-        source_event_id: 0,
       });
 
-      // Note: actor variable is reserved for future use — we'll wire act() calls
-      // (vs raw inserts) once the trigger constraints are confirmed to allow it.
-      void actor;
       return { ok: true, query, results_total: results.length, signals_created: created };
     });
   },
