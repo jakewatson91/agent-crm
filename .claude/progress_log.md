@@ -1392,3 +1392,49 @@ Jake: "the platform is so goddammed slow, 1-3s per page load, not the 90s."
 **Open (not done this session):** `revalidateTag()` calls not wired to mutation routes. After approving a gate, the `unstable_cache` for 'gates' won't be invalidated — user will see stale data for up to 15s. Need `revalidateTag('gates')` in `gates/decide/route.ts` and similar for any other write path. Added to project_state.md known issues.
 
 Committed: `e483bc7`. Pushed to main.
+
+---
+
+## 2026-06-16 — Scheduler revival: nailed the real recurring root cause (keepalive 307) + missing prod key + connector self-kill fix
+
+**The 3-session mystery solved.** Jake: "no updates on the feed since May 30, asked you to fix it 3 sessions, app is supposed to run itself." Prior sessions kept band-aiding with `pnpm hiring:run` (manual) and blaming a vaguely "flaky Render host." This session found the actual chain, end to end.
+
+**Root cause #1 — keepalive endpoint was 307-redirecting.** `/api/health` (built specifically for cron-job.org pings) returned **307 → /login** because the auth middleware's `PUBLIC_PATHS` never whitelisted it. cron-job.org logged every ping as a failure → keepalive effectively dead → Render free-tier slept on idle → Inngest Cloud couldn't reach the host → the hourly `source-dispatcher` cron silently stopped → no signals → dead feed. Confirmed live with `curl` (307 → `location: /login?next=%2Fapi%2Fhealth`). Fix: one line, added `/api/health` to `apps/web/middleware.ts` whitelist. Deployed (`acfd573`), polled the host, verified flip 307 → **200** at 23:40 UTC. Jake confirmed cron-job.org now passing.
+
+**Root cause #2 — prod missing `DEEPSEEK_API_KEY`.** Once the host was reachable, `source-run` failed on Inngest with `Missing DEEPSEEK_API_KEY for deepseek-direct model deepseek-v4-flash` — the ATS connector classifies every job title via `deepseek-v4-flash`, and Render's env never got the key after the OpenRouter→DeepSeek migration (Jake's own "drop OPENROUTER_API_KEY" host-step note had the inverse: the *new* key was never added). Confirmed the AI-SDK router reads only `DEEPSEEK_API_KEY` + `OPENAI_API_KEY`, and `deepseek-v4-flash` is the only configured model. Jake added the keys to Render. Verified by injecting a `source.run` event through Inngest → prod `source-run` completed `status=ok`, zero errors.
+
+**Bug fixed — free connectors self-deactivating (death spiral).** Found while investigating: the dispatcher yield-monitor deactivates any source with 0 signals in 7d ("stop burning Exa/Hunter credits"), but it applied to *every* connector including the free, diff-based `ats` — for which a quiet week (no new job posts on the watchlist) is normal, not a dead query. A deactivated source never runs again (dispatcher only ticks active). Gated `shouldDeactivate` on `connector.meta.cost === 'metered'`; added optional `cost: 'free'|'metered'` to `ConnectorMeta` (default free); marked `exa`/`exa_contacts` metered. Committed `956999c`.
+
+**Immediate data delivered.** Ran the ATS connector for af602fa1 → 7 fresh hiring signals. Prod event pipeline wasn't draining them (host was asleep at the time), so drained them via the project's own Inngest-independent path (`runAgent` directly, mirroring `scripts/run_loop.ts` step 2): 4 enrichers + 1 drafter ran ok, 5 posts created → enriched entities now.
+
+**Honesty correction logged.** A verify script printed "dispatcher fired ats with no manual run — it runs itself," but the timestamps showed the run was triggered by *my injected event* (`23:55:58.054` in both logs), not an autonomous cron tick. Did not let it stand. The autonomous proof (13:00 UTC daily tick) is left for 2026-06-17 to watch; all individual links are verified.
+
+**Deferred (designed, not built): weekly $ budget cap on metered connectors** (per-workspace, auto-pause + email via Resend, rolling 7-day auto-resume). Jake wants ~$2/wk so Exa can run automatically without spend fear. Full sketch in project_state.md.
+
+**Taught:** explained what Inngest does vs a plain web server (scheduler + durable job queue that *calls* your server to run code; it doesn't host the code — which is exactly why a sleeping Render box kills it), and the pre-Inngest landscape (Redis+BullMQ/Celery/Sidekiq + a separate cron + Temporal/Step Functions for durable workflows).
+
+Commits: `956999c` (connector cost gate), `acfd573` (middleware /api/health whitelist). New scratch diagnostics (untracked): `scripts/_diag_sources.ts` (existing), `_check_pipeline.ts`, `_process_pending.ts`, `_verify_autorun.ts`, `_trigger_ats.ts`, `_recent_events.ts`.
+
+## 2026-06-18 — Research/enrichment loop fixed (3 stacked bugs) + `pnpm status` diagnostic CLI
+
+**Context:** Jake: "still only seeing feed from May 30… how often is enrichment running, what signals, what queries?" Started as a feed-staleness question, ended with the entire Exa enrichment loop fixed — it had **never produced a single result in any workspace, ever**.
+
+**Feed "stuck on May 30" — not a bug.** Data and feed logic were correct (verified the full route end-to-end: parent-collapse → 14d dedup → default filter returns June 17 at top). Real story: the pipeline died May 31–Jun 15 (the host gap fixed 06-16), resumed Jun 16–17 (604 posts on the 17th). The feed only fetches the 400 newest posts, so May 30 isn't even in the result set anymore — Jake was looking at a stale view (`revalidateOnFocus:false`, no polling → a tab left open never refreshes). Hard-refresh fixed it. Logged the UX gap (feed silently freezes when quiet) as a forward item.
+
+**The enrichment rundown surfaced the real problem:** walked Jake through the cadence (ATS daily 13:00; research dispatcher every 4h with hot/default/cold tiers = 24h/7d/30d; per-entity Exa query built from facts). Then he asked "how many accounts did the last research run on, what results, when" — answer: **zero, never, none.** 0 `research_triggered` / `research_completed` / `research_result` across all workspaces for all time.
+
+**Bug #1 — dispatcher unbatched `.in()`.** It loaded all ~2011 account ids and passed them into one `.in('id', ids)`. Past a few hundred ids PostgREST exceeds the URL limit and returns **0 rows with NO error** (proven: `.in(100)`→9 rows, `.in(2011)`→0). So `accounts` came back empty, `if(!accounts.length) continue` skipped the only populated workspace every 4h tick, and scores/engagement never loaded (everything mis-tiered cold). Fix: `chunkedIn` helper (200/batch, merged) on every large-id `.in()`. Verified: score facts 0→413, tiers all-cold → 25 hot / 13 default / 1973 cold.
+
+**Bug #2 — junk Exa query keywords.** Query-building pulled fact *values* as keywords whenever the predicate name matched a topic regex, so scoring predicates (`score_industry_match`="1.00") and boolean flags (`hiring`="true") leaked → `"TrueRev 1.00"`, `"SalesPatriot true yes B2B"`. Fix: skip `score_*`/`_breakdown` predicates + numeric/boolean/date values, dedup. Result: `"TrueRev"`, `"SalesPatriot B2B"`.
+
+**Bug #3 — researchRunner could never write its output (the real blocker).** Even with the dispatcher fixed, the runner did raw inserts the schema rejects: `signals.source_event_id` is NOT NULL (insert null → 23502), `facts.source_event_id` is a FK to events (insert 0 → 23503). Errors are *returned, not thrown*, so the old try/catch counted phantom successes. Fix: route through `callTool('create_signal')` + `callTool('assert_fact')` — the event-sourced path every connector uses (create_signal embeds + sets source_event_id). Exactly what the code's own TODO comment said to do. Verified end-to-end: `research_result` count 0→1 confirmed by **re-query** (not a counter).
+
+**Screwup owned:** during bug-#3 discovery I reported "16 research_result signals created" — they'd all silently failed the NOT-NULL insert; I'd trusted a counter that incremented regardless of the returned error. That's how the bug was found, but I shouldn't have claimed success without re-querying. Cleaned up the 3 real test rows I'd created (deleted by exact ID after the auto-mode classifier — correctly — blocked a blanket delete-by-filter).
+
+**`pnpm status` CLI** (`scripts/_status.ts`) — Jake: "the UI makes it really hard to check specific things." Read-only overview: active sources, signals-by-type (with real bodies), pipeline output by post kind (24h/7d), enrichment markers, pending gates; `pnpm status <signal_type> [N]` dumps real signals (entity + body + source). Plus `pnpm research:check` (`scripts/_check_research.ts`) for the loop specifically. **It immediately proved bug #1's fix is live in prod:** 150 `research_triggered` dispatched on the exact `0 */4` schedule (16/20/00/04/08/12 UTC). Also confirmed ATS auto-runs (resolves the 06-17 WATCH) and flagged ATS's benign `status=error`.
+
+**Open WATCH:** runner fix (`d5bedfc`) merged after the 12:00 tick, so `research_completed`/`research_result` are still 0 (old-runner signature). First tick ≥16:00 UTC 2026-06-18 is the test — re-run `pnpm research:check`; if still 0/0/0, check Inngest `research-runner` history.
+
+**Added CLI commands to README.**
+
+Commits (all on main): `3253dd8` (dispatcher .in() + query keywords), `d5bedfc` (runner insert path + `_check_research.ts`), `3f59a90` (`pnpm status` CLI).

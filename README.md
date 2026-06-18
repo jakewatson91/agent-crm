@@ -17,7 +17,24 @@ pnpm db:migrate              # run Supabase migrations
 pnpm dev                     # start Next.js + local Inngest dev server
 ```
 
-## Self-host
+## Diagnostics (read-only CLI)
+
+The web UI is an audit shell, not a query tool. For ad-hoc "is the pipeline
+running / show me the real signals" checks, use these (all read prod via
+`.env.local`, default workspace `af602fa1`; set `WORKSPACE_ID=<uuid>` to target
+another):
+
+```bash
+pnpm status                  # full pipeline overview: active sources, signals by type,
+                             #   pipeline output (posts by kind, 24h/7d), enrichment markers, pending gates
+pnpm status hiring_post      # dump the 20 most recent signals of one type (entity + body + source)
+pnpm status research_result 50   # ...any signal type, any count
+
+pnpm research:check          # the entity-research / Exa enrichment loop specifically:
+                             #   research_triggered / completed counts + the most recent research_result signals
+
+pnpm hiring:run              # manually run all active ATS sources now (instant fresh data, bypasses the cron)
+```
 
 You bring a Supabase Cloud project (free tier is enough — Postgres + Auth + RLS
 in one) and run the web app yourself.

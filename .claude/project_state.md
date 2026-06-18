@@ -1,6 +1,6 @@
 # Project State
 
-Last Update: 2026-06-05
+Last Update: 2026-06-18
 
 > Open items + reference only. Dated session history → `progress_log.md`. Current system map → `architecture.md`. Cross-project lessons → agent_memory daily log.
 
@@ -69,7 +69,7 @@ Full current system map moved to `architecture.md`.
 - **`unstable_cache` invalidation not wired to mutations.** Gates, feed, entities, and health are cached server-side (tags: 'gates', 'feed', 'entities', 'health'). Mutation routes (e.g. `gates/decide`) must call `revalidateTag('gates')` after writes or users will see stale data for up to the TTL (15-60s). Add these as the write paths are touched.
 - IndieHackers RSS feed returns 0 raw items (feed URL or content-type changed). Lenny's and TechCrunch parse fine.
 - RSS false-positive entity creation: tightened again in 2026-05-15 prompt push, still imperfect
-- Render free-tier host went fully stale 2026-06-05 (slept + ran old pre-AI-SDK code); fixed by merging llm-ai-sdk-registry → main. Auto-deploy is working. Keepalive (cron-job.org → /api/health) must stay active or host sleeps again.
+- Render free-tier host sleeps on idle → recurring feed-death. **Real root cause found + fixed 2026-06-16:** `/api/health` was 307-redirecting to login (auth middleware `PUBLIC_PATHS` didn't whitelist it), so every cron-job.org keepalive ping logged as failed → keepalive went dead → host slept → Inngest unreachable → dispatcher stopped. Fix: added `/api/health` to `apps/web/middleware.ts` whitelist (deployed, returns 200). Keepalive must still stay enabled; bulletproof option = always-on paid Render tier (no sleep, keepalive becomes optional).
 - A handful of accounts have `.example` placeholder domains and can't get Hunter contacts
 - No sending pipeline — drafts stay in Inbox forever; human copy-pastes manually
 - Auto-mode classifier blocks `git push origin main` and bulk DB updates even after explicit approval; user has to run those manually
@@ -102,6 +102,19 @@ Full current system map moved to `architecture.md`.
 - **af602fa1 drafter config populated (resolves the 2026-06-02 empty-`value_props` dormancy).** `about` rewritten (agent-first, graph-based, each claim explained + backed by real v1 benchmark numbers, plain voice, no jargon); `value_props`/`pain_points`/`tone_keywords` set; `outreach.override_to` = agentcrm91@gmail.com. All live in DB. Editable at **Settings → Workspace → About** (saving re-derives the structured fields).
 - **All drafts show `to_email: null`** — no contacts linked to these accounts, so they route to `override_to` at send. Real recipients depend on the contact-enrichment path (Explorium/Hunter).
 - **Routing gate confirmed, not broken:** automated drafts require composite score ≥ 0.65 (`DRAFT_ICP_TOTAL`, default; `policy.routing` unset). The "emails at 0.57" Jake saw came from manual triggers (chat draft tool + test scripts) that bypass `selectAction`.
+
+### Scheduler fully revived (2026-06-16) — see progress_log
+- **The real cause of the recurring "feed dead since X" was a 307 on the keepalive endpoint, not the host being mysteriously flaky.** See the updated Known-issue bullet above. Fixed in `apps/web/middleware.ts` (`/api/health` whitelisted), deployed, verified 200.
+- **Prod (Render) was missing `DEEPSEEK_API_KEY`** → `source-run` threw `Missing DEEPSEEK_API_KEY for deepseek-direct model deepseek-v4-flash` on the role classifier, so no source produced signals even when dispatched. Jake added it to Render env. **Prod env must carry `DEEPSEEK_API_KEY` + `OPENAI_API_KEY`** (the only two keys the AI-SDK router reads; `deepseek-v4-flash` is the only configured model). `OPENROUTER_API_KEY` can be dropped from Render — router no longer reads it. Verified: injected a `source.run` event → prod source-run completed `status=ok`.
+- **Free connectors can no longer auto-deactivate on zero yield.** The dispatcher yield-monitor (`shouldDeactivate`) now requires `connector.meta.cost === 'metered'`. Added optional `cost: 'free'|'metered'` to `ConnectorMeta` (default free); marked `exa` + `exa_contacts` metered. Fixes the `ats` self-kill death spiral (a quiet week of no new job posts is normal for a free diff connector, was killing it permanently). Deployed (`956999c`).
+- ~~**WATCH:** confirm `ats` auto-runs at the 13:00 UTC daily tick~~ — CONFIRMED 2026-06-18. `pnpm status` shows `ats_hiring_main` ran ~15h prior, created 32 signals; the research dispatcher fired on the exact `0 */4` schedule (16/20/00/04/08/12 UTC). Crons are firing reliably with no manual help. (ATS reports `status=error` but the errors are benign — false-positive board rejections + one non-fatal 429; it still produced signals. See new item below.)
+- **DEFERRED (designed, not built): weekly $ budget cap on metered connectors.** Per-workspace, auto-pause + email + rolling 7-day auto-resume. Sketch: connectors report `cost_usd` in `ConnectorResult` → `metered_usage` ledger (or reuse Composio usage table) → `workspaces.policy.metered_weekly_budget_usd` (null=unlimited, no default) → dispatcher skips metered sources for over-budget workspaces. Email via a new Resend util (`RESEND_API_KEY` already in `.env.local`) which also fills the `notify_on_gate.ts` stub. Jake wants ~$2/wk on his workspace so Exa can run automatically without spend fear.
+
+### Research/enrichment loop fixed + live (2026-06-18) — see progress_log
+- **WATCH: confirm researchRunner actually produces output after the deployed runner-fix tick (first 4h tick ≥ 16:00 UTC 2026-06-18).** The dispatcher fix is confirmed live (150 `research_triggered` dispatched on the `0 */4` schedule), but `research_completed` / `research_error` / `research_result` are still **0** — the `0/0/0` signature of the old broken runner. The runner fix (`d5bedfc`) merged after the 12:00 tick, so no tick has run it yet. Check with **`pnpm research:check`**; if still `0/0/0` a tick after deploy, the runner is erroring → check the Inngest dashboard `research-runner` run history.
+- **New read-only diagnostic CLIs** (on main): `pnpm status` (full pipeline: sources / signals-by-type / pipeline output / enrichment markers / pending gates) and `pnpm status <signal_type> [N]` to dump real signals; `pnpm research:check` for the enrichment loop specifically. Use these instead of the UI for "is it running / show me real signals" — the UI is an audit shell, not a query tool.
+- **`ats` connector flags `status=error` on benign non-fatal errors** (false-positive board rejections like "probe matched but board does not mention plaid.com — rejected"; non-fatal `429`). It still creates signals. Cosmetic but misleading in `pnpm status` — consider only setting `status=error` on fatal errors, or splitting fatal vs. non-fatal in `last_run_summary`.
+- **Feed silently freezes when the pipeline goes quiet.** `DEFAULT_SWR` has `revalidateOnFocus:false` + no polling, so a feed tab left open never refreshes; and the 400-row window means a burst of one post kind can push everything else out of view. No staleness signal. Optional fixes: a `refreshInterval` on the feed SWR, and/or a "newest post N h old" badge in `FeedHealth`. (Root of the "stuck on May 30" report — was a dead May 31–Jun 15 gap + stale view, not a data bug.)
 
 ## Plan File
 
