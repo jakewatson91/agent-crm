@@ -34,9 +34,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ source_i
 
   if (!rows.length) return NextResponse.json({ signals: [] });
 
-  // Check which signals have been matched to a subscription. Fetch all matched
-  // events for this workspace (typically small) and filter client-side — the
-  // same pattern used in recoverUnmatchedSignals.
+  // Check which signals matched at least one subscription. The matcher now
+  // writes a subscription.matched marker for EVERY processed signal (matched or
+  // not), so "matched" here means matched_count > 0 — not merely "the matcher
+  // ran." Legacy rows predate matched_count; treat a missing field as truthy so
+  // old genuinely-matched signals still show correctly.
   const signalIdSet = new Set(rows.map((r) => r.id));
   const { data: matchedEvts } = await supabase
     .from('events')
@@ -46,7 +48,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ source_i
     .limit(5000);
 
   const matched = new Set<string>(
-    ((matchedEvts ?? []) as Array<{ payload: { signal_id?: string } | null }>)
+    ((matchedEvts ?? []) as Array<{ payload: { signal_id?: string; matched_count?: number } | null }>)
+      .filter((e) => {
+        const c = e.payload?.matched_count;
+        return c === undefined || c > 0;
+      })
       .map((e) => e.payload?.signal_id)
       .filter((id): id is string => !!id && signalIdSet.has(id)),
   );
