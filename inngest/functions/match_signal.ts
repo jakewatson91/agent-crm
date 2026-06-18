@@ -30,6 +30,27 @@ export const matchSignal = inngest.createFunction(
       }>;
     });
 
+    // Durable marker that the matcher RAN for this signal, written for every
+    // signal including zero-match ones. recoverUnmatchedSignals + healthCheck +
+    // the source-signals UI all read events.action='subscription.matched' keyed
+    // by payload.signal_id; without this row they treat every signal as
+    // "never matched" forever, which is what made the recovery cron re-emit
+    // signal.created every 15 min and loop the enricher. Marker present ==
+    // matcher ran. A genuinely dropped signal.created event means this function
+    // never runs, no marker is written, and recovery correctly re-emits it.
+    await step.run('record-matched', async () => {
+      const supabase = createServerClient();
+      await supabase.from('events').insert({
+        workspace_id: event.data.workspace_id,
+        actor_kind: 'system',
+        actor_id: 'match-signal',
+        action: 'subscription.matched',
+        target_kind: 'signal',
+        target_id: signal_id,
+        payload: { signal_id, matched_count: matches.length },
+      });
+    });
+
     if (matches.length === 0) return { matched: 0 };
 
     await step.sendEvent('fan-out-matches', matches.map((m) => ({
