@@ -53,6 +53,10 @@ export interface ToolResult {
   event_id: string;
   target_id: string;
   data?: unknown;
+  // assert_fact only: true when this call inserted a new fact row, false on a
+  // content-hash dedup hit (the fact was already known). Lets callers avoid
+  // counting re-asserts of known facts as "new."
+  created?: boolean;
 }
 
 export interface ToolError {
@@ -104,7 +108,15 @@ export async function callTool(
         if (signal_id) {
           await supabase.from('facts').update({ signal_id }).eq('id', r.target_id).is('signal_id', null);
         }
-        return { ok: true, event_id: r.event_id, target_id: r.target_id };
+        // record_event sets facts.source_event_id to the new event only on
+        // INSERT; a content-hash dedup hit returns the pre-existing fact, whose
+        // source_event_id is an earlier event. So source_event_id === this
+        // event_id iff we just created the row. Race-safe (no count-delta) and
+        // needs no change to the record_event return columns.
+        const { data: factRow } = await supabase
+          .from('facts').select('source_event_id').eq('id', r.target_id).maybeSingle();
+        const created = (factRow as { source_event_id?: string } | null)?.source_event_id === r.event_id;
+        return { ok: true, event_id: r.event_id, target_id: r.target_id, created };
       }
 
       case 'supersede_fact': {

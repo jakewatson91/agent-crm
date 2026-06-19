@@ -718,13 +718,27 @@ export async function scoreAndAssert(
     }
   }
 
-  // Breakdown JSON as a separate fact for human / UI consumption.
+  // Breakdown JSON as a separate fact for human / UI consumption. Supersede the
+  // prior breakdown instead of asserting fresh — the JSON differs every rescore
+  // (content-hash never matches), so a plain assert_fact leaked a new row per
+  // tick (599 active across ~222 entities before this fix). Same find-current-
+  // then-supersede pattern as the numeric score_* fields above.
   try {
+    const breakdownText = JSON.stringify(score.breakdown);
+    const allRows = await supabase.from('facts').select('id, supersedes, observed_at')
+      .eq('workspace_id', actor.workspace_id)
+      .eq('subject_entity', entity_id)
+      .eq('predicate', 'icp_fit_breakdown')
+      .order('observed_at', { ascending: false });
+    const rows = (allRows.data ?? []) as Array<{ id: string; supersedes: string | null; observed_at: string }>;
+    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+    const current = rows.find((r) => !pointedTo.has(r.id)) ?? null;
     await act(supabase, actor, {
-      tool: 'assert_fact',
+      tool: current ? 'supersede_fact' : 'assert_fact',
       args: {
         subject_entity: entity_id, predicate: 'icp_fit_breakdown',
-        object_text: JSON.stringify(score.breakdown), confidence: 0.85,
+        object_text: breakdownText, confidence: 0.85,
+        ...(current ? { supersedes: current.id } : {}),
       },
     });
   } catch { /* non-fatal */ }

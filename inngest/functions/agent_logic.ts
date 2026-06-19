@@ -745,7 +745,11 @@ export async function runAgent(
         // only for legacy facts where signal_id is null.
         ...(sigData?.id ? { signal_id: sigData.id } : {}),
       }, meta);
-      if (r.ok) { asserted++; assertedIds.push(r.target_id); }
+      // Count + cite only facts this run actually created. A content-hash dedup
+      // hit returns ok:true with created:false (the fact was already known); the
+      // old `if (r.ok)` counted those as new, so re-asserting known facts inflated
+      // `asserted` → a spurious "Extracted N facts" claim post + a needless rescore.
+      if (r.ok && r.created) { asserted++; assertedIds.push(r.target_id); }
       // Per-fact failures don't bubble — the run is still useful with N-1 facts.
     }
     // Only post when we extracted something. Zero-fact runs become audit-trail
@@ -1070,6 +1074,7 @@ ${proseAttributes ? renderAttributesProse(entity.attributes) : JSON.stringify(en
 
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}
+When a new fact is the same kind of thing as one above, REUSE that fact's label (the part before "=") rather than inventing a new label for it. Only coin a new label when the fact is a genuinely new kind. (e.g. if a label already captures this fact, restate or refine it under that label instead of adding a near-synonym label for the same thing.)
 ${pastOutcomesBlock}${contactsBlock}${recommendedBlock}
 Decide.`;
 }
