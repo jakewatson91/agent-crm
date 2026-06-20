@@ -19,7 +19,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, compress, entityIdsOfType } from '@agent-crm/tools';
+import { callTool, compress, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
@@ -351,14 +351,13 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   });
 
   // Dedup against signals seen in the same window.
-  const seen = await ctx.supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('type', 'web_mention')
-    .gte('observed_at', new Date(cutoffMs).toISOString());
+  const seen = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: 'web_mention',
+    sinceISO: new Date(cutoffMs).toISOString(),
+  });
   const seenGuids = new Set<string>();
-  for (const s of seen.data ?? []) {
+  for (const s of seen) {
     const g = (s.structured_tags as { guid?: string } | null)?.guid;
     if (g) seenGuids.add(g);
   }

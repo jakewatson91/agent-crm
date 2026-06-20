@@ -30,7 +30,7 @@
  *   }
  */
 
-import { callTool, entityIdsOfType } from '@agent-crm/tools';
+import { callTool, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
@@ -120,14 +120,13 @@ const apiCall: Connector = async (ctx: ConnectorContext): Promise<ConnectorResul
   else { result.errors.push(`items_path "${items_path}" did not resolve to an array or object`); return result; }
 
   // Dedup against signals seen in window.
-  const seen = await ctx.supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('type', 'api_call')
-    .gte('observed_at', new Date(cutoffMs).toISOString());
+  const seen = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: 'api_call',
+    sinceISO: new Date(cutoffMs).toISOString(),
+  });
   const seenIds = new Set<string>();
-  for (const s of seen.data ?? []) {
+  for (const s of seen) {
     const id = (s.structured_tags as { item_id?: string } | null)?.item_id;
     if (id) seenIds.add(id);
   }

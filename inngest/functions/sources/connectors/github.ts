@@ -21,7 +21,7 @@
  * e.g. "github:stripe" -> org=stripe. Falls back to the entity name lowercased.
  */
 
-import { callTool } from '@agent-crm/tools';
+import { callTool, fetchSeenSignalTags } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
@@ -61,14 +61,13 @@ const github: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult
   if (token) headers.Authorization = `Bearer ${token}`;
 
   // Dedup against signals already seen.
-  const seenRes = await ctx.supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('type', 'github_event')
-    .gte('observed_at', new Date(cutoff).toISOString());
+  const seenRes = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: 'github_event',
+    sinceISO: new Date(cutoff).toISOString(),
+  });
   const seenIds = new Set<string>();
-  for (const s of seenRes.data ?? []) {
+  for (const s of seenRes) {
     const id = (s.structured_tags as { gh_event_id?: string } | null)?.gh_event_id;
     if (id) seenIds.add(id);
   }

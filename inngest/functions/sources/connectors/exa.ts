@@ -30,7 +30,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, entityIdsOfType } from '@agent-crm/tools';
+import { callTool, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
@@ -136,14 +136,13 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
 
   // Dedup against signals seen in window (by Exa's result id).
   const cutoffMs = Date.now() - since_hours * 3600 * 1000;
-  const seen = await ctx.supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('type', 'exa_result')
-    .gte('observed_at', new Date(cutoffMs).toISOString());
+  const seen = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: 'exa_result',
+    sinceISO: new Date(cutoffMs).toISOString(),
+  });
   const seenIds = new Set<string>();
-  for (const s of seen.data ?? []) {
+  for (const s of seen) {
     const id = (s.structured_tags as { exa_id?: string } | null)?.exa_id;
     if (id) seenIds.add(id);
   }

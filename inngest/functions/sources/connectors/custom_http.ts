@@ -50,7 +50,7 @@
  * mean — that's the spec's job. Vertical-neutral.
  */
 
-import { callTool, chatCompleteForWorkspace, entityIdsOfType, normalizeDomain, hashItem } from '@agent-crm/tools';
+import { callTool, chatCompleteForWorkspace, entityIdsOfType, normalizeDomain, hashItem, fetchSeenSignalTags } from '@agent-crm/tools';
 // custom_http is per-workspace by construction (sources.workspace_id), so it
 // uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
 // keys and stay on raw chatComplete for now.
@@ -170,14 +170,13 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
   const sinceHours = dedupSpec.since_hours ?? 168;
   const cutoffMs = Date.now() - sinceHours * 3600 * 1000;
   const signalType = signalSpec.type ?? 'custom_http';
-  const seen = await ctx.supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('type', signalType)
-    .gte('observed_at', new Date(cutoffMs).toISOString());
+  const seen = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: signalType,
+    sinceISO: new Date(cutoffMs).toISOString(),
+  });
   const seenIds = new Set<string>();
-  for (const s of seen.data ?? []) {
+  for (const s of seen) {
     const id = (s.structured_tags as { item_id?: string } | null)?.item_id;
     if (id) seenIds.add(id);
   }

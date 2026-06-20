@@ -26,7 +26,7 @@
  *   }
  */
 
-import { callTool, entityIdsOfType } from '@agent-crm/tools';
+import { callTool, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
@@ -110,12 +110,13 @@ const githubTrending: Connector = async (ctx: ConnectorContext): Promise<Connect
 
   // Dedup against signals already emitted for the same (entity, repo) pair.
   const since30d = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
-  const seenRes = await ctx.supabase
-    .from('signals').select('entity_id, structured_tags')
-    .eq('workspace_id', ctx.workspace_id).eq('type', 'github_trending')
-    .gte('observed_at', since30d);
+  const seenRes = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: 'github_trending',
+    sinceISO: since30d,
+  });
   const seenPairs = new Set<string>();
-  for (const s of (seenRes.data ?? []) as Array<{ entity_id: string; structured_tags: { gh_repo?: string } | null }>) {
+  for (const s of seenRes as Array<{ entity_id: string; structured_tags: { gh_repo?: string } | null }>) {
     const repo = s.structured_tags?.gh_repo;
     if (repo) seenPairs.add(`${s.entity_id}::${repo}`);
   }

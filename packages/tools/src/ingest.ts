@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Actor } from '@agent-crm/primitives';
 import { callTool } from './index.ts';
+import { fetchSeenSignalTags } from './reads.ts';
 import { linkContactToAccount } from './contacts.ts';
 import { entityIdsOfType } from './entity_types.ts';
 
@@ -154,14 +155,9 @@ export async function ingestRows(
   // ── Cross-run dedup: collect item_ids already seen for this source signal type.
   const sinceHours = spec.dedup_since_hours ?? 720;
   const cutoff = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
-  const seen = await supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', workspace_id)
-    .eq('type', signalType)
-    .gte('observed_at', cutoff);
+  const seen = await fetchSeenSignalTags(supabase, { workspace_id, type: signalType, sinceISO: cutoff });
   const seenIds = new Set<string>();
-  for (const s of seen.data ?? []) {
+  for (const s of seen) {
     const id = (s.structured_tags as { item_id?: string } | null)?.item_id;
     if (id) seenIds.add(id);
   }

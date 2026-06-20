@@ -11,7 +11,7 @@ import {
   type Actor,
 } from '@agent-crm/primitives';
 import { TOOL_SCHEMAS, type ToolName } from './schemas.ts';
-import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, type EntityStatus } from './reads.ts';
+import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, fetchSeenSignalTags, type EntityStatus } from './reads.ts';
 import { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId } from './contacts.ts';
 import { scoreEntity, scoreAndAssert, combineSubScores, scoreContact } from './scoring.ts';
 import { selectAction, loadActionContext } from './action_selector.ts';
@@ -33,7 +33,7 @@ export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepse
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
 export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts } from './prompt_builders.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
-export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary };
+export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, fetchSeenSignalTags };
 export { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId };
 export { scoreEntity, scoreAndAssert, combineSubScores, scoreContact };
 export { buildContactWeights, DEFAULT_CONTACT_WEIGHTS, decisionPower, personaMatch } from './scoring.ts';

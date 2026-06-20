@@ -15,7 +15,7 @@
  *   }
  */
 
-import { callTool } from '@agent-crm/tools';
+import { callTool, fetchSeenSignalTags } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
@@ -86,14 +86,13 @@ const ph: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
 
   // Dedup
   const cutoff = Date.now() - since_hours * 3600 * 1000;
-  const seen = await ctx.supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('type', 'producthunt_launch')
-    .gte('observed_at', new Date(cutoff).toISOString());
+  const seen = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: 'producthunt_launch',
+    sinceISO: new Date(cutoff).toISOString(),
+  });
   const seenIds = new Set<string>();
-  for (const s of seen.data ?? []) {
+  for (const s of seen) {
     const id = (s.structured_tags as { ph_post_id?: string } | null)?.ph_post_id;
     if (id) seenIds.add(id);
   }

@@ -13,6 +13,37 @@ const STALE_DRAFT_DAYS = 7;
 
 export type EntityStatus = 'draft_ready' | 'gated' | 'active' | 'stale' | 'no_signals';
 
+/**
+ * Read every prior signal of `type` since `sinceISO` for cross-run dedup,
+ * paginating past PostgREST's 1000-row default cap. A capped read silently
+ * drops the oldest signals from the dedup set, so any source that produces
+ * >1000 signals of one type inside its window starts re-creating duplicates —
+ * which also pays for the extra downstream matchSignal runs. Ordered so
+ * pagination is stable.
+ */
+export async function fetchSeenSignalTags(
+  supabase: SupabaseClient,
+  params: { workspace_id: string; type: string; sinceISO: string },
+): Promise<Array<{ entity_id: string | null; structured_tags: Record<string, unknown> | null }>> {
+  const PAGE = 1000;
+  const out: Array<{ entity_id: string | null; structured_tags: Record<string, unknown> | null }> = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('signals')
+      .select('entity_id, structured_tags')
+      .eq('workspace_id', params.workspace_id)
+      .eq('type', params.type)
+      .gte('observed_at', params.sinceISO)
+      .order('observed_at', { ascending: false })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`fetchSeenSignalTags failed: ${error.message}`);
+    const rows = (data ?? []) as Array<{ entity_id: string | null; structured_tags: Record<string, unknown> | null }>;
+    out.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  return out;
+}
+
 export interface EntitySummary {
   entity_id: string;
   name: string;
@@ -619,8 +650,14 @@ export async function healthCheck(supabase: SupabaseClient, workspace_id: string
   const gateIds = new Set<number>(((gateReqs.data ?? []) as Array<{ id: number }>).map((g) => g.id));
   let staleGates = 0;
   if (gateIds.size) {
+    // Scope to the candidate gate ids (a decision's parent_event_id IS the
+    // request_gate event id). The old unbounded select capped at PostgREST's
+    // 1000-row default, so once a workspace had >1000 gate decisions, old gates
+    // looked undecided and staleGates overcounted — tripping the health monitor
+    // into phantom approval requests every hour.
     const decided = await supabase.from('events').select('parent_event_id')
-      .eq('workspace_id', workspace_id).eq('action', 'gate_decision');
+      .eq('workspace_id', workspace_id).eq('action', 'gate_decision')
+      .in('parent_event_id', [...gateIds]);
     const decidedSet = new Set<number>();
     for (const d of (decided.data ?? []) as Array<{ parent_event_id: number | null }>) {
       if (d.parent_event_id) decidedSet.add(d.parent_event_id);

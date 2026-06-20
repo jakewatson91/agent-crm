@@ -16,7 +16,7 @@
  *     next run. Users can add accounts via chat with the agent.
  */
 
-import { callTool } from '@agent-crm/tools';
+import { callTool, fetchSeenSignalTags } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
@@ -84,14 +84,13 @@ const hn: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =>
   }
 
   // Pre-fetch existing signals from this source's history to dedupe by HN story id.
-  const seenIdsRes = await ctx.supabase
-    .from('signals')
-    .select('structured_tags')
-    .eq('workspace_id', ctx.workspace_id)
-    .eq('type', 'hn_mention')
-    .gte('observed_at', new Date(sinceUnix * 1000).toISOString());
+  const seenIdsRes = await fetchSeenSignalTags(ctx.supabase, {
+    workspace_id: ctx.workspace_id,
+    type: 'hn_mention',
+    sinceISO: new Date(sinceUnix * 1000).toISOString(),
+  });
   const seenStoryIds = new Set<string>();
-  for (const r of seenIdsRes.data ?? []) {
+  for (const r of seenIdsRes) {
     const sid = (r.structured_tags as { hn_story_id?: string } | null)?.hn_story_id;
     if (sid) seenStoryIds.add(sid);
   }
