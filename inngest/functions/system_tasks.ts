@@ -47,12 +47,23 @@ export const recoverUnmatchedSignals = inngest.createFunction(
         const sigRows = (sigs.data ?? []) as Array<{ id: string; entity_id: string; type: string; observed_at: string }>;
         if (!sigRows.length) continue;
 
-        const matched = await supabase.from('events').select('payload')
-          .eq('workspace_id', ws).eq('action', 'subscription.matched');
-        const matchedSet = new Set<string>();
-        for (const e of (matched.data ?? []) as Array<{ payload: { signal_id?: string } | null }>) {
-          if (e.payload?.signal_id) matchedSet.add(e.payload.signal_id);
-        }
+        // Scope the marker lookup to the candidate signals only. The marker's
+        // target_id IS the signal_id (match_signal.ts), so .in() returns exactly
+        // the markers we care about. The old unbounded select hit PostgREST's
+        // 1000-row default cap once a workspace had >1000 markers, hiding the
+        // rest, so already-matched signals looked unmatched and got re-emitted
+        // every 15 min — a self-feeding loop (each re-emit wrote another marker,
+        // growing the table, hiding even more). That alone was ~3× re-processing
+        // and the bulk of our Inngest run spend.
+        const sigIds = sigRows.map((s) => s.id);
+        const matched = await supabase.from('events').select('target_id')
+          .eq('workspace_id', ws).eq('action', 'subscription.matched')
+          .in('target_id', sigIds);
+        const matchedSet = new Set<string>(
+          ((matched.data ?? []) as Array<{ target_id: string | null }>)
+            .map((e) => e.target_id)
+            .filter((id): id is string => Boolean(id)),
+        );
         const unmatched = sigRows.filter((s) => !matchedSet.has(s.id)).slice(0, RECOVERY_LIMIT_PER_RUN);
         for (const s of unmatched) out.push({ signal_id: s.id, workspace_id: ws, entity_id: s.entity_id, type: s.type, observed_at: s.observed_at });
         if (out.length >= RECOVERY_LIMIT_PER_RUN) break;

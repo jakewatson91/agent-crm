@@ -435,7 +435,7 @@ export async function tokenSummary(
   const since = new Date(Date.now() - args.since_hours * 3600 * 1000).toISOString();
   const { data, error } = await supabase.from('events').select('payload')
     .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
-    .gte('ts', since).limit(5000);
+    .gte('created_at', since).limit(5000);
   if (error) throw error;
 
   let runs = 0; let input = 0; let output = 0; let cached = 0;
@@ -592,13 +592,18 @@ export async function healthCheck(supabase: SupabaseClient, workspace_id: string
   const sigIds = ((sigs.data ?? []) as Array<{ id: string }>).map((r) => r.id);
   let unmatched = 0;
   if (sigIds.length) {
-    const matched = await supabase.from('events').select('payload')
-      .eq('workspace_id', workspace_id).eq('action', 'subscription.matched');
-    const matchedSet = new Set<string>();
-    for (const e of (matched.data ?? []) as Array<{ payload: { signal_id?: string } | null }>) {
-      const sid = e.payload?.signal_id;
-      if (sid) matchedSet.add(sid);
-    }
+    // Scope to the candidate signals (target_id IS the signal_id). The old
+    // unbounded select capped at PostgREST's 1000-row default, so once a
+    // workspace had >1000 markers this overcounted unmatched_signals, which
+    // tripped systemHealthMonitor into opening phantom gates every hour.
+    const matched = await supabase.from('events').select('target_id')
+      .eq('workspace_id', workspace_id).eq('action', 'subscription.matched')
+      .in('target_id', sigIds);
+    const matchedSet = new Set<string>(
+      ((matched.data ?? []) as Array<{ target_id: string | null }>)
+        .map((e) => e.target_id)
+        .filter((id): id is string => Boolean(id)),
+    );
     unmatched = sigIds.filter((id) => !matchedSet.has(id)).length;
   }
 
@@ -610,7 +615,7 @@ export async function healthCheck(supabase: SupabaseClient, workspace_id: string
   // 3. stale open gates
   const gateCutoff = new Date(Date.now() - STALE_GATE_DAYS * 86400000).toISOString();
   const gateReqs = await supabase.from('events').select('id')
-    .eq('workspace_id', workspace_id).eq('action', 'request_gate').lt('ts', gateCutoff).limit(200);
+    .eq('workspace_id', workspace_id).eq('action', 'request_gate').lt('created_at', gateCutoff).limit(200);
   const gateIds = new Set<number>(((gateReqs.data ?? []) as Array<{ id: number }>).map((g) => g.id));
   let staleGates = 0;
   if (gateIds.size) {

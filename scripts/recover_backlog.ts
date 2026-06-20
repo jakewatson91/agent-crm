@@ -30,12 +30,17 @@ async function main() {
     .limit(500);
   const sigRows = (sigs.data ?? []) as Array<{ id: string; entity_id: string; type: string; observed_at: string }>;
 
-  const matched = await sb.from('events').select('payload')
-    .eq('workspace_id', WS).eq('action', 'subscription.matched');
-  const matchedSet = new Set<string>();
-  for (const e of (matched.data ?? []) as Array<{ payload: { signal_id?: string } | null }>) {
-    if (e.payload?.signal_id) matchedSet.add(e.payload.signal_id);
-  }
+  // Scope to candidate signals (target_id IS the signal_id) so we don't hit
+  // PostgREST's 1000-row cap and treat already-matched signals as unmatched.
+  const sigIds = sigRows.map((s) => s.id);
+  const matched = await sb.from('events').select('target_id')
+    .eq('workspace_id', WS).eq('action', 'subscription.matched')
+    .in('target_id', sigIds);
+  const matchedSet = new Set<string>(
+    ((matched.data ?? []) as Array<{ target_id: string | null }>)
+      .map((e) => e.target_id)
+      .filter((id): id is string => Boolean(id)),
+  );
   const unmatched = sigRows.filter((s) => !matchedSet.has(s.id));
   console.log(`unmatched signals: ${unmatched.length} of ${sigRows.length}`);
   if (!unmatched.length) return;
