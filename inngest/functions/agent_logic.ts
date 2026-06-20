@@ -995,6 +995,8 @@ function buildEnricherDecision(opts: {
 
   return `A new signal arrived about the account in the user message. Extract atomic factual claims about THIS entity that are supported by the signal AND that the system doesn't already know.
 
+IDENTITY CHECK (do this first) — companies and people can share a name. Cross-check the signal's content and source URL (in SIGNAL.structured_tags) against this account's own ATTRIBUTES (domain, website, industry, description) in the user message. If the signal clearly describes a different organization that merely shares this name — different domain, different industry, different product — treat it as nothing extractable: output {"facts":[],"summary":"skipped: signal describes a different entity with the same name","reasoning":"<what mismatched>"}.
+
 DO NOT extract:
 - Anything already present in the entity's ATTRIBUTES (the JSON object in the user message). The values there are authoritative; re-asserting them as facts is noise.
 - Anything already present in the ACTIVE FACTS list. Those exist; don't duplicate.
