@@ -2,6 +2,16 @@
 
 import { useEffect, useState } from 'react';
 import { lowConfLabel } from '../_lib/confidence';
+import { humanizePredicate } from '../_lib/labels';
+
+// Who took the action, in plain words. The raw actor_kind/actor_id stays in the
+// per-hop "raw" toggle for a developer.
+function actorWord(kind: string | null | undefined): string {
+  if (kind === 'agent') return 'the agent';
+  if (kind === 'human' || kind === 'user') return 'a person';
+  if (kind === 'system') return 'the system';
+  return kind ?? 'unknown';
+}
 
 interface ChainHop {
   fact_id: string;
@@ -65,7 +75,7 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
     <div style={{ display: 'inline-block' }}>
       <button
         onClick={() => setOpen(!open)}
-        title={`Walk the provenance chain for fact ${fact_id.slice(0, 8)}`}
+        title="Show where this came from"
         style={{
           padding: '2px 8px',
           background: open ? 'var(--accent-blue)' : 'var(--accent-blue-soft)',
@@ -73,12 +83,11 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
           border: 'none',
           borderRadius: 999,
           fontSize: '.7rem',
-          fontFamily: 'var(--font-mono)',
           cursor: 'pointer',
           marginRight: '.25rem',
         }}
       >
-        {label ?? `cite ${fact_id.slice(0, 6)}`}
+        {label ?? 'trace'}
       </button>
       {open && (
         <div style={{
@@ -97,7 +106,7 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
           {chain && (
             <>
               <div className="subtle" style={{ marginBottom: '.55rem', fontSize: '.72rem' }}>
-                {chain.hop_count}-hop provenance chain
+                where this came from{chain.hop_count > 1 ? ` · ${chain.hop_count} steps` : ''}
               </div>
               {chain.hops.map((h, i) => (
                 <div key={h.fact_id} style={{
@@ -105,19 +114,15 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
                   paddingBottom: i < chain.hops.length - 1 ? '.6rem' : 0,
                   borderBottom: i < chain.hops.length - 1 ? '1px dashed var(--border)' : 'none'
                 }}>
-                  <div className="mono" style={{ color: '#5a7e5f' }}>
-                    hop {i}: <span style={{ color: 'var(--text)' }}>{h.fact?.predicate ?? '?'} = {h.fact?.object_text ?? '?'}</span>
+                  <div style={{ color: '#5a7e5f' }}>
+                    <span style={{ color: 'var(--text)' }}>{h.fact ? humanizePredicate(h.fact.predicate) : '?'} = {h.fact?.object_text ?? '?'}</span>
                     {h.fact && lowConfLabel(h.fact.confidence) && (
                       <span style={{ color: 'var(--accent-coral)' }}> · {lowConfLabel(h.fact.confidence)}</span>
                     )}
                   </div>
                   {h.source_event && (
-                    <div className="mono subtle" style={{ marginTop: '.25rem', fontSize: '.72rem', lineHeight: 1.55 }}>
-                      ↳ event #{h.source_event.id} · <span style={{ color: 'var(--accent-blue)' }}>{h.source_event.action}</span> by {h.source_event.actor_kind}/{h.source_event.actor_id}<br />
-                      <span suppressHydrationWarning>{new Date(h.source_event.created_at).toLocaleString()}</span>
-                      {h.source_event.prompt_hash && (
-                        <> · prompt {h.source_event.prompt_hash.slice(0, 12)}…</>
-                      )}
+                    <div className="subtle" style={{ marginTop: '.25rem', fontSize: '.72rem' }}>
+                      noted by {actorWord(h.source_event.actor_kind)} · <span suppressHydrationWarning>{new Date(h.source_event.created_at).toLocaleString()}</span>
                     </div>
                   )}
                   {h.signal && (
@@ -142,10 +147,17 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
                       </div>
                     </div>
                   )}
-                  {h.fact?.content_hash && (
-                    <div className="mono muted" style={{ marginTop: '.2rem', fontSize: '.68rem' }}>
-                      content_hash: {h.fact.content_hash.slice(0, 24)}…
-                    </div>
+                  {(h.source_event || h.fact?.content_hash) && (
+                    <details style={{ marginTop: '.3rem' }}>
+                      <summary className="subtle mono" style={{ cursor: 'pointer', fontSize: '.66rem' }}>raw</summary>
+                      <div className="mono muted" style={{ marginTop: '.2rem', fontSize: '.66rem', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                        {h.source_event && (
+                          <>event #{h.source_event.id} · {h.source_event.action} · {h.source_event.actor_kind}/{h.source_event.actor_id}<br /></>
+                        )}
+                        {h.source_event?.prompt_hash && <>prompt_hash {h.source_event.prompt_hash}<br /></>}
+                        {h.fact?.content_hash && <>content_hash {h.fact.content_hash}</>}
+                      </div>
+                    </details>
                   )}
                 </div>
               ))}

@@ -23,6 +23,9 @@ interface FeedItem {
   icp_fit: number | null;
   reasoning: string | null;
   dup_count: number;
+  // True only for touch_draft rows whose outreach gate is still undecided —
+  // i.e. the live approval queue. Sent/rejected drafts and non-draft rows are false.
+  pending_approval: boolean;
 }
 
 const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
@@ -65,6 +68,19 @@ const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
     if (ent && !entMap.has(ent.id)) entMap.set(ent.id, ent.name);
   }
 
+  // Which touch_draft posts still have an undecided gate → live approval queue.
+  const draftIds = rows.filter((r) => r.kind === 'touch_draft').map((r) => r.id);
+  const pendingDraft = new Set<string>();
+  if (draftIds.length) {
+    const { data: gateRows } = await supabase
+      .from('gates')
+      .select('channel_post_id, decided_at')
+      .in('channel_post_id', draftIds);
+    for (const g of (gateRows ?? []) as Array<{ channel_post_id: string; decided_at: string | null }>) {
+      if (!g.decided_at) pendingDraft.add(g.channel_post_id);
+    }
+  }
+
   const icpMap = new Map<string, number>();
   const superseded = new Set<string>(((fitsRes.data ?? []) as any[]).map((f) => f.supersedes).filter(Boolean));
   for (const f of (fitsRes.data ?? []) as any[]) {
@@ -102,6 +118,7 @@ const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
       icp_fit: icpMap.get(r.channels.account_entity_id) ?? null,
       reasoning: childrenByParent.get(r.id)?.body ?? null,
       dup_count: 1,
+      pending_approval: pendingDraft.has(r.id),
     }));
 
   // Dedup within 14d: identical (entity, kind, cite-set) collapse into one row.

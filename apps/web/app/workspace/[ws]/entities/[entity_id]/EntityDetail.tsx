@@ -7,7 +7,10 @@ import { Timestamp } from '../../../../_components/Timestamp';
 import { WhyThis } from '../../../../_components/WhyThis';
 import { DraftActions } from '../../../../_components/DraftActions';
 import { lowConfLabel } from '../../../../_lib/confidence';
+import { bandOf, bandColor, BAND_SHORT } from '../../../../_lib/bands';
+import { humanizePredicate, looksLikeCode, stripActionTag } from '../../../../_lib/labels';
 import { ScoreTimeline } from './ScoreTimeline';
+import { AttributeGrid } from './AttributeGrid';
 import { useSetPageContext, type PageContext } from '../../../../_components/PageContext';
 
 interface GroupedItem {
@@ -25,6 +28,8 @@ interface Fact {
   id: string;
   predicate: string;
   object_text: string | null;
+  object_entity: string | null;
+  object_entity_name: string | null;
   confidence: number;
   observed_at: string;
 }
@@ -95,6 +100,25 @@ function predicateLabel(predicate: string): string {
   return predicate.replace(/_/g, ' ');
 }
 
+// Score-related facts get their own clean card, not a row in the facts list.
+function isScoreFact(p: string): boolean {
+  return p === 'icp_fit' || p === 'score_total' || p === 'icp_fit_breakdown' || p === 'contact_score' || p.startsWith('score_');
+}
+
+// Facts a human can't read: the type fact (shown as a badge), the score
+// internals (shown in the score card), raw JSON / error blobs, and bare codes.
+// Entity-reference facts always stay — they render as a link.
+function isMachineFact(f: { predicate: string; object_text: string | null; object_entity: string | null }): boolean {
+  if (f.object_entity) return false;
+  if (f.predicate === 'is_a') return true;
+  if (isScoreFact(f.predicate)) return true;
+  const v = (f.object_text ?? '').trim();
+  if (v.startsWith('{') || v.startsWith('[')) return true;
+  if (/^error[:\s]/i.test(v)) return true;
+  if (looksLikeCode(f.predicate, f.object_text)) return true;
+  return false;
+}
+
 export function EntityDetail({
   ws,
   entityId,
@@ -117,9 +141,8 @@ export function EntityDetail({
 
   const [related, setRelated] = useState<RelatedResponse | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
-  const [relatedOpen, setRelatedOpen] = useState(false);
-  const [showAllInbound, setShowAllInbound] = useState(false);
-  const [showAllOutbound, setShowAllOutbound] = useState(false);
+  const [relatedOpen, setRelatedOpen] = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Audit slider state — channel-scoped today. Hidden when no channel.
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
@@ -152,15 +175,20 @@ export function EntityDetail({
       .finally(() => setLoading(false));
   }, [channelId]);
 
+  // The graph is the headline of this page, so load it on mount (not gated
+  // behind the collapse). Reset + refetch when navigating between entities.
   useEffect(() => {
-    if (!relatedOpen || related || relatedLoading) return;
+    let cancelled = false;
+    setRelated(null);
+    setExpandedGroups(new Set());
     setRelatedLoading(true);
     fetch(`/api/entities/${entityId}/related`)
       .then((r) => r.json())
-      .then((j) => setRelated(j))
-      .catch(() => setRelated({ inbound: [], outbound: [] }))
-      .finally(() => setRelatedLoading(false));
-  }, [entityId, relatedOpen, related, relatedLoading]);
+      .then((j) => { if (!cancelled) setRelated(j); })
+      .catch(() => { if (!cancelled) setRelated({ inbound: [], outbound: [] }); })
+      .finally(() => { if (!cancelled) setRelatedLoading(false); });
+    return () => { cancelled = true; };
+  }, [entityId]);
 
   // Thin facts fetch for non-account kinds. Groups by the same families the
   // summary route uses so the UI stays consistent.
@@ -206,11 +234,35 @@ export function EntityDetail({
     });
   }
 
+  function toggleGroup(label: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label); else next.add(label);
+      return next;
+    });
+  }
+
   if (loading) return <section><h2 style={{ marginTop: 0 }}>loading…</h2></section>;
 
   const currentFacts: Record<string, Fact[]> = data?.current_facts ?? thinFacts ?? {};
   const replayActiveFacts = replayState?.facts?.filter((f) => f.subject_entity === entityId) ?? [];
-  const families = Object.keys(currentFacts).sort((a, b) => {
+
+  // Human facts view: drop machine facts (type, score internals, raw blobs,
+  // codes) and skip families that empty out. Everything stays in the bottom
+  // audit stream + the API.
+  const visibleFacts: Record<string, Fact[]> = {};
+  for (const [fam, arr] of Object.entries(currentFacts)) {
+    const keep = arr.filter((f) => !isMachineFact(f));
+    if (keep.length) visibleFacts[fam] = keep;
+  }
+
+  // Score card: one headline number + a readable breakdown, instead of the 8
+  // raw score_* rows + JSON blob the agent writes.
+  const allFacts = Object.values(currentFacts).flat();
+  const scoreComponents = allFacts
+    .filter((f) => f.predicate.startsWith('score_') && f.predicate !== 'score_total' && f.object_text != null)
+    .map((f) => ({ label: humanizePredicate(f.predicate.replace(/^score_/, '')), value: f.object_text as string }));
+  const families = Object.keys(visibleFacts).sort((a, b) => {
     const order = ['firmographics', 'scoring', 'engagement', 'other'];
     return order.indexOf(a) - order.indexOf(b);
   });
@@ -221,6 +273,31 @@ export function EntityDetail({
 
   const inbound = related?.inbound ?? [];
   const outbound = related?.outbound ?? [];
+  const neighborCount = inbound.length + outbound.length;
+
+  // Group every neighbor by its relationship label so the graph reads as
+  // "contacts · works at · invested in", each row clickable to walk onward.
+  const connectionGroups = (() => {
+    const groups = new Map<string, RelatedEntity[]>();
+    for (const n of [...inbound, ...outbound]) {
+      const label = predicateLabel(n.via_predicate);
+      const arr = groups.get(label) ?? [];
+      arr.push(n);
+      groups.set(label, arr);
+    }
+    return [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+  })();
+
+  // Identity strip: linked domain + score chip, derived from attributes/facts.
+  const domain = typeof entityAttributes.domain === 'string' ? entityAttributes.domain : null;
+  const scoreStr = (() => {
+    for (const arr of Object.values(currentFacts)) {
+      const f = arr.find((x) => x.predicate === 'icp_fit') ?? arr.find((x) => x.predicate === 'score_total');
+      if (f?.object_text) return f.object_text;
+    }
+    return null;
+  })();
+  const score = scoreStr != null && Number.isFinite(parseFloat(scoreStr)) ? parseFloat(scoreStr) : null;
 
   return (
     <section>
@@ -231,12 +308,38 @@ export function EntityDetail({
         <div className="subtle mono" style={{ fontSize: '.75rem' }}>{countsLine}</div>
       </div>
 
-      {Object.keys(entityAttributes).length > 0 && (
+      {domain && (
+        <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '.25rem' }}>
+          <a
+            href={`https://${domain}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mono"
+            style={{ fontSize: '.78rem', color: 'var(--accent-blue)', textDecoration: 'none' }}
+          >
+            {domain}
+          </a>
+        </div>
+      )}
+
+      <AttributeGrid attributes={entityAttributes} />
+
+      {score !== null && (
         <div className="card" style={{ marginTop: '1rem', padding: '.7rem .9rem' }}>
-          <div className="subtle" style={{ fontSize: '.7rem', marginBottom: '.3rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>attributes</div>
-          <pre className="mono subtle" style={{ margin: 0, fontSize: '.72rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-            {JSON.stringify(entityAttributes, null, 2)}
-          </pre>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '.5rem', flexWrap: 'wrap' }}>
+            <div className="subtle" style={{ fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>fit score</div>
+            <div className="mono" style={{ fontSize: '1.05rem', fontWeight: 600, color: bandColor(score) }}>{score.toFixed(2)}</div>
+            <span className="badge" style={{ fontSize: '.62rem', color: bandColor(score) }}>{BAND_SHORT[bandOf(score)]}</span>
+          </div>
+          {scoreComponents.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.35rem 1rem', marginTop: '.55rem' }}>
+              {scoreComponents.map((c) => (
+                <span key={c.label} className="subtle" style={{ fontSize: '.74rem' }}>
+                  {c.label} <span className="mono" style={{ color: 'var(--text)' }}>{c.value}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -250,37 +353,29 @@ export function EntityDetail({
             color: 'var(--text-2)',
           }}
         >
-          {relatedOpen ? '▾' : '▸'} related entities
-          {related && ` · ${inbound.length + outbound.length}`}
+          {relatedOpen ? '▾' : '▸'} connections
+          {related && ` · ${neighborCount}`}
         </button>
         {relatedOpen && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '.75rem', marginTop: '.75rem' }}>
             {relatedLoading && (
               <div className="subtle" style={{ fontSize: '.75rem' }}>loading…</div>
             )}
-            {related && inbound.length === 0 && outbound.length === 0 && (
+            {related && neighborCount === 0 && (
               <div className="card" style={{ padding: '1rem', color: 'var(--text-3)', textAlign: 'center', fontSize: '.85rem' }}>
-                No related entities yet.
+                No connections in the graph yet.
               </div>
             )}
-            {inbound.length > 0 && (
+            {connectionGroups.map(([label, items]) => (
               <RelatedGroup
+                key={label}
                 ws={ws}
-                title={entityKind === 'account' ? 'contacts' : 'inbound'}
-                items={inbound}
-                expanded={showAllInbound}
-                onToggle={() => setShowAllInbound((v) => !v)}
+                title={label}
+                items={items}
+                expanded={expandedGroups.has(label)}
+                onToggle={() => toggleGroup(label)}
               />
-            )}
-            {outbound.length > 0 && (
-              <RelatedGroup
-                ws={ws}
-                title={entityKind === 'contact' ? 'works at' : 'linked to'}
-                items={outbound}
-                expanded={showAllOutbound}
-                onToggle={() => setShowAllOutbound((v) => !v)}
-              />
-            )}
+            ))}
           </div>
         )}
       </div>
@@ -328,17 +423,30 @@ export function EntityDetail({
                 <div className="subtle" style={{ fontSize: '.7rem', marginBottom: '.4rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
                   {FAMILY_LABEL[fam] ?? fam}
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
-                  {(currentFacts[fam] ?? []).map((f) => (
-                    <div key={f.id} className="mono" style={{ fontSize: '.78rem', display: 'flex', gap: '.5rem', alignItems: 'baseline' }}>
-                      <span style={{ color: 'var(--text-2)', minWidth: 160 }}>{f.predicate}</span>
-                      <span style={{ color: 'var(--text)' }}>{f.object_text}</span>
-                      <span className="muted mono" style={{ fontSize: '.68rem', marginLeft: 'auto' }}>
-                        {lowConfLabel(f.confidence) && (
-                          <span style={{ color: 'var(--accent-coral)' }}>{lowConfLabel(f.confidence)} · </span>
-                        )}
-                        <Timestamp value={f.observed_at} />
-                      </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
+                  {(visibleFacts[fam] ?? []).map((f) => (
+                    <div key={f.id} style={{ fontSize: '.78rem' }}>
+                      <div style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline' }}>
+                        <span className="subtle" style={{ color: 'var(--text-2)', minWidth: 160 }} title={f.predicate}>{humanizePredicate(f.predicate)}</span>
+                        <span style={{ color: 'var(--text)', flex: 1, minWidth: 0 }}>
+                          {f.object_entity && f.object_entity_name ? (
+                            <Link href={`/workspace/${ws}/entities/${f.object_entity}`} style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}>
+                              {f.object_entity_name}
+                            </Link>
+                          ) : (
+                            f.object_text ?? '—'
+                          )}
+                        </span>
+                        <span className="muted mono" style={{ fontSize: '.68rem', whiteSpace: 'nowrap' }}>
+                          {lowConfLabel(f.confidence) && (
+                            <span style={{ color: 'var(--accent-coral)' }}>{lowConfLabel(f.confidence)} · </span>
+                          )}
+                          <Timestamp value={f.observed_at} />
+                        </span>
+                      </div>
+                      <div style={{ marginLeft: 160, marginTop: '.1rem' }}>
+                        <CiteChain fact_id={f.id} label="trace" />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -477,7 +585,6 @@ function RelatedGroup({
               {r.name}
             </Link>
             <span className="badge badge-mute" style={{ fontSize: '.62rem' }}>{r.kind}</span>
-            <span className="subtle mono" style={{ fontSize: '.7rem' }}>{predicateLabel(r.via_predicate)}</span>
             {lowConfLabel(r.confidence) && (
               <span className="mono" style={{ fontSize: '.68rem', marginLeft: 'auto', color: 'var(--accent-coral)' }}>
                 {lowConfLabel(r.confidence)}
@@ -509,8 +616,11 @@ function ActivityRow({
 }) {
   const meta = KIND_LABEL[item.kind] ?? { label: item.kind, cls: 'badge-mute' };
   const isDraft = item.kind === 'touch_draft';
-  const truncated = item.body.length > 220;
-  const display = expanded || !truncated ? item.body : item.body.slice(0, 220) + '…';
+  // Strip the leading machine action tag (e.g. "[deep_research] …") out of the
+  // body and show it as a small humanized chip instead of raw text.
+  const { tag, rest } = stripActionTag(item.body);
+  const truncated = rest.length > 220;
+  const display = expanded || !truncated ? rest : rest.slice(0, 220) + '…';
   const isClickable = truncated;
 
   return (
@@ -525,6 +635,9 @@ function ActivityRow({
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '.5rem', flexWrap: 'wrap', marginBottom: '.3rem' }}>
         <span className={`badge ${meta.cls}`}>{meta.label}</span>
+        {tag && (
+          <span className="badge badge-mute" style={{ fontSize: '.62rem' }} title={tag}>{humanizePredicate(tag)}</span>
+        )}
         {item.dup_count > 1 && (
           <span className="mono muted" style={{ fontSize: '.7rem', padding: '1px 6px', background: 'var(--panel-2)', borderRadius: 4 }} title={`${item.dup_count} identical entries`}>
             ×{item.dup_count}
@@ -538,28 +651,24 @@ function ActivityRow({
         {display}
       </div>
       {isDraft && <DraftActions postId={item.id} workspaceId={ws} />}
-      {(truncated || item.reasoning || item.cites.length > 0) && (
-        <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.5rem', flexWrap: 'wrap' }}>
-          {truncated && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onToggle(); }}
-              style={{ fontSize: '.72rem', background: 'transparent', color: 'var(--accent-blue)', border: 'none', padding: 0, cursor: 'pointer' }}
-            >
-              {expanded ? 'collapse' : 'expand'}
-            </button>
-          )}
-          {(item.reasoning || item.cites.length > 0) && (
-            <WhyThis
-              postId={item.id}
-              workspace_id={ws}
-              entity_id={entity_id}
-              ts={item.ts}
-              reasoning={item.reasoning}
-              cites={item.cites}
-            />
-          )}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.5rem', flexWrap: 'wrap' }}>
+        {truncated && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggle(); }}
+            style={{ fontSize: '.72rem', background: 'transparent', color: 'var(--accent-blue)', border: 'none', padding: 0, cursor: 'pointer' }}
+          >
+            {expanded ? 'collapse' : 'expand'}
+          </button>
+        )}
+        <WhyThis
+          postId={item.id}
+          workspace_id={ws}
+          entity_id={entity_id}
+          ts={item.ts}
+          reasoning={item.reasoning}
+          cites={item.cites}
+        />
+      </div>
     </div>
   );
 }

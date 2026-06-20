@@ -21,6 +21,7 @@ interface FeedItem {
   icp_fit: number | null;
   reasoning: string | null;
   dup_count: number;
+  pending_approval: boolean;
 }
 
 // Mirror of /api/feed/list — same Supabase pipeline.
@@ -42,6 +43,19 @@ const getFeedItems = async (ws: string): Promise<FeedItem[]> => {
     parent_post_id: string | null;
     channels: { id: string; title: string; account_entity_id: string };
   }>;
+
+  // Which touch_draft posts still have an undecided gate → live approval queue.
+  const draftIds = rows.filter((r) => r.kind === 'touch_draft').map((r) => r.id);
+  const pendingDraft = new Set<string>();
+  if (draftIds.length) {
+    const { data: gateRows } = await supabase
+      .from('gates')
+      .select('channel_post_id, decided_at')
+      .in('channel_post_id', draftIds);
+    for (const g of (gateRows ?? []) as Array<{ channel_post_id: string; decided_at: string | null }>) {
+      if (!g.decided_at) pendingDraft.add(g.channel_post_id);
+    }
+  }
 
   const entityIds = [...new Set(rows.map((r) => r.channels.account_entity_id))];
   const entMap = new Map<string, string>();
@@ -92,6 +106,7 @@ const getFeedItems = async (ws: string): Promise<FeedItem[]> => {
       icp_fit: icpMap.get(r.channels.account_entity_id) ?? null,
       reasoning: childrenByParent.get(r.id)?.body ?? null,
       dup_count: 1,
+      pending_approval: pendingDraft.has(r.id),
     }));
 
   const DEDUP_WINDOW_MS = 14 * 86400 * 1000;

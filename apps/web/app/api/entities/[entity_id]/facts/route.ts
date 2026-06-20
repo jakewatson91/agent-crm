@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { activeFacts } from '@agent-crm/primitives';
 import { getPolicy, factFamilyOf } from '@agent-crm/tools';
+import { resolveEntityNames } from '../../../_lib/resolve_entity_names';
 
 export const runtime = 'nodejs';
 
@@ -28,10 +29,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ entity_
   const workspace_id = ent.data.workspace_id as string;
   const facts = await activeFacts(supabase, workspace_id, entity_id);
 
+  // Resolve names for entity-valued facts so the UI links instead of showing a UUID.
+  const nameByEntityId = await resolveEntityNames(supabase, facts.map((f) => f.object_entity).filter((x): x is string => !!x));
+  const hydrated = facts.map((f) => ({
+    ...f,
+    object_entity_name: f.object_entity ? (nameByEntityId.get(f.object_entity) ?? null) : null,
+  }));
+
   const policy = await getPolicy(supabase, workspace_id);
   const groups = policy.display?.fact_groups ?? [];
-  const grouped: Record<string, typeof facts> = {};
-  for (const f of facts) {
+  const grouped: Record<string, typeof hydrated> = {};
+  for (const f of hydrated) {
     const fam = factFamilyOf(f.predicate, groups);
     (grouped[fam] ||= []).push(f);
   }

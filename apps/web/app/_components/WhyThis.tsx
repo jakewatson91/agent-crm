@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { CiteChain } from './CiteChain';
 import { lowConfLabel } from '../_lib/confidence';
+import { humanizePredicate } from '../_lib/labels';
 
 function prettyUrl(url: string): string {
   try {
@@ -20,6 +22,8 @@ interface CitedFact {
   id: string;
   predicate: string;
   object_text: string | null;
+  object_entity: string | null;
+  object_entity_name: string | null;
   confidence: number;
   observed_at: string;
   source_event_id: number | null;
@@ -126,7 +130,14 @@ export function WhyThis({
                 <div key={f.id} className="mono" style={{ fontSize: '.74rem', display: 'flex', gap: '.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
                   <span style={{ color: '#5a7e5f' }}>✓</span>
                   <span style={{ color: 'var(--text)' }}>
-                    {f.predicate} = {f.object_text ?? '—'}
+                    {humanizePredicate(f.predicate)} ={' '}
+                    {f.object_entity && f.object_entity_name ? (
+                      <Link href={`/workspace/${workspace_id}/entities/${f.object_entity}`} style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}>
+                        {f.object_entity_name}
+                      </Link>
+                    ) : (
+                      f.object_text ?? '—'
+                    )}
                   </span>
                   {lowConfLabel(f.confidence) && (
                     <span className="muted" style={{ fontSize: '.66rem', color: 'var(--accent-coral)' }}>

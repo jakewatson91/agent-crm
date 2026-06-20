@@ -6,10 +6,9 @@
  * no extra API round-trip. SWR still revalidates in the background after 10s
  * (the unstable_cache window in /api/feed/list).
  */
-import { useMemo } from 'react';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { FeedStream } from './FeedStream';
-import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
+import { FeedHealth } from './FeedHealth';
 
 interface FeedItem {
   id: string;
@@ -26,6 +25,7 @@ interface FeedItem {
   icp_fit: number | null;
   reasoning: string | null;
   dup_count: number;
+  pending_approval: boolean;
 }
 
 export function FeedClient({ ws, initialItems }: { ws: string; initialItems: FeedItem[] }) {
@@ -35,18 +35,12 @@ export function FeedClient({ ws, initialItems }: { ws: string; initialItems: Fee
   );
   const items = data?.items ?? initialItems;
 
-  const pageCtx = useMemo<PageContext>(() => ({
-    tab: 'feed',
-    summary: `${items.length} recent posts (14d window)`,
-    // Surface the most-recent posts as entity references — the agent operates
-    // on entities, not posts, so we point at the entity for each row.
-    visible: items.slice(0, 10).map((it) => ({
-      kind: 'entity',
-      id: it.entity_id,
-      label: `${it.entity_name} (${it.kind})`,
-    })),
-  }), [items]);
-  useSetPageContext(pageCtx);
-
-  return <FeedStream items={items} ws={ws} />;
+  // Page context for ⌘J chat is set by FeedStream, which owns the active
+  // filter state and therefore knows exactly what's visible.
+  return (
+    <>
+      <FeedHealth ws={ws} />
+      <FeedStream items={items} ws={ws} />
+    </>
+  );
 }

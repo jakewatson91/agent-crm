@@ -17,9 +17,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ entity_i
 
   const supabase = createServerClient();
 
+  // NB: entities has no `kind` column (dropped in migration 0032) — type lives
+  // in `is_a` facts. Selecting it here used to throw and 404 the whole panel.
   const ent = await supabase
     .from('entities')
-    .select('id, workspace_id, kind')
+    .select('id, workspace_id')
     .eq('id', entity_id)
     .maybeSingle();
   if (ent.error || !ent.data) {
@@ -33,7 +35,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ entity_i
   ]);
 
   return NextResponse.json({
-    entity: { id: ent.data.id, kind: ent.data.kind },
+    entity: { id: ent.data.id },
     inbound,
     outbound,
   });

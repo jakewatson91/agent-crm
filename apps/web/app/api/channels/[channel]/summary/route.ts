@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { getEntityTypes, getPolicy, factFamilyOf } from '@agent-crm/tools';
+import { resolveEntityNames } from '../../../_lib/resolve_entity_names';
 
 export const runtime = 'nodejs';
 
@@ -30,6 +31,8 @@ interface Fact {
   id: string;
   predicate: string;
   object_text: string | null;
+  object_entity: string | null;
+  object_entity_name: string | null;
   confidence: number;
   observed_at: string;
 }
@@ -59,21 +62,25 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   const recentSince = new Date(now - RECENT_WINDOW_DAYS * 86400 * 1000).toISOString();
 
   const [factsRes, postsRes] = await Promise.all([
-    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, supersedes')
+    supabase.from('facts').select('id, predicate, object_text, object_entity, confidence, observed_at, supersedes')
       .eq('subject_entity', account_id).order('observed_at', { ascending: false }).limit(200),
     supabase.from('channel_posts').select('id, kind, body, cites, author_id, parent_post_id, created_at')
       .eq('channel_id', channel).order('created_at', { ascending: false }).limit(400),
   ]);
 
   // ---- Active facts grouped by family ----
-  const factRows = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; supersedes: string | null }>;
+  const factRows = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; object_entity: string | null; confidence: number; observed_at: string; supersedes: string | null }>;
   const supersededIds = new Set(factRows.map((f) => f.supersedes).filter((x): x is string => !!x));
+  const activeRows = factRows.filter((f) => !supersededIds.has(f.id));
+  // Resolve names for entity-valued facts so the UI links instead of showing a UUID.
+  const nameByEntityId = await resolveEntityNames(supabase, activeRows.map((f) => f.object_entity).filter((x): x is string => !!x));
   const activeFacts: Record<string, Fact[]> = {};
-  for (const f of factRows) {
-    if (supersededIds.has(f.id)) continue;
+  for (const f of activeRows) {
     const fam = factFamilyOf(f.predicate, factGroups);
     (activeFacts[fam] ??= []).push({
       id: f.id, predicate: f.predicate, object_text: f.object_text,
+      object_entity: f.object_entity,
+      object_entity_name: f.object_entity ? (nameByEntityId.get(f.object_entity) ?? null) : null,
       confidence: f.confidence, observed_at: f.observed_at,
     });
   }

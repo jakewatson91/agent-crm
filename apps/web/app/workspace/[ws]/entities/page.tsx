@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
+import { type Band, BAND_LABEL, bandOf } from '../../../_lib/bands';
 
 interface EntityRow {
   id: string;
@@ -46,25 +47,6 @@ interface EntitiesPageData {
 // Display order for the legacy types. Anything the agent invents lands after
 // these in the order it first appears.
 const KIND_ORDER: string[] = ['account', 'contact', 'product'];
-
-// Decision bands mirror the action_selector thresholds, so filtering here is
-// auditing *what the agent decides to do*, not building a lead list.
-type Band = 'all' | 'draft' | 'watch' | 'noaction' | 'drop' | 'unscored';
-const BAND_LABEL: Record<Band, string> = {
-  all: 'any score',
-  draft: 'draft-ready (≥ 0.65)',
-  watch: 'watching (0.5–0.65)',
-  noaction: 'no action (0.35–0.5)',
-  drop: 'dropped (< 0.35)',
-  unscored: 'unscored',
-};
-function bandOf(icp: number | null): Exclude<Band, 'all'> {
-  if (icp === null) return 'unscored';
-  if (icp >= 0.65) return 'draft';
-  if (icp >= 0.5) return 'watch';
-  if (icp >= 0.35) return 'noaction';
-  return 'drop';
-}
 
 type SortBy = 'activity' | 'icp' | 'name';
 
