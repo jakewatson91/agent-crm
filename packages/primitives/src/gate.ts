@@ -28,10 +28,11 @@ export async function decideGate(
   actor: Actor,
   gate_id: string,
   decision: 'approve' | 'reject' | 'modify',
+  resolution?: Record<string, unknown>,
 ): Promise<{ event_id: string }> {
   const { event_id } = await act(supabase, actor, {
     tool: 'decide_gate',
-    args: { decision },
+    args: { decision, resolution: resolution ?? {} },
     target_id: gate_id,
   });
   return { event_id };

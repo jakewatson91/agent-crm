@@ -7,7 +7,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const STALE_DAYS = 7;
-const STALE_SIGNAL_MIN = 30;
 const STALE_GATE_DAYS = 7;
 const STALE_DRAFT_DAYS = 7;
 
@@ -506,6 +505,7 @@ export interface PastOutcome {
   decided_at: string;
   draft_excerpt: string | null;
   similarity: number | null;  // null when looked up by entity_id, set when via semantic neighbor
+  resolution: Record<string, unknown>;  // human note + edit diff, see diffDraftBody
 }
 
 /**
@@ -574,7 +574,7 @@ export async function pastOutcomes(
   if (!postIdToChannel.size) return [];
 
   const gates = await supabase.from('gates')
-    .select('id, channel_post_id, policy, decision, decided_at')
+    .select('id, channel_post_id, policy, decision, decided_at, resolution')
     .eq('workspace_id', workspace_id)
     .in('channel_post_id', [...postIdToChannel.keys()])
     .not('decided_at', 'is', null)
@@ -587,7 +587,7 @@ export async function pastOutcomes(
   for (const e of (ents.data ?? []) as Array<{ id: string; name: string }>) entitiesById.set(e.id, e.name);
 
   const outcomes: PastOutcome[] = [];
-  for (const g of (gates.data ?? []) as Array<{ id: string; channel_post_id: string; policy: string; decision: 'approve' | 'reject' | 'modify'; decided_at: string }>) {
+  for (const g of (gates.data ?? []) as Array<{ id: string; channel_post_id: string; policy: string; decision: 'approve' | 'reject' | 'modify'; decided_at: string; resolution: Record<string, unknown> | null }>) {
     const post = postIdToChannel.get(g.channel_post_id);
     if (!post) continue;
     const entityId = channelToEntity.get(post.channel_id);
@@ -602,6 +602,7 @@ export async function pastOutcomes(
       decided_at: g.decided_at,
       draft_excerpt: post.body.slice(0, 120),
       similarity: similarityById.get(entityId) ?? null,
+      resolution: g.resolution ?? {},
     });
   }
 
@@ -609,7 +610,6 @@ export async function pastOutcomes(
 }
 
 export interface HealthCheckResult {
-  unmatched_signals: number;
   errored_sources: number;
   stale_gates: number;
   stale_drafts: number;
@@ -617,60 +617,38 @@ export interface HealthCheckResult {
 }
 
 export async function healthCheck(supabase: SupabaseClient, workspace_id: string): Promise<HealthCheckResult> {
-  // 1. unmatched signals
-  const sigCutoff = new Date(Date.now() - STALE_SIGNAL_MIN * 60 * 1000).toISOString();
-  const sigs = await supabase.from('signals').select('id').eq('workspace_id', workspace_id).lt('created_at', sigCutoff).limit(500);
-  const sigIds = ((sigs.data ?? []) as Array<{ id: string }>).map((r) => r.id);
-  let unmatched = 0;
-  if (sigIds.length) {
-    // Scope to the candidate signals (target_id IS the signal_id). The old
-    // unbounded select capped at PostgREST's 1000-row default, so once a
-    // workspace had >1000 markers this overcounted unmatched_signals, which
-    // tripped systemHealthMonitor into opening phantom gates every hour.
-    const matched = await supabase.from('events').select('target_id')
-      .eq('workspace_id', workspace_id).eq('action', 'subscription.matched')
-      .in('target_id', sigIds);
-    const matchedSet = new Set<string>(
-      ((matched.data ?? []) as Array<{ target_id: string | null }>)
-        .map((e) => e.target_id)
-        .filter((id): id is string => Boolean(id)),
-    );
-    unmatched = sigIds.filter((id) => !matchedSet.has(id)).length;
-  }
+  // "unmatched signals" was removed: the system ingests broadly (thousands of
+  // hiring posts, research results) and subscriptions intentionally skip what's
+  // off-target, so most signals are SUPPOSED to have no match. Counting them as
+  // a problem pinned the badge permanently red and was never actionable. A real
+  // matcher stall is still caught by recoverUnmatchedSignals (re-emits unmatched
+  // signals) and the on-demand sweep.
 
   // 2. errored sources
   const errSrc = await supabase.from('sources').select('id', { count: 'exact', head: true })
     .eq('workspace_id', workspace_id).eq('last_run_status', 'error');
   const erroredSources = errSrc.count ?? 0;
 
-  // 3. stale open gates
+  // 3. stale open approvals — read the gates table directly (its own
+  // decided_at/requested_at are the source of truth). The old version
+  // reconstructed "decided?" from the event log, but matched the wrong action
+  // name (gate_decision, the tool is decide_gate) against the wrong link field,
+  // and most older decisions have no event row at all — so every decided
+  // approval looked undecided and the count saturated.
   const gateCutoff = new Date(Date.now() - STALE_GATE_DAYS * 86400000).toISOString();
-  const gateReqs = await supabase.from('events').select('id')
-    .eq('workspace_id', workspace_id).eq('action', 'request_gate').lt('created_at', gateCutoff).limit(200);
-  const gateIds = new Set<number>(((gateReqs.data ?? []) as Array<{ id: number }>).map((g) => g.id));
-  let staleGates = 0;
-  if (gateIds.size) {
-    // Scope to the candidate gate ids (a decision's parent_event_id IS the
-    // request_gate event id). The old unbounded select capped at PostgREST's
-    // 1000-row default, so once a workspace had >1000 gate decisions, old gates
-    // looked undecided and staleGates overcounted — tripping the health monitor
-    // into phantom approval requests every hour.
-    const decided = await supabase.from('events').select('parent_event_id')
-      .eq('workspace_id', workspace_id).eq('action', 'gate_decision')
-      .in('parent_event_id', [...gateIds]);
-    const decidedSet = new Set<number>();
-    for (const d of (decided.data ?? []) as Array<{ parent_event_id: number | null }>) {
-      if (d.parent_event_id) decidedSet.add(d.parent_event_id);
-    }
-    for (const gid of gateIds) if (!decidedSet.has(gid)) staleGates++;
-  }
+  const staleGateRes = await supabase.from('gates').select('id', { count: 'exact', head: true })
+    .eq('workspace_id', workspace_id).is('decided_at', null).lt('requested_at', gateCutoff);
+  const staleGates = staleGateRes.count ?? 0;
 
-  // 4. stale drafts
+  // 4. stale drafts — scoped to THIS workspace via the channels FK. channel_posts
+  // has no workspace_id, and this workspace has >1000 channels, so an .in(channel_ids)
+  // list both caps at 1000 and 400s; the embedded channels!inner filter joins
+  // straight to workspace_id instead.
   const draftCutoff = new Date(Date.now() - STALE_DRAFT_DAYS * 86400000).toISOString();
-  const drafts = await supabase.from('channel_posts').select('id, channel_id')
-    .eq('kind', 'touch_draft').lt('created_at', draftCutoff).limit(200);
-  const draftRows = (drafts.data ?? []) as Array<{ id: string; channel_id: string }>;
   let staleDrafts = 0;
+  const drafts = await supabase.from('channel_posts').select('id, channel_id, channels!inner(workspace_id)')
+    .eq('channels.workspace_id', workspace_id).eq('kind', 'touch_draft').lt('created_at', draftCutoff).limit(200);
+  const draftRows = (drafts.data ?? []) as Array<{ id: string; channel_id: string }>;
   if (draftRows.length) {
     const channelIds = [...new Set(draftRows.map((d) => d.channel_id))];
     const followups = await supabase.from('channel_posts').select('channel_id')
@@ -680,7 +658,6 @@ export async function healthCheck(supabase: SupabaseClient, workspace_id: string
   }
 
   return {
-    unmatched_signals: unmatched,
     errored_sources: erroredSources,
     stale_gates: staleGates,
     stale_drafts: staleDrafts,

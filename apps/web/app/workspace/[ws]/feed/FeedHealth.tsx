@@ -3,13 +3,12 @@
 /**
  * Compact system-health strip atop the feed. Moved here when the standalone
  * Approvals tab was removed — the signal (stale approvals, errored sources,
- * unmatched signals) still needs a home. This is audit, not a dashboard:
+ * stale drafts) still needs a home. This is audit, not a dashboard:
  * read-only, collapses to a single "all clear" badge when healthy.
  */
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 
 interface Health {
-  unmatched_signals: number;
   errored_sources: number;
   stale_gates: number;
   stale_drafts: number;
@@ -24,7 +23,6 @@ export function FeedHealth({ ws }: { ws: string }) {
     { label: 'pending approvals stale', value: data.stale_gates, hint: '>7d undecided' },
     { label: 'stale drafts', value: data.stale_drafts, hint: '>7d, no follow-up' },
     { label: 'errored sources', value: data.errored_sources, hint: 'last run failed' },
-    { label: 'unmatched signals', value: data.unmatched_signals, hint: '>30m old, no match' },
   ];
   const allHealthy = badges.every((b) => b.value === 0);
 

@@ -1,20 +1,6 @@
 import { createServerClient } from '@agent-crm/db';
-import { gate } from '@agent-crm/primitives';
-import { healthCheck, scoreAndAssert, sweepWorkspace, callTool, entityIdsOfType } from '@agent-crm/tools';
+import { scoreAndAssert, callTool, entityIdsOfType } from '@agent-crm/tools';
 import { inngest } from '../client.js';
-
-// IDs from sweepWorkspace that warrant gating when RED. Tier 2 checks
-// (cron_stale, agent_silence, enricher_silence) overlap with healthCheck;
-// excluded here to avoid double-alerts.
-const SWEEP_GATE_ON_RED = [
-  'signal_diversity:',
-  'source_concentration',
-  'novelty:24h_vs_prior',
-  'cost_per_unique_signal',
-  'cost_per_claim',
-  'score_distribution',
-  'score_signal_coupling',
-];
 
 const RECOVERY_LOOKBACK_MIN = 30;
 const RECOVERY_LIMIT_PER_RUN = 25;
@@ -82,86 +68,12 @@ export const recoverUnmatchedSignals = inngest.createFunction(
   },
 );
 
-const HEALTH_THRESHOLDS = {
-  unmatched_signals: 10,
-  errored_sources: 1,
-  stale_gates: 1,
-  stale_drafts: 5,
-};
-
-/**
- * system-health-monitor: every hour, calls healthCheck for each workspace. If any
- * threshold is exceeded, opens a gate so a human gets pinged. Single source of
- * health metrics so the agent and the dashboard see the same numbers.
- */
-export const systemHealthMonitor = inngest.createFunction(
-  { id: 'system-health-monitor' },
-  { cron: '15 * * * *' },
-  async ({ step }) => {
-    const results = await step.run('check-each-workspace', async () => {
-      const supabase = createServerClient();
-      const { data: workspaces } = await supabase.from('workspaces').select('id, name');
-      const wsRows = (workspaces ?? []) as Array<{ id: string; name: string }>;
-      const flagged: Array<{ workspace_id: string; reason: string; metrics: Record<string, number> }> = [];
-      for (const ws of wsRows) {
-        const h = await healthCheck(supabase, ws.id);
-        const breaches: string[] = [];
-        if (h.unmatched_signals >= HEALTH_THRESHOLDS.unmatched_signals) breaches.push(`unmatched_signals=${h.unmatched_signals}`);
-        if (h.errored_sources >= HEALTH_THRESHOLDS.errored_sources) breaches.push(`errored_sources=${h.errored_sources}`);
-        if (h.stale_gates >= HEALTH_THRESHOLDS.stale_gates) breaches.push(`stale_gates=${h.stale_gates}`);
-        if (h.stale_drafts >= HEALTH_THRESHOLDS.stale_drafts) breaches.push(`stale_drafts=${h.stale_drafts}`);
-
-        // Sweep adds tier 1/3/4 signal-quality + efficiency + scoring checks.
-        // Only RED breaches that aren't already covered by healthCheck escalate.
-        const sweep = await sweepWorkspace(supabase, ws.id);
-        const sweepBreaches: Record<string, string> = {};
-        for (const r of sweep) {
-          if (r.severity !== 'red') continue;
-          if (!SWEEP_GATE_ON_RED.some((p) => r.id === p || r.id.startsWith(p))) continue;
-          breaches.push(`${r.id}=${r.metric}`);
-          sweepBreaches[r.id] = r.metric;
-        }
-
-        if (breaches.length) {
-          flagged.push({
-            workspace_id: ws.id,
-            reason: breaches.join(', '),
-            metrics: {
-              unmatched_signals: h.unmatched_signals,
-              errored_sources: h.errored_sources,
-              stale_gates: h.stale_gates,
-              stale_drafts: h.stale_drafts,
-              ...sweepBreaches,
-            },
-          });
-        }
-      }
-      return flagged;
-    });
-
-    if (!results.length) return { workspaces_checked: 0, gated: 0 };
-
-    await step.run('open-gates', async () => {
-      const supabase = createServerClient();
-      for (const r of results) {
-        // Suppress duplicate gates: if a system_health gate was opened in the
-        // last 12h for this workspace, skip. (Avoids gate spam on persistent issues.)
-        const since = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
-        const recent = await supabase.from('events').select('id')
-          .eq('workspace_id', r.workspace_id).eq('action', 'request_gate').gte('ts', since).limit(50);
-        const hasRecentSystemGate = ((recent.data ?? []) as Array<{ id: number }>).length > 0;
-        // crude: any recent gate suppresses; refine if needed by inspecting payload.policy
-        if (hasRecentSystemGate) continue;
-        await gate(supabase, { workspace_id: r.workspace_id, actor_kind: 'system', actor_id: 'system_health_monitor' }, {
-          policy: 'system_health',
-          condition: r.metrics,
-        });
-      }
-    });
-
-    return { workspaces_checked: results.length, gated: results.length };
-  },
-);
+// system-health-monitor was removed: it opened a system_health approval on every
+// hourly tick (and its de-dup guard queried a non-existent column, so it never
+// suppressed — 91 phantom approvals piled up). Per decide-and-notify, system
+// health is not approval-worthy; approvals are only for irreversible external
+// actions. Health now lives only in the on-demand sweep (sweepWorkspace) and the
+// read-only feed health strip — neither interrupts a human.
 
 const RESCORE_LIMIT_PER_RUN = 50;
 

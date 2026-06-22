@@ -28,7 +28,6 @@ function getHandlers(): Promise<ServeReturn> {
         fns.sourceDispatcher,
         fns.sourceRun,
         fns.recoverUnmatchedSignals,
-        fns.systemHealthMonitor,
         fns.rescoreOnIcpChange,
         fns.researchRunner,
         fns.contactsRunner,

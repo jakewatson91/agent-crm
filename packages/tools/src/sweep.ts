@@ -1,8 +1,7 @@
 /**
  * sweepWorkspace - deterministic health checks across 4 tiers.
  * Used by:
- *   - scripts/sweep.ts (CLI + SessionStart hook)
- *   - system_tasks.systemHealthMonitor (hourly cron, opens gate on RED)
+ *   - scripts/sweep.ts (CLI + SessionStart hook) — the on-demand health surface
  *
  * No LLM calls. One round-trip per table. Returns flat array of CheckResult
  * so callers can format / threshold however they want.
@@ -10,6 +9,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { cronToMinIntervalMinutes } from './cron.ts';
 import { getSourceMetrics } from './source_metrics.ts';
+import { fetchAll } from './paginate.ts';
 import { createHash } from 'node:crypto';
 
 export type Severity = 'red' | 'yellow' | 'green';
@@ -57,6 +57,17 @@ export const SWEEP_THRESHOLDS = {
 const HOUR = 3600_000;
 const DAY = 86_400_000;
 
+// Bookkeeping predicates that aren't evidence about the account — score outputs,
+// lifecycle flags, cooldown timers. Excluded when deciding whether an entity has
+// "substantive" facts or received a genuinely new fact.
+const ADMIN_PREDICATES = new Set([
+  'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
+  'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
+  'research_triggered', 'research_completed', 'no_reply_marked',
+  'outreach_rejected_at', 'replied_at',
+]);
+const isSubstantive = (predicate: string) => !ADMIN_PREDICATES.has(predicate) && !predicate.startsWith('score_');
+
 function hashBody(s: string): string {
   return createHash('sha256').update(s).digest('hex').slice(0, 16);
 }
@@ -80,28 +91,28 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   const since48 = new Date(now - 2 * DAY).toISOString();
   const since7d = new Date(now - 7 * DAY).toISOString();
 
-  const sigs24 = await sb.from('signals')
-    .select('id, type, structured_tags, body_for_embedding, entity_id, created_at')
-    .eq('workspace_id', workspace_id).gte('created_at', since24).limit(20000);
-  const signals24 = (sigs24.data ?? []) as Array<{
+  const signals24 = await fetchAll<{
     id: string; type: string; structured_tags: { signal_source?: string } | null;
     body_for_embedding: string | null; entity_id: string; created_at: string;
-  }>;
+  }>((f, t) => sb.from('signals')
+    .select('id, type, structured_tags, body_for_embedding, entity_id, created_at')
+    .eq('workspace_id', workspace_id).gte('created_at', since24)
+    .order('created_at', { ascending: false }).range(f, t));
 
-  const sigs48 = await sb.from('signals')
+  const signals48 = await fetchAll<{ body_for_embedding: string | null }>((f, t) => sb.from('signals')
     .select('body_for_embedding')
-    .eq('workspace_id', workspace_id).gte('created_at', since48).lt('created_at', since24).limit(20000);
-  const signals48 = (sigs48.data ?? []) as Array<{ body_for_embedding: string | null }>;
+    .eq('workspace_id', workspace_id).gte('created_at', since48).lt('created_at', since24)
+    .order('created_at', { ascending: false }).range(f, t));
 
-  const metricsRes = await sb.from('events')
-    .select('payload, ts')
-    .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
-    .gte('ts', since7d).limit(20000);
-  const metrics = ((metricsRes.data ?? []) as Array<{
+  const metrics = (await fetchAll<{
     payload: { behavior?: string; input_tokens?: number; output_tokens?: number;
                cached_input_tokens?: number; ok?: boolean; actor_id?: string } | null;
     ts: string;
-  }>).filter((e) => e.payload != null);
+  }>((f, t) => sb.from('events')
+    .select('payload, ts:created_at')
+    .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
+    .gte('created_at', since7d).order('created_at', { ascending: false }).range(f, t)))
+    .filter((e) => e.payload != null);
 
   // TIER 1 ----------------------------------------------------
 
@@ -258,10 +269,10 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   for (const s of signals24) if (s.body_for_embedding) uniqueSignals24h.add(hashBody(s.body_for_embedding));
   if (uniqueSignals24h.size > 0 && tokens24 > 0) {
     const costToday = tokens24 / uniqueSignals24h.size;
-    const allRes = await sb.from('signals')
+    const rows = await fetchAll<{ body_for_embedding: string | null; created_at: string }>((f, t) => sb.from('signals')
       .select('body_for_embedding, created_at')
-      .eq('workspace_id', workspace_id).gte('created_at', since7d).limit(40000);
-    const rows = (allRes.data ?? []) as Array<{ body_for_embedding: string | null; created_at: string }>;
+      .eq('workspace_id', workspace_id).gte('created_at', since7d)
+      .order('created_at', { ascending: false }).range(f, t));
     const perDay: Set<string>[] = Array.from({ length: 7 }, () => new Set());
     for (const r of rows) {
       if (!r.body_for_embedding) continue;
@@ -282,15 +293,16 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     });
   }
 
-  const wsChannelsRes = await sb.from('channels').select('id').eq('workspace_id', workspace_id);
-  const wsChannelIds = ((wsChannelsRes.data ?? []) as Array<{ id: string }>).map((c) => c.id);
-  if (wsChannelIds.length) {
-    const claimsRes = await sb.from('channel_posts')
-      .select('id, created_at')
+  {
+    // Scope via the channels FK, not .in(channel_ids): this workspace has >1000
+    // channels, so a 1000-id .in() list both caps at the first 1000 and 400s once
+    // combined with order+range. The embedded channels!inner filter joins straight
+    // to workspace_id and scales past 1000.
+    const claims = await fetchAll<{ created_at: string }>((f, t) => sb.from('channel_posts')
+      .select('id, created_at, channels!inner(workspace_id)')
       .eq('kind', 'claim')
-      .in('channel_id', wsChannelIds)
-      .gte('created_at', since7d).limit(20000);
-    const claims = ((claimsRes.data ?? []) as Array<{ created_at: string }>);
+      .eq('channels.workspace_id', workspace_id)
+      .gte('created_at', since7d).order('created_at', { ascending: false }).range(f, t));
     const dailyClaims = new Array(7).fill(0);
     for (const c of claims) {
       const d = Math.floor((now - new Date(c.created_at).getTime()) / HOUR / 24);
@@ -322,10 +334,10 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
 
   // TIER 4 ----------------------------------------------------
 
-  const scoreRes = await sb.from('facts')
+  let scoreRows = (await fetchAll<{ subject_entity: string; object_text: string | null; observed_at: string }>((f, t) => sb.from('facts')
     .select('subject_entity, object_text, observed_at')
-    .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit').is('supersedes', null).limit(20000);
-  let scoreRows = ((scoreRes.data ?? []) as Array<{ subject_entity: string; object_text: string | null; observed_at: string }>)
+    .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit').is('supersedes', null)
+    .order('id').range(f, t)))
     .map((r) => ({ entity: r.subject_entity, score: r.object_text ? parseFloat(r.object_text) : NaN, observed_at: r.observed_at }))
     .filter((r) => Number.isFinite(r.score));
 
@@ -336,22 +348,16 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   // at their last score and shouldn't pollute the live shape either.
   if (scoreRows.length) {
     const entIds = [...new Set(scoreRows.map((r) => r.entity))];
-    const factsRes = await sb.from('facts')
+    const factRows = await fetchAll<{ subject_entity: string; predicate: string }>((f, t) => sb.from('facts')
       .select('subject_entity, predicate')
       .in('subject_entity', entIds)
       .is('supersedes', null)
-      .limit(20000);
-    const ADMIN = new Set([
-      'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
-      'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
-      'research_triggered', 'research_completed', 'no_reply_marked',
-      'outreach_rejected_at', 'replied_at',
-    ]);
+      .order('id').range(f, t));
     const substantiveCount = new Map<string, number>();
     const droppedEnts = new Set<string>();
-    for (const f of (factsRes.data ?? []) as Array<{ subject_entity: string; predicate: string }>) {
+    for (const f of factRows) {
       if (f.predicate === 'dropped_until') droppedEnts.add(f.subject_entity);
-      if (ADMIN.has(f.predicate) || f.predicate.startsWith('score_')) continue;
+      if (!isSubstantive(f.predicate)) continue;
       substantiveCount.set(f.subject_entity, (substantiveCount.get(f.subject_entity) ?? 0) + 1);
     }
     scoreRows = scoreRows.filter((r) =>
@@ -379,25 +385,36 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     });
   }
 
-  const entitiesWithNewSignals = new Set<string>();
-  for (const s of signals24) entitiesWithNewSignals.add(s.entity_id);
-  if (entitiesWithNewSignals.size >= 5) {
-    const cutoff = new Date(now - DAY).toISOString();
+  // Coupling measures the exact thing it was built to catch: when the enricher
+  // extracts a genuinely NEW fact for an entity, does its score refresh? The
+  // denominator is the enricher's own fact-bearing dispatches (facts_asserted>0)
+  // — NOT "any new signal" (dominated by hiring posts the filters intentionally
+  // skip → 0 new facts → correctly no rescore) nor "any new fact" (includes
+  // contact-entity facts that don't drive account icp_fit). Re-asserts of known
+  // facts return facts_asserted=0, so they don't inflate the denominator.
+  const cutoff = new Date(now - DAY).toISOString();
+  const dispatches = await fetchAll<{ target_id: string | null; payload: { facts_asserted?: number } | null }>((f, t) => sb.from('events')
+    .select('target_id, payload')
+    .eq('workspace_id', workspace_id).eq('action', 'agent_dispatch_result').gte('created_at', cutoff)
+    .order('id').range(f, t));
+  const entitiesWithNewFacts = new Set<string>();
+  for (const d of dispatches) if ((d.payload?.facts_asserted ?? 0) > 0 && d.target_id) entitiesWithNewFacts.add(d.target_id);
+  if (entitiesWithNewFacts.size >= 5) {
     let moved = 0;
     const scoreByEntity = new Map<string, string>();
     for (const r of scoreRows) scoreByEntity.set(r.entity, r.observed_at);
-    for (const eid of entitiesWithNewSignals) {
+    for (const eid of entitiesWithNewFacts) {
       const obs = scoreByEntity.get(eid);
       if (obs && obs >= cutoff) moved += 1;
     }
-    const coupling = moved / entitiesWithNewSignals.size;
+    const coupling = moved / entitiesWithNewFacts.size;
     const sev: Severity = coupling < T.coupling_red ? 'red' : 'green';
     out.push({
       id: 'score_signal_coupling',
       severity: sev,
-      metric: `${moved}/${entitiesWithNewSignals.size} entities rescored after new signal (${fmtPct(coupling)})`,
+      metric: `${moved}/${entitiesWithNewFacts.size} entities rescored after new facts (${fmtPct(coupling)})`,
       threshold: `>= ${fmtPct(T.coupling_red)}`,
-      action: sev === 'red' ? `new signals not triggering rescore - check enricher to scoreAndAssert path` : undefined,
+      action: sev === 'red' ? `new facts not triggering rescore - check enricher to scoreAndAssert path` : undefined,
     });
   }
 

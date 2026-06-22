@@ -32,6 +32,7 @@ export { compress, estimateTokens, type CompressOptions, type CompressResult, ty
 export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, resolveChatModel, type ChatForWorkspaceArgs } from './chat_workspace.ts';
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
 export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts } from './prompt_builders.ts';
+export { diffDraftBody, type ParagraphDiff } from './diff_draft.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, fetchSeenSignalTags };
 export { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId };
@@ -115,7 +116,13 @@ export async function callTool(
         // needs no change to the record_event return columns.
         const { data: factRow } = await supabase
           .from('facts').select('source_event_id').eq('id', r.target_id).maybeSingle();
-        const created = (factRow as { source_event_id?: string } | null)?.source_event_id === r.event_id;
+        // facts.source_event_id is a bigint → comes back as a JS number, but act()
+        // returns event_id stringified (String(row.event_id)). A raw === compared
+        // number-vs-string and was ALWAYS false, so every assert_fact reported
+        // created:false — the enricher then counted 0 facts even when it wrote them
+        // (no rescore, spurious "no facts" events). Compare as strings.
+        const sourceEventId = (factRow as { source_event_id?: number | string } | null)?.source_event_id;
+        const created = sourceEventId != null && String(sourceEventId) === r.event_id;
         return { ok: true, event_id: r.event_id, target_id: r.target_id, created };
       }
 
@@ -218,8 +225,8 @@ export async function callTool(
       }
 
       case 'decide_gate': {
-        const a = args as { gate_id: string; decision: 'approve' | 'reject' | 'modify' };
-        const r = await decideGate(supabase, actor, a.gate_id, a.decision);
+        const a = args as { gate_id: string; decision: 'approve' | 'reject' | 'modify'; resolution?: Record<string, unknown> };
+        const r = await decideGate(supabase, actor, a.gate_id, a.decision, a.resolution);
         return { ok: true, event_id: r.event_id, target_id: a.gate_id };
       }
 
@@ -337,10 +344,10 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     list_entities: 'List entities in the workspace with their outreach status, fact count, signal types, and latest activity. Token-efficient summaries, sorted by latest activity.',
     get_entity: 'Get the full projection for one entity: facts, recent signals, recent posts, channel id. Use this when you need ground truth before drafting or scoring.',
     outreach_state: 'Check the current outreach state for one entity: has a draft? gated? last activity? fact count? Use this to avoid duplicate work or to pick up where you left off.',
-    health_check: 'Self-diagnostic for the agent runtime. Returns counts of unmatched signals, errored sources, stale gates, and stale drafts. Use to detect when the system is wedged.',
+    health_check: 'Self-diagnostic for the agent runtime. Returns counts of errored sources, stale approvals, and stale drafts. Use to detect when the system is wedged.',
     find_similar_entities: 'Vector search across entity embeddings. Given a source entity_id, returns the top_k most similar entities by cosine similarity. Use to find prospects that look like an existing customer or pattern.',
     lookup_entity: 'Find entities by name. Supports fuzzy ILIKE matching against entities.name. Use when you have a company name from a signal or external source and need its entity_id to call other tools.',
-    past_outcomes: 'Recent gate decisions (approved / rejected / modified) for the given entity, semantically similar entities, or signals of the same type. Use to learn what happened last time we drafted to companies like this.',
+    past_outcomes: 'Recent gate decisions (approved / rejected / modified) for the given entity, semantically similar entities, or signals of the same type, including any human note and what was edited before send. Use to learn what happened — and why — last time we drafted to companies like this.',
     find_contacts: 'Find contacts (name, email, role, seniority) at a domain via Hunter.io. Token-efficient projection. Quota: 25/mo free, 500/mo paid.',
     link_contact_to_account: 'Create a contact entity and link it to an account via works_at + email + role facts. Idempotent on email: if a contact with the same email already exists, returns its id.',
     score_entity: 'Score an entity for ICP fit using workspace.icp + workspace.about + entity facts. Returns icp_fit in [0,1] + breakdown + reasoning. With assert=true, also asserts icp_fit + icp_fit_breakdown facts (idempotent via supersede).',

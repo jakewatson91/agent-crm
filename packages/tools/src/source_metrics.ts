@@ -20,6 +20,7 @@
  * pushes past ~10k signals/day.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchAll } from './paginate.ts';
 
 export interface SourceMetric {
   source_id: string;
@@ -65,41 +66,39 @@ export async function getSourceMetrics(
 ): Promise<SourceMetric[]> {
   const since = new Date(Date.now() - window_hours * 3600 * 1000).toISOString();
 
-  const [srcRes, sigRes, evRes, entSeedRes] = await Promise.all([
+  // All three windowed reads paginate via fetchAll — at high volume (tens of
+  // thousands of signals in 7d) a bare .limit() returns only the oldest 1000,
+  // which silently undercounted per-source signals/fact_yield and drove the
+  // source_curator + source_dead_weight check off stale data.
+  const [srcRes, signals, events, entityFirstSignal] = await Promise.all([
     sb.from('sources')
       .select('id, name, connector_type, active, schedule_cron')
       .eq('workspace_id', workspace_id),
-    sb.from('signals')
+    fetchAll<SignalRow>((f, t) => sb.from('signals')
       .select('id, entity_id, structured_tags')
       .eq('workspace_id', workspace_id)
       .gte('created_at', since)
-      .limit(20000),
-    sb.from('events')
+      .order('id').range(f, t)),
+    fetchAll<EventRow>((f, t) => sb.from('events')
       .select('action, payload')
       .eq('workspace_id', workspace_id)
       .in('action', ['agent_run_metrics', 'agent_dispatch_result'])
       .gte('created_at', since)
-      .limit(20000),
-    // entities_seeded: pull every signal that ever attached to an entity and
-    // bucket by source on the earliest one per entity. Bounded by window.
-    sb.from('signals')
+      .order('id').range(f, t)),
+    // entities_seeded: every signal that attached to an entity, bucketed by
+    // source on the EARLIEST one per entity — so created_at ascending is load-
+    // bearing here, with id as a tiebreaker for stable pagination.
+    fetchAll<{ entity_id: string; structured_tags: { source_id?: string } | null; created_at: string }>((f, t) => sb.from('signals')
       .select('entity_id, structured_tags, created_at')
       .eq('workspace_id', workspace_id)
       .gte('created_at', since)
       .not('entity_id', 'is', null)
-      .order('created_at', { ascending: true })
-      .limit(20000),
+      .order('created_at', { ascending: true }).order('id').range(f, t)),
   ]);
 
   if (srcRes.error) throw new Error(`sources: ${srcRes.error.message}`);
-  if (sigRes.error) throw new Error(`signals: ${sigRes.error.message}`);
-  if (evRes.error) throw new Error(`events: ${evRes.error.message}`);
-  if (entSeedRes.error) throw new Error(`entity_seed: ${entSeedRes.error.message}`);
 
   const sources = (srcRes.data ?? []) as SourceRow[];
-  const signals = (sigRes.data ?? []) as SignalRow[];
-  const events = (evRes.data ?? []) as EventRow[];
-  const entityFirstSignal = (entSeedRes.data ?? []) as Array<{ entity_id: string; structured_tags: { source_id?: string } | null; created_at: string }>;
 
   // Index by source_id
   const signalsBySource = new Map<string, SignalRow[]>();
