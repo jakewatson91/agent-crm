@@ -15,6 +15,7 @@
     "./policy": "./src/policy.ts",
     "./schemas": "./src/schemas.ts",
     "./sweep": "./src/sweep.ts",
+    "./retention": "./src/retention.ts",
     "./graph": "./src/graph.ts",
     "./cron": "./src/cron.ts",
     "./resolve_source": "./src/resolve_source.ts",

@@ -1,29 +1,33 @@
 /**
- * Polling loop for "run it for a week" without Inngest.
+ * Polling loop that runs the enrichment pipeline without Inngest.
  *
- * Every INTERVAL_MIN (default 60), for each active workspace:
- *   1. Trigger every active source (via /api/sources/run-now).
- *   2. Process any signals from the last INTERVAL_MIN that haven't fired through agents.
+ * Every INTERVAL_MIN (default 60), across every active workspace:
+ *   1. Run every active source connector directly -> creates signals.
+ *   2. Process signals from the last INTERVAL_MIN through the matched agents
+ *      (enricher first), extracting facts + rescoring.
  *
- * Run this in tmux, nohup, or a screen session and leave it. It's the simplest path to
- * a always-on background loop without deploying Inngest. Stop with Ctrl-C.
+ * Self-contained: connectors are invoked in-process, so no Next.js server has
+ * to be running. Run it in tmux/nohup to keep enrichment flowing while Inngest
+ * is out of runs (stop with Ctrl-C), or set RUN_ONCE=1 for a single pass and
+ * exit — that's the mode the daily launchd job uses.
  *
  * Env:
- *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY (and any provider keys)
- *   NEXT_BASE_URL=http://localhost:3000  (override if Next.js runs elsewhere)
- *   INTERVAL_MIN=60                       (override loop interval)
+ *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (and any provider keys)
+ *   INTERVAL_MIN=60   loop interval AND the signal lookback window in minutes
+ *   RUN_ONCE=1        run one tick then exit (for cron / launchd)
  *
  * Usage:
- *   pnpm dev &                            # Next.js must be running
- *   pnpm loop                             # this script
+ *   pnpm loop                 # continuous loop
+ *   RUN_ONCE=1 INTERVAL_MIN=1500 pnpm loop   # one daily pass over the last ~25h
  */
 
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
 import { runAgent } from '../inngest/functions/agent_logic.js';
+import { getConnector } from '../inngest/functions/sources/registry.js';
+import { runRetention } from '@agent-crm/tools';
 
-const NEXT_BASE_URL = process.env.NEXT_BASE_URL ?? 'http://localhost:3000';
 const INTERVAL_MIN = parseInt(process.env.INTERVAL_MIN ?? '60', 10);
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
@@ -35,21 +39,36 @@ async function tick() {
   // 1. Find all active sources across all workspaces.
   const sources = await sb
     .from('sources')
-    .select('id, workspace_id, connector_type, name')
+    .select('id, workspace_id, connector_type, name, config, last_run_at')
     .eq('active', true);
   if (sources.error) { console.error('  source list failed:', sources.error.message); return; }
   console.log(`  ${sources.data?.length ?? 0} active sources`);
 
+  // Run each connector in-process (no HTTP / no Next.js server), mirroring
+  // /api/sources/run-now: execute conn.run then write last_run_* back so
+  // watermarked connectors don't re-fetch from scratch on the next tick.
   for (const s of sources.data ?? []) {
     try {
-      const res = await fetch(`${NEXT_BASE_URL}/api/sources/run-now`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_id: s.id }),
+      const conn = getConnector(s.connector_type as string);
+      if (!conn) { console.error(`  [${s.connector_type}/${s.name}] unknown connector_type`); continue; }
+      const out = await conn.run({
+        supabase: sb,
+        workspace_id: s.workspace_id as string,
+        source_id: s.id as string,
+        config: (s.config ?? {}) as Record<string, unknown>,
+        last_run_at: (s.last_run_at as string | null) ?? null,
       });
-      const j = await res.json();
-      const summary = j.summary ?? j;
-      console.log(`  [${s.connector_type}/${s.name}] signals=${summary.signals_created ?? 0} entities=${summary.entities_created ?? 0} skipped=${summary.skipped ?? 0} errors=${(summary.errors ?? []).length}`);
+      await sb.from('sources').update({
+        last_run_at: new Date().toISOString(),
+        last_run_status: out.errors.length === 0 ? 'ok' : 'error',
+        last_run_summary: {
+          signals_created: out.signals_created,
+          entities_created: out.entities_created,
+          skipped: out.skipped,
+          errors: out.errors.slice(0, 5),
+        },
+      }).eq('id', s.id);
+      console.log(`  [${s.connector_type}/${s.name}] signals=${out.signals_created} entities=${out.entities_created} skipped=${out.skipped} errors=${out.errors.length}`);
     } catch (e) {
       console.error(`  [${s.connector_type}/${s.name}] error:`, e instanceof Error ? e.message : String(e));
     }
@@ -113,11 +132,61 @@ async function tick() {
     }
   }
   console.log(`  ${runs} agent runs, ${posted} posts created`);
+
+  // 3. Retention pass — bound the unbounded tables (signals embeddings, telemetry
+  //    events). Internally throttled to ~once/day per workspace, so calling it
+  //    every tick is safe. No-op unless workspaces.policy.retention is set.
+  const wss = await sb.from('workspaces').select('id');
+  for (const w of wss.data ?? []) {
+    try {
+      const r = await runRetention(sb, w.id as string);
+      if (!r.skipped && (r.embeddings_archived > 0 || r.events_pruned > 0)) {
+        console.log(`  [retention ${w.id}] embeddings_archived=${r.embeddings_archived} events_pruned=${r.events_pruned}`);
+      }
+    } catch (e) {
+      console.error(`  [retention ${w.id}] error:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 4. Weekly HNSW reindex. Nulling old embeddings (step 3) frees the heap via
+  //    autovacuum, but the HNSW index file only shrinks on REINDEX. CONCURRENTLY
+  //    so it never locks matching; that can't run in a function or over PostgREST,
+  //    so it needs the direct connection the launchd loop has. Throttled to 7d and
+  //    gated on there actually being nulled embeddings to reclaim.
+  try {
+    const wsList = (wss.data ?? []) as Array<{ id: string }>;
+    if (wsList.length && process.env.SUPABASE_DB_URL) {
+      const lastReindex = await sb.from('events')
+        .select('created_at').eq('action', 'reindex_run')
+        .order('created_at', { ascending: false }).limit(1).maybeSingle();
+      const due = !lastReindex.data || Date.now() - new Date(lastReindex.data.created_at).getTime() > 7 * 86400_000;
+      if (due) {
+        const nulled = await sb.from('signals').select('id', { head: true, count: 'exact' }).is('embedding', null);
+        if ((nulled.count ?? 0) > 0) {
+          const { default: pg } = await import('pg');
+          const client = new pg.Client({ connectionString: process.env.SUPABASE_DB_URL, ssl: { rejectUnauthorized: false } });
+          await client.connect();
+          console.log('  [reindex] REINDEX INDEX CONCURRENTLY signals_embedding_hnsw ...');
+          await client.query('reindex index concurrently signals_embedding_hnsw');
+          await client.end();
+          await sb.from('events').insert({
+            workspace_id: wsList[0].id, actor_kind: 'system', actor_id: 'retention',
+            action: 'reindex_run', target_kind: 'workspace', target_id: wsList[0].id, payload: {},
+          });
+          console.log('  [reindex] done');
+        }
+      }
+    }
+  } catch (e) {
+    console.error('  [reindex] error:', e instanceof Error ? e.message : String(e));
+  }
 }
 
 async function main() {
-  console.log(`agent-crm run loop starting · interval=${INTERVAL_MIN}m · base=${NEXT_BASE_URL}`);
+  const once = process.env.RUN_ONCE === '1';
+  console.log(`agent-crm run loop starting · interval=${INTERVAL_MIN}m · once=${once}`);
   await tick();
+  if (once) { console.log('RUN_ONCE set — exiting after one tick.'); process.exit(0); }
   setInterval(() => { tick().catch((e) => console.error('tick error:', e)); }, INTERVAL_MIN * 60_000);
   // Keep alive
   await new Promise(() => {});

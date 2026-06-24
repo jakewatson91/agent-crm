@@ -25,6 +25,7 @@ export type { CheckResult, Severity };
 export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
+export { runRetention, type RetentionResult } from './retention.ts';
 export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy };
 export { cronToMinIntervalMinutes } from './cron.ts';

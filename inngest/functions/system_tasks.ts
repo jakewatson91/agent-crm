@@ -1,5 +1,5 @@
 import { createServerClient } from '@agent-crm/db';
-import { scoreAndAssert, callTool, entityIdsOfType } from '@agent-crm/tools';
+import { scoreAndAssert, callTool, entityIdsOfType, runRetention } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 const RECOVERY_LOOKBACK_MIN = 30;
@@ -333,5 +333,37 @@ export const entityArchiveSweep = inngest.createFunction(
     });
 
     return { archived: toArchive.length, ids: toArchive.map((e) => e.id) };
+  },
+);
+
+/**
+ * retention-sweep: daily, bound the two unbounded tables per workspace —
+ * archive old signal embeddings and prune whitelisted telemetry events. All
+ * config + safety lives in runRetention (workspaces.policy.retention, off by
+ * default). The launchd loop also calls runRetention; the shared ~daily
+ * throttle keeps the two from doubling up.
+ *
+ * Note: the weekly CONCURRENT reindex of the HNSW index that reclaims the disk
+ * freed by archived embeddings lives in the launchd loop only — REINDEX
+ * CONCURRENTLY can't run in a function or over PostgREST, so it needs the loop's
+ * direct connection. This cron does the null + prune; the loop does the reindex.
+ */
+export const retentionSweep = inngest.createFunction(
+  { id: 'retention-sweep' },
+  { cron: '0 13 * * *' }, // daily at 13:00 UTC, after the other daily sweeps
+  async ({ step }) => {
+    return await step.run('run-retention', async () => {
+      const supabase = createServerClient();
+      const { data: wss } = await supabase.from('workspaces').select('id');
+      const results = [];
+      for (const w of (wss ?? []) as Array<{ id: string }>) {
+        try {
+          results.push(await runRetention(supabase, w.id));
+        } catch (e) {
+          results.push({ workspace_id: w.id, error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      return { workspaces: results.length, results };
+    });
   },
 );

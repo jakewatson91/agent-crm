@@ -245,11 +245,35 @@ export interface LifecyclePolicy {
   labels?: Partial<Record<OutreachTransition, string>>;
 }
 
+/**
+ * Retention — bounds the two tables that grow unbounded (signals, events).
+ * Vertical-neutral and OFF by default: a fresh workspace keeps everything
+ * forever until an operator opts in. All deletion is provenance-safe.
+ *
+ * signal_embedding_ttl_days: once a signal is older than this, null its
+ *   embedding vector (kept: row, body_for_embedding, tags, all extracted
+ *   facts). Live matching only uses recent signals, and the vector is
+ *   recomputable from the body, so this is pure dead-weight reclamation.
+ *   0 / unset = never archive.
+ *
+ * event_ttl_days + prunable_event_actions: delete operational/telemetry
+ *   events older than the window whose action is in the list (e.g.
+ *   'subscription.matched', 'agent_run_metrics'). prune_events refuses to
+ *   delete any event a fact points at, so provenance is safe regardless of
+ *   the list. Empty list / unset = delete nothing.
+ */
+export interface RetentionPolicy {
+  signal_embedding_ttl_days?: number;
+  event_ttl_days?: number;
+  prunable_event_actions?: string[];
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
   daily_send_cap?: number;
   notify_channels?: string[];
+  retention?: RetentionPolicy;
 
   // new structured sections
   outreach?: OutreachPolicy;
