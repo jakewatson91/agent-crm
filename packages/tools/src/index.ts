@@ -58,6 +58,10 @@ export interface ToolResult {
   // content-hash dedup hit (the fact was already known). Lets callers avoid
   // counting re-asserts of known facts as "new."
   created?: boolean;
+  // create_signal only: true when a matching dedup_key signal already existed,
+  // so this call skipped the embed + insert and returned the existing row.
+  // event_id is '' on a deduped hit (no new event was written).
+  deduped?: boolean;
 }
 
 export interface ToolError {
@@ -66,6 +70,11 @@ export interface ToolError {
 }
 
 export type ToolReturn = ToolResult | ToolError;
+
+// Window for create_signal's dedup_key idempotency lookup. Matches the ATS
+// connector's default cross-run dedup window (720h / 30d) so a re-listed item
+// is recognized as the same observation rather than a fresh one.
+const SIGNAL_DEDUP_WINDOW_MS = 30 * 86400 * 1000;
 
 /**
  * Single dispatch entrypoint for the 13 v0 tools. Each call:
@@ -176,7 +185,29 @@ export async function callTool(
 
       case 'create_signal': {
         // Tool wrapper handles the embedding so callers don't have to.
-        const a = args as { entity_id: string; type: string; magnitude: number; body_for_embedding: string; structured_tags: Record<string, unknown> };
+        const a = args as { entity_id: string; type: string; magnitude: number; body_for_embedding: string; structured_tags: Record<string, unknown>; dedup_key?: string };
+        // Idempotency: when the caller passes a stable dedup_key (a connector's
+        // external id for the item), skip the embed + insert entirely if a signal
+        // with the same entity + type + key already exists in the recent window.
+        // Stops a source that re-sees the same item (e.g. a job board re-listing
+        // an open role) from writing duplicate rows or burning an embedding call.
+        if (a.dedup_key) {
+          const since = new Date(Date.now() - SIGNAL_DEDUP_WINDOW_MS).toISOString();
+          const existing = await supabase.from('signals')
+            .select('id')
+            .eq('workspace_id', actor.workspace_id)
+            .eq('entity_id', a.entity_id)
+            .eq('type', a.type)
+            .gte('observed_at', since)
+            .contains('structured_tags', { dedup_key: a.dedup_key })
+            .limit(1)
+            .maybeSingle();
+          if (existing.data?.id) {
+            return { ok: true, event_id: '', target_id: existing.data.id as string, deduped: true };
+          }
+        }
+        // Stamp dedup_key into structured_tags so the lookup above matches next run.
+        const tags = a.dedup_key ? { ...a.structured_tags, dedup_key: a.dedup_key } : a.structured_tags;
         const vec = await embed(a.body_for_embedding);
         const r = await act(supabase, actor, {
           tool: 'create_signal',
@@ -186,7 +217,7 @@ export async function callTool(
             magnitude: a.magnitude,
             body_for_embedding: a.body_for_embedding,
             embedding: vectorLiteral(vec),
-            structured_tags: a.structured_tags,
+            structured_tags: tags,
           },
           ...meta,
         });

@@ -86,6 +86,11 @@ function htmlToText(html: string | null | undefined): string {
 // Per-job detail fetches (Workable) are capped per entity per run so a single
 // high-volume board can't blow up the cron.
 const MAX_DETAIL_FETCHES_PER_ENTITY = 25;
+// How many no-longer-live job ids to retain in the seen-set beyond the
+// currently-live ones. Tolerates a role briefly dropping off a board and
+// returning without re-emitting it. Bounds the stored attribute size; live ids
+// are always kept regardless of this number.
+const HISTORY_BUDGET = 500;
 // Description truncation before storing on the signal. ~4000 chars is enough
 // for the enricher to spot tech stack + responsibilities + salary range
 // without bloating the signal row.
@@ -348,6 +353,10 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     .filter((p): p is Provider => p in FETCHERS);
   const reprobe_days = (ctx.config.reprobe_days as number) ?? 30;
   const max_entities_per_run = (ctx.config.max_entities_per_run as number) ?? 200;
+  // Optional per-company ceiling on new hiring signals emitted in one run. Undefined
+  // = no cap (vertical-neutral default). When set, only the freshest N postings
+  // become signals; the rest are still marked seen so they aren't re-emitted later.
+  const max_new_signals_per_entity = ctx.config.max_new_signals_per_entity as number | undefined;
 
   // Load active accounts + their full entity rows (need attributes for the
   // ATS hint cache).
@@ -479,9 +488,16 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     // Diff against last-seen job IDs (stored on attributes). New IDs → candidates.
     const seenIds = new Set<string>(((ent.attributes.ats_seen_jobs as string[]) ?? []));
     const newJobs = fetchResult.jobs.filter((j) => !seenIds.has(j.external_id));
+    // Freshest first so an optional per-entity cap keeps the most recent roles.
+    // Missing posted_at sorts last (Date.parse('') → NaN → 0).
+    newJobs.sort((a, b) => ((Date.parse(b.posted_at ?? '') || 0) - (Date.parse(a.posted_at ?? '') || 0)));
 
     let detailFetches = 0;
+    let emitted = 0;
     for (const job of newJobs) {
+      // Per-entity cap: once we've emitted N new signals this run, stop. Remaining
+      // new jobs are still marked seen below, so they won't re-emit next run.
+      if (max_new_signals_per_entity != null && emitted >= max_new_signals_per_entity) break;
       // 1. Workable per-job detail fetch (capped). The list endpoint doesn't
       //    include description / salary; without these the classifier still
       //    works on title alone, but the enricher loses most of its signal.
@@ -521,6 +537,10 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
         type: 'hiring_post',
         magnitude: 0.75,    // hiring is a high-intent signal across the board
         body_for_embedding: body,
+        // Idempotency: one job posting = one signal. If this role was already
+        // emitted for this entity (even after the seen-set cache rolled it out),
+        // create_signal no-ops instead of writing a duplicate + embedding.
+        dedup_key: job.external_id,
         structured_tags: {
           signal_source: 'ats',
           // Cross-connector classifier — any future hiring source (LinkedIn,
@@ -552,15 +572,24 @@ const ats: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
           attribution_method: 'ats_direct',
         },
       });
-      if (r.ok) result.signals_created++;
-      else result.errors.push(`create_signal failed for ${ent.name}/${job.title}: ${r.error}`);
+      // Count only genuinely new signals toward the cap + metrics. A dedup hit
+      // (r.deduped) means the row already existed — not new work.
+      if (r.ok && !r.deduped) { result.signals_created++; emitted++; }
+      else if (!r.ok) result.errors.push(`create_signal failed for ${ent.name}/${job.title}: ${r.error}`);
     }
 
     // Update seen set with EVERY current job ID (passed-filter or not), so
-    // filtered-out postings don't get re-classified on the next run. Cap to
-    // recent 200 to keep the attribute compact.
-    const allSeen = new Set<string>([...seenIds, ...fetchResult.jobs.map((j) => j.external_id)]);
-    const trimmed = [...allSeen].slice(-200);
+    // filtered-out postings don't get re-classified on the next run.
+    //
+    // CRITICAL: keep every currently-live job id. The old `slice(-200)` trimmed
+    // the set to 200 even when the board had more open roles, so boards with
+    // >200 jobs (SpaceX, Stripe, ...) forgot their overflow each run and
+    // re-emitted it as "new." Live ids are never dropped; only ids that have
+    // fallen off the board age out, bounded by HISTORY_BUDGET for flicker (a
+    // role that briefly disappears then returns).
+    const liveSet = new Set<string>(fetchResult.jobs.map((j) => j.external_id));
+    const historical = [...seenIds].filter((id) => !liveSet.has(id));
+    const trimmed = [...liveSet, ...historical.slice(-HISTORY_BUDGET)];
     await ctx.supabase.from('entities').update({
       attributes: { ...ent.attributes, ats_seen_jobs: trimmed },
     }).eq('id', ent.id);

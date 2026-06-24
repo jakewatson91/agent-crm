@@ -62,6 +62,10 @@ export const CreateSignalSchema = z.object({
   magnitude: z.number().min(0).max(1).default(0.5),
   body_for_embedding: z.string().min(1),
   structured_tags: z.record(z.unknown()).default({}),
+  // Optional idempotency key. When set, create_signal no-ops (no embed, no
+  // insert) if a signal with the same entity + type + key already exists in the
+  // recent window. The key is also stamped into structured_tags for the lookup.
+  dedup_key: z.string().optional(),
 });
 
 export const CreateSubscriptionSchema = z.object({

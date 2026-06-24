@@ -310,6 +310,8 @@ export const atsMeta: ConnectorMeta = {
         help: 'Companies marked as "no ATS detected" get re-probed after this many days in case they\'ve adopted one.' },
       { name: 'max_entities_per_run', label: 'Max entities per run', kind: 'number', default: 200,
         help: 'Safety cap. First run on a large watchlist will be slow; raise to cover everything sooner.' },
+      { name: 'max_new_signals_per_entity', label: 'Max new signals per company per run', kind: 'number',
+        help: 'Optional ceiling so one big employer can\'t flood a run. Keeps the freshest N new roles per company; the rest are skipped. Leave blank for no cap.' },
     ],
   },
 };
