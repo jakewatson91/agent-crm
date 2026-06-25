@@ -35,6 +35,27 @@ export const BAND_SHORT: Record<ScoredBand, string> = {
   unscored: 'unscored',
 };
 
+// One-word verdict for the human score card headline. Says "how good a fit",
+// not the internal action label.
+export const BAND_HEADLINE: Record<ScoredBand, string> = {
+  draft: 'Strong fit',
+  watch: 'Possible fit',
+  noaction: 'Weak fit',
+  drop: 'Not a fit',
+  unscored: 'Not scored yet',
+};
+
+// What the agent will actually DO at each band, in plain words — the
+// audit-useful framing of the score, so a person reading the page understands
+// the consequence, not just a number.
+export const BAND_VERDICT: Record<ScoredBand, string> = {
+  draft: 'Good enough that the agent will draft outreach.',
+  watch: 'Promising — the agent is waiting for a stronger reason before reaching out.',
+  noaction: 'Below the outreach bar — the agent takes no action for now.',
+  drop: 'Not a fit — the agent has set this one aside.',
+  unscored: "The agent hasn't scored this one yet.",
+};
+
 export function bandColor(icp: number | null): string {
   if (icp === null) return 'var(--text-3)';
   if (icp >= 0.7) return 'var(--accent-green)';

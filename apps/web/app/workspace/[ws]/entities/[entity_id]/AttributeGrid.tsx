@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import { Timestamp } from '../../../../_components/Timestamp';
-import { humanizeKey, looksLikeCode } from '../../../../_lib/labels';
+import { humanizeKey, isMachineAttribute } from '../../../../_lib/labels';
 
 /**
  * Renders entities.attributes as a readable key/value grid instead of a raw
@@ -88,11 +88,11 @@ export function AttributeGrid({ attributes }: { attributes: Record<string, unkno
   const keys = Object.keys(attributes ?? {});
   if (keys.length === 0) return null;
 
-  // Show only human-readable attributes. Underscore audit keys and machine
-  // codes (ids, hashes, bare UUIDs) drop out of the grid — they're still in
-  // the raw JSON toggle below.
+  // Show only human-readable attributes. Internal `_` keys, machine codes
+  // (ids, hashes, UUIDs, scheme ids, code arrays) and nested metadata objects
+  // drop out of the grid — they're still in the raw JSON toggle below.
   const ordered = keys
-    .filter((k) => !k.startsWith('_') && !looksLikeCode(k, attributes[k]))
+    .filter((k) => !isMachineAttribute(k, attributes[k]))
     .sort();
 
   return (

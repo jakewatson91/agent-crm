@@ -7,8 +7,9 @@ import { Timestamp } from '../../../../_components/Timestamp';
 import { WhyThis } from '../../../../_components/WhyThis';
 import { DraftActions } from '../../../../_components/DraftActions';
 import { lowConfLabel } from '../../../../_lib/confidence';
-import { bandOf, bandColor, BAND_SHORT } from '../../../../_lib/bands';
+import { bandOf, bandColor, BAND_HEADLINE, BAND_VERDICT } from '../../../../_lib/bands';
 import { humanizePredicate, looksLikeCode, stripActionTag } from '../../../../_lib/labels';
+import { SCORE_DIMENSIONS, scoreWord } from '../../../../_lib/score_labels';
 import { ScoreTimeline } from './ScoreTimeline';
 import { AttributeGrid } from './AttributeGrid';
 import { useSetPageContext, type PageContext } from '../../../../_components/PageContext';
@@ -256,12 +257,28 @@ export function EntityDetail({
     if (keep.length) visibleFacts[fam] = keep;
   }
 
-  // Score card: one headline number + a readable breakdown, instead of the 8
-  // raw score_* rows + JSON blob the agent writes.
+  // Score card: a plain verdict + the agent's own words, instead of the 8 raw
+  // score_* rows + JSON blob it writes. The numeric dimensions move into an
+  // audit expander, each explained in plain language.
   const allFacts = Object.values(currentFacts).flat();
   const scoreComponents = allFacts
     .filter((f) => f.predicate.startsWith('score_') && f.predicate !== 'score_total' && f.object_text != null)
-    .map((f) => ({ label: humanizePredicate(f.predicate.replace(/^score_/, '')), value: f.object_text as string }));
+    .map((f) => {
+      const key = f.predicate.replace(/^score_/, '');
+      const meta = SCORE_DIMENSIONS[key];
+      return { key, label: meta?.label ?? humanizePredicate(key), help: meta?.help ?? null, value: parseFloat(f.object_text as string) };
+    })
+    .filter((c) => Number.isFinite(c.value));
+  // The scorer's plain-language explanation, stored on the breakdown fact. This
+  // is the part that actually tells a human *why* the score is what it is.
+  const scoreReasoning = (() => {
+    const f = allFacts.find((x) => x.predicate === 'icp_fit_breakdown');
+    if (!f?.object_text) return null;
+    try {
+      const j = JSON.parse(f.object_text) as { reasoning?: unknown };
+      return typeof j.reasoning === 'string' && j.reasoning.trim() ? j.reasoning.trim() : null;
+    } catch { return null; }
+  })();
   const families = Object.keys(visibleFacts).sort((a, b) => {
     const order = ['firmographics', 'scoring', 'engagement', 'other'];
     return order.indexOf(a) - order.indexOf(b);
@@ -325,20 +342,40 @@ export function EntityDetail({
       <AttributeGrid attributes={entityAttributes} />
 
       {score !== null && (
-        <div className="card" style={{ marginTop: '1rem', padding: '.7rem .9rem' }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '.5rem', flexWrap: 'wrap' }}>
-            <div className="subtle" style={{ fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>fit score</div>
-            <div className="mono" style={{ fontSize: '1.05rem', fontWeight: 600, color: bandColor(score) }}>{score.toFixed(2)}</div>
-            <span className="badge" style={{ fontSize: '.62rem', color: bandColor(score) }}>{BAND_SHORT[bandOf(score)]}</span>
+        <div className="card" style={{ marginTop: '1rem', padding: '.8rem .9rem' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '.6rem', flexWrap: 'wrap' }}>
+            <div className="subtle" style={{ fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>fit</div>
+            <div style={{ fontSize: '.95rem', fontWeight: 600, color: bandColor(score) }}>{BAND_HEADLINE[bandOf(score)]}</div>
+            <div className="subtle mono" style={{ fontSize: '.78rem' }}>{Math.round(score * 100)}% match</div>
           </div>
-          {scoreComponents.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.35rem 1rem', marginTop: '.55rem' }}>
-              {scoreComponents.map((c) => (
-                <span key={c.label} className="subtle" style={{ fontSize: '.74rem' }}>
-                  {c.label} <span className="mono" style={{ color: 'var(--text)' }}>{c.value}</span>
-                </span>
-              ))}
+          <div className="subtle" style={{ fontSize: '.8rem', marginTop: '.3rem', color: 'var(--text-2)' }}>
+            {BAND_VERDICT[bandOf(score)]}
+          </div>
+          {scoreReasoning && (
+            <div style={{ fontSize: '.82rem', marginTop: '.55rem', lineHeight: 1.5, color: 'var(--text)' }}>
+              {scoreReasoning}
             </div>
+          )}
+          {scoreComponents.length > 0 && (
+            <details style={{ marginTop: '.6rem' }}>
+              <summary className="subtle" style={{ cursor: 'pointer', fontSize: '.72rem' }}>how this score was reached</summary>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '.55rem', marginTop: '.55rem' }}>
+                {scoreComponents.map((c) => (
+                  <div key={c.key}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                      <span style={{ fontSize: '.78rem', color: 'var(--text)', minWidth: 130 }}>{c.label}</span>
+                      <div style={{ flex: 1, height: 6, background: 'var(--panel-2)', borderRadius: 3, overflow: 'hidden', minWidth: 50 }}>
+                        <div style={{ width: `${Math.round(c.value * 100)}%`, height: '100%', background: bandColor(c.value) }} />
+                      </div>
+                      <span className="subtle mono" style={{ fontSize: '.72rem', minWidth: 50, textAlign: 'right' }}>{scoreWord(c.value)}</span>
+                    </div>
+                    {c.help && (
+                      <div className="subtle" style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.12rem' }}>{c.help}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
           )}
         </div>
       )}

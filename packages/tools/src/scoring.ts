@@ -172,7 +172,7 @@ export async function scoreEntity(
   // Candidate entities are thin connection points (name + is_a + domain, no
   // signals or embedding). Scoring one produces a meaningless number and
   // pollutes the score distribution. Skip until it is promoted to a full entity.
-  if ((entity.attributes as { candidate?: boolean } | null)?.candidate === true) return null;
+  if ((entity.attributes as { _candidate?: boolean } | null)?._candidate === true) return null;
   const rawFacts = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null }>;
   // Active = not pointed at by another fact's `supersedes` (subject-direction
   // fetch, so any superseding fact shares this subject and is in the set).
@@ -724,7 +724,9 @@ export async function scoreAndAssert(
   // tick (599 active across ~222 entities before this fix). Same find-current-
   // then-supersede pattern as the numeric score_* fields above.
   try {
-    const breakdownText = JSON.stringify(score.breakdown);
+    // Persist the plain-language reasoning alongside the numeric breakdown so
+    // the entity page can explain the score in words, not just sub-scores.
+    const breakdownText = JSON.stringify({ ...score.breakdown, reasoning: score.reasoning });
     const allRows = await supabase.from('facts').select('id, supersedes, observed_at')
       .eq('workspace_id', actor.workspace_id)
       .eq('subject_entity', entity_id)

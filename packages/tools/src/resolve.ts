@@ -146,9 +146,10 @@ export async function resolveOrCreateEntity(
     args: {
       name,
       kind: args.object_type,
-      // `candidate: true` marks a thin node (no embedding/enrichment) so scoring,
-      // search, and the UI can treat it as a connection point until it's promoted.
-      attributes: domain ? { domain, candidate: true } : { candidate: true },
+      // `_candidate: true` marks a thin node (no embedding/enrichment) so scoring
+      // can treat it as a connection point until it's promoted. Underscore-prefixed
+      // because it's internal bookkeeping — keeps it out of the human attributes grid.
+      attributes: domain ? { domain, _candidate: true } : { _candidate: true },
     },
   });
   return { entity_id: created.target_id, created: true, confidence: 0.9, reason: 'created' };
