@@ -26,36 +26,72 @@ interface FeedItem {
   // True only for touch_draft rows whose outreach gate is still undecided —
   // i.e. the live approval queue. Sent/rejected drafts and non-draft rows are false.
   pending_approval: boolean;
+  // The outreach gate tied to this draft, inlined so the draft card doesn't
+  // re-fetch it per post (that was an N+1: one /gates/by-post call per row).
+  // null on non-draft rows and drafts with no gate.
+  gate: Gate | null;
+  // How much this claim's facts moved the account's score. Only set on
+  // enricher-sourced claims that triggered a rescore; null otherwise.
+  score_delta: number | null;
 }
+
+interface Gate {
+  id: string;
+  policy: string;
+  condition: Record<string, unknown> | null;
+  decision: 'approve' | 'reject' | 'modify' | null;
+  decided_at: string | null;
+}
+
+// claim/decision/system/question are high-volume — a research-enrichment burst
+// can produce hundreds of these in an hour. touch_draft/gate_request/outcome are
+// rare but consequential (approvals, outreach, results). A single shared
+// .limit() ordered by recency lets the noisy kinds push the rare ones completely
+// out of the window — Outreach/Needs-approval chips would read 0 even when real
+// rows exist, just further back than the cutoff. Fetch them in separate windows
+// so neither starves the other.
+const ACTIVITY_KINDS = ['claim', 'decision', 'system', 'question'];
+const CONSEQUENTIAL_KINDS = ['touch_draft', 'gate_request', 'outcome'];
+
+const POST_SELECT = `
+  id, kind, body, cites, author_kind, author_id, created_at, parent_post_id, score_delta,
+  channels!inner(id, title, workspace_id, account_entity_id,
+    entity:entities(id, name)
+  )
+`;
 
 const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
   const supabase = createServerClient();
 
   // Fire posts (with entity name joined) + icp_fit facts in parallel.
   // Facts is scoped to the workspace's icp_fit rows — typically O(entities), not large.
-  const [postsRes, fitsRes] = await Promise.all([
+  const [activityRes, consequentialRes, fitsRes] = await Promise.all([
     supabase
       .from('channel_posts')
-      .select(`
-        id, kind, body, cites, author_kind, author_id, created_at, parent_post_id,
-        channels!inner(id, title, workspace_id, account_entity_id,
-          entity:entities(id, name)
-        )
-      `)
+      .select(POST_SELECT)
       .eq('channels.workspace_id', ws)
+      .in('kind', ACTIVITY_KINDS)
       .order('created_at', { ascending: false })
       .limit(400),
     supabase
+      .from('channel_posts')
+      .select(POST_SELECT)
+      .eq('channels.workspace_id', ws)
+      .in('kind', CONSEQUENTIAL_KINDS)
+      .order('created_at', { ascending: false })
+      .limit(200),
+    supabase
       .from('facts')
-      .select('subject_entity, object_text, supersedes, id')
+      .select('subject_entity, object_text')
       .eq('workspace_id', ws)
-      .eq('predicate', 'icp_fit'),
+      .eq('predicate', 'icp_fit')
+      .is('supersedes', null),
   ]);
 
-  const rows = (postsRes.data ?? []) as unknown as Array<{
+  const rows = [...(activityRes.data ?? []), ...(consequentialRes.data ?? [])] as unknown as Array<{
     id: string; kind: string; body: string; cites: string[];
     author_kind: string; author_id: string; created_at: string;
-    parent_post_id: string | null;
+    parent_post_id: string | null; score_delta: number | null;
     channels: {
       id: string; title: string; account_entity_id: string;
       entity: { id: string; name: string } | null;
@@ -68,23 +104,28 @@ const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
     if (ent && !entMap.has(ent.id)) entMap.set(ent.id, ent.name);
   }
 
-  // Which touch_draft posts still have an undecided gate → live approval queue.
+  // Gate per touch_draft post, fetched once for the whole window (was N+1: the
+  // draft card fired one /gates/by-post call per row). pending_approval and the
+  // inlined gate object both come from this single query. Latest gate wins per
+  // post (requested_at desc), mirroring the by-post route.
   const draftIds = rows.filter((r) => r.kind === 'touch_draft').map((r) => r.id);
+  const gateByPost = new Map<string, Gate>();
   const pendingDraft = new Set<string>();
   if (draftIds.length) {
     const { data: gateRows } = await supabase
       .from('gates')
-      .select('channel_post_id, decided_at')
-      .in('channel_post_id', draftIds);
-    for (const g of (gateRows ?? []) as Array<{ channel_post_id: string; decided_at: string | null }>) {
+      .select('id, policy, condition, decision, decided_at, requested_at, channel_post_id')
+      .in('channel_post_id', draftIds)
+      .order('requested_at', { ascending: false });
+    for (const g of (gateRows ?? []) as Array<{ id: string; policy: string; condition: Record<string, unknown> | null; decision: Gate['decision']; decided_at: string | null; requested_at: string; channel_post_id: string }>) {
+      if (gateByPost.has(g.channel_post_id)) continue; // first = latest (ordered desc)
+      gateByPost.set(g.channel_post_id, { id: g.id, policy: g.policy, condition: g.condition, decision: g.decision, decided_at: g.decided_at });
       if (!g.decided_at) pendingDraft.add(g.channel_post_id);
     }
   }
 
   const icpMap = new Map<string, number>();
-  const superseded = new Set<string>(((fitsRes.data ?? []) as any[]).map((f) => f.supersedes).filter(Boolean));
   for (const f of (fitsRes.data ?? []) as any[]) {
-    if (superseded.has(f.id)) continue;
     const v = parseFloat(f.object_text);
     if (!isNaN(v) && !icpMap.has(f.subject_entity)) icpMap.set(f.subject_entity, v);
   }
@@ -119,6 +160,8 @@ const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
       reasoning: childrenByParent.get(r.id)?.body ?? null,
       dup_count: 1,
       pending_approval: pendingDraft.has(r.id),
+      gate: gateByPost.get(r.id) ?? null,
+      score_delta: r.score_delta,
     }));
 
   // Dedup within 14d: identical (entity, kind, cite-set) collapse into one row.
@@ -143,7 +186,7 @@ const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
 const getFeedItems = unstable_cache(
   _getFeedItems,
   ['feed-items'],
-  { revalidate: 20, tags: ['feed'] },
+  { revalidate: 60, tags: ['feed'] },
 );
 
 export async function GET(req: Request) {
@@ -152,6 +195,6 @@ export async function GET(req: Request) {
   if (!ws) return NextResponse.json({ error: 'workspace_id required' }, { status: 400 });
   const items = await getFeedItems(ws);
   return NextResponse.json({ items }, {
-    headers: { 'Cache-Control': 'private, s-maxage=20, stale-while-revalidate=60' },
+    headers: { 'Cache-Control': 'private, s-maxage=60, stale-while-revalidate=60' },
   });
 }

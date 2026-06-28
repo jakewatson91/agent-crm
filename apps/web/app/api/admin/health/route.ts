@@ -29,28 +29,28 @@ async function attributionMetrics(sb: ReturnType<typeof createServerClient>, ws:
 async function actionDistribution(sb: ReturnType<typeof createServerClient>, hours: number, chIds: string[]) {
   if (!chIds.length) return {} as Record<string, number>;
   const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-  const [posts, draftCount] = await Promise.all([
-    sb.from('channel_posts')
-      .select('body')
-      .in('channel_id', chIds)
-      .eq('kind', 'decision')
-      .gte('created_at', since)
-      .limit(10000),
+  // Count each action type with a targeted ilike filter — no body data read.
+  const base = (tag: string) =>
     sb.from('channel_posts')
       .select('id', { count: 'exact', head: true })
       .in('channel_id', chIds)
-      .eq('kind', 'touch_draft')
-      .gte('created_at', since),
+      .eq('kind', 'decision')
+      .gte('created_at', since)
+      .ilike('body', `[${tag}]%`);
+  const [draftCount, watchOnly, deepResearch, drop, cont] = await Promise.all([
+    sb.from('channel_posts').select('id', { count: 'exact', head: true }).in('channel_id', chIds).eq('kind', 'touch_draft').gte('created_at', since),
+    base('watch_only'),
+    base('deep_research'),
+    base('drop'),
+    base('continue'),
   ]);
-  const counts: Record<string, number> = { draft_outreach: 0, watch_only: 0, deep_research: 0, drop: 0, continue: 0 };
-  counts.draft_outreach = draftCount.count ?? 0;
-  for (const p of (posts.data ?? []) as Array<{ body: string }>) {
-    const m = p.body.match(/^\[(\w+)\]/);
-    if (!m) continue;
-    const action = m[1]!;
-    if (action in counts) counts[action]! += 1;
-  }
-  return counts;
+  return {
+    draft_outreach: draftCount.count ?? 0,
+    watch_only: watchOnly.count ?? 0,
+    deep_research: deepResearch.count ?? 0,
+    drop: drop.count ?? 0,
+    continue: cont.count ?? 0,
+  };
 }
 
 const getHealthData = unstable_cache(
@@ -95,7 +95,7 @@ const getHealthData = unstable_cache(
     };
   },
   ['health-data'],
-  { revalidate: 60, tags: ['health'] },
+  { revalidate: 300, tags: ['health'] },
 );
 
 export async function GET(req: NextRequest) {
@@ -103,6 +103,6 @@ export async function GET(req: NextRequest) {
   if (!ws) return NextResponse.json({ error: 'workspace_id required' }, { status: 400 });
   const data = await getHealthData(ws);
   return NextResponse.json(data, {
-    headers: { 'Cache-Control': 'private, s-maxage=60, stale-while-revalidate=120' },
+    headers: { 'Cache-Control': 'private, s-maxage=300, stale-while-revalidate=300' },
   });
 }

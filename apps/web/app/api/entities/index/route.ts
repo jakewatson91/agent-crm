@@ -82,9 +82,10 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
       .eq('predicate', 'is_a')
       .is('supersedes', null),
     supabase.from('facts')
-      .select('subject_entity, object_text, supersedes, id')
+      .select('subject_entity, object_text, id')
       .eq('workspace_id', ws)
-      .eq('predicate', 'icp_fit'),
+      .eq('predicate', 'icp_fit')
+      .is('supersedes', null),
   ]);
 
   const publicationBlocklist = (((policyRow.data?.policy as Record<string, unknown> | null)?.publication_blocklist) as string[] | undefined ?? []).filter(Boolean);
@@ -120,11 +121,8 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
       : Promise.resolve({ data: [] as unknown[] }),
   ]);
 
-  const superseded = new Set(
-    ((fitFacts.data ?? []) as Array<{ supersedes: string | null }>).map((f) => f.supersedes).filter(Boolean) as string[],
-  );
   for (const f of (fitFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; id: string }>) {
-    if (superseded.has(f.id) || !ids.has(f.subject_entity)) continue;
+    if (!ids.has(f.subject_entity)) continue;
     const v = parseFloat(f.object_text);
     if (!isNaN(v) && !icpMap.has(f.subject_entity)) icpMap.set(f.subject_entity, v);
   }
@@ -159,7 +157,7 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
 const getEntitiesPageData = unstable_cache(
   _getEntitiesPageData,
   ['entities-page'],
-  { revalidate: 30, tags: ['entities'] },
+  { revalidate: 300, tags: ['entities'] },
 );
 
 export async function GET(req: Request) {
@@ -168,6 +166,6 @@ export async function GET(req: Request) {
   if (!ws) return NextResponse.json({ error: 'workspace_id required' }, { status: 400 });
   const data = await getEntitiesPageData(ws);
   return NextResponse.json(data, {
-    headers: { 'Cache-Control': 'private, s-maxage=30, stale-while-revalidate=120' },
+    headers: { 'Cache-Control': 'private, s-maxage=300, stale-while-revalidate=300' },
   });
 }
