@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
@@ -155,12 +155,31 @@ export async function runAgent(
   // to Pro. Drafter output is what the customer reads.
   if (model === DEFAULT_MODEL && behavior === 'drafter') model = DRAFTER_MODEL;
 
-  // 5. Channel.
+  // 5. Channel. Lazily create it if missing instead of skipping. Entities made via
+  // resolveOrCreateEntity / create_entity (e.g. the ATS connector's company nodes)
+  // get is_a=account but no channel, unlike the create_account tool which makes both.
+  // Requiring a pre-existing channel here silently skipped enrichment for every such
+  // account ("no channel for entity") — so the enricher asserted zero facts. Mirror
+  // the post_to_channel SQL's `on conflict do nothing` with an idempotent upsert.
+  let channel_id: string;
   const chan = await supabase
     .from('channels').select('id')
     .eq('workspace_id', payload.workspace_id).eq('account_entity_id', ent.data.id).maybeSingle();
-  if (chan.error || !chan.data) return { ok: false, action: 'skip', reason: 'no channel for entity' };
-  const channel_id = chan.data.id as string;
+  if (chan.data?.id) {
+    channel_id = chan.data.id as string;
+  } else {
+    await supabase
+      .from('channels')
+      .upsert(
+        { workspace_id: payload.workspace_id, account_entity_id: ent.data.id, title: (ent.data.name as string) ?? 'Account' },
+        { onConflict: 'workspace_id,account_entity_id', ignoreDuplicates: true },
+      );
+    const rechan = await supabase
+      .from('channels').select('id')
+      .eq('workspace_id', payload.workspace_id).eq('account_entity_id', ent.data.id).maybeSingle();
+    if (!rechan.data?.id) return { ok: false, action: 'skip', reason: 'channel create failed' };
+    channel_id = rechan.data.id as string;
+  }
 
   const actor = { workspace_id: payload.workspace_id, actor_kind: 'agent' as const, actor_id: payload.agent };
 
@@ -368,13 +387,12 @@ export async function runAgent(
 
       if (decision.action === 'deep_research') {
         // Mark that we triggered research so we don't re-trigger every cron
-        // tick. Action selector reads this via recent_research_at.
-        await callTool(supabase, actor, 'assert_fact', {
-          subject_entity: ent.data.id,
-          predicate: 'research_triggered',
-          object_text: new Date().toISOString(),
-          confidence: 1.0,
-        });
+        // tick. Action selector reads this via recent_research_at. This is a
+        // record of what the system DID, not a fact about the account, so it
+        // goes to the event log — writing it as a fact inflated evidence_depth
+        // and recency in scoring.
+        await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ent.data.id,
+          { reason: decision.reason }, payload.parent_event_id);
         // Fire the inngest event the source-runner will consume to pull more
         // facts via Exa scoped to this entity.
         try {
@@ -390,13 +408,10 @@ export async function runAgent(
         } catch { /* non-fatal: next rescore tick can retry */ }
       } else if (decision.action === 'enrich_contacts') {
         // Mark the request so we don't re-fire every tick before the pull lands.
-        // action_selector reads this via recent_contacts_request_at.
-        await callTool(supabase, actor, 'assert_fact', {
-          subject_entity: ent.data.id,
-          predicate: 'contacts_requested',
-          object_text: new Date().toISOString(),
-          confidence: 1.0,
-        });
+        // action_selector reads this via recent_contacts_request_at. Event-log
+        // marker, not a fact (see research_triggered above).
+        await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.CONTACTS_REQUESTED, ent.data.id,
+          { reason: decision.reason }, payload.parent_event_id);
         // Fire the event the contacts-runner consumes to pull decision-makers
         // for this account via the workspace's configured contact provider.
         try {
@@ -435,7 +450,7 @@ export async function runAgent(
   // Drafters get past gate decisions + linked contacts in their context. Other
   // behaviors (claim_poster, enricher) don't need either — they're not making
   // judgment calls about who to send to.
-  let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [];
+  let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown> }> = [];
   let contacts: Array<{ name: string; email: string; role: string }> = [];
   if (behavior === 'drafter') {
     // Hunter pre-flight: fetch contacts here, not during enrichment. The
@@ -465,7 +480,7 @@ export async function runAgent(
       });
       pastOutcomesList = outs.map((o) => ({
         entity_name: o.entity_name, gate_policy: o.gate_policy, decision: o.decision,
-        decided_at: o.decided_at, similarity: o.similarity,
+        decided_at: o.decided_at, similarity: o.similarity, resolution: o.resolution ?? {},
       }));
     } catch { /* non-fatal */ }
 
@@ -757,14 +772,47 @@ export async function runAgent(
     // output if needed for debugging — it's just not surfaced as a "claim."
     let post: { ok: boolean; target_id?: string; error?: string } = { ok: false };
     if (asserted > 0) {
+      // Auto-score: only re-run when the enricher actually asserted new facts.
+      // Score is a pure function of facts; identical facts in = identical score
+      // out, so skipping when nothing changed saves the LLM + 4 embedding calls
+      // per scoreEntity invocation. scoreEntity has its own guard as
+      // defense-in-depth. Rescored BEFORE the claim post (not after) so the
+      // marginal delta (score_after - score_before) can be attached to the
+      // exact claim that caused it — score is a pure function of facts, and
+      // these are the only new facts since priorScore was read.
+      let score: Awaited<ReturnType<typeof scoreAndAssertFn>> = null;
+      let priorScore = NaN;
+      let scoreDelta: number | null = null;
+      try {
+        const priorScoreText = activeFacts.find((f) => f.predicate === 'score_total')?.object_text
+          ?? activeFacts.find((f) => f.predicate === 'icp_fit')?.object_text;
+        priorScore = priorScoreText ? parseFloat(priorScoreText) : NaN;
+        score = await scoreAndAssertFn(supabase, actor, ent.data.id);
+        if (score && Number.isFinite(priorScore)) scoreDelta = score.icp_fit - priorScore;
+      } catch {
+        // Non-fatal: the claim still posts without a score/delta.
+      }
+
       const summary = sanitize((decision.summary as string) ?? `Extracted ${asserted} fact${asserted === 1 ? '' : 's'}.`);
       post = await callTool(supabase, actor, 'post_to_channel', {
         channel_id, kind: 'claim', body: summary, cites: assertedIds,
+        ...(scoreDelta !== null ? { score_delta: scoreDelta } : {}),
       }, meta);
       const reasoning = sanitize(((decision as { reasoning?: string }).reasoning ?? '').toString());
       if (reasoning && post.ok) {
         await callTool(supabase, actor, 'post_to_channel', {
           channel_id, kind: 'decision', body: reasoning, cites: assertedIds, parent_post_id: post.target_id,
+        }, meta);
+      }
+
+      // Post the score reasoning only on band change — the band maps to
+      // downstream action_selector thresholds, so a band shift is what
+      // actually changes behavior. Reuses the score computed above; no
+      // second rescore call.
+      if (score && (!Number.isFinite(priorScore) || icpBand(priorScore) !== icpBand(score.icp_fit))) {
+        const bandReasoning = `ICP fit ${score.icp_fit.toFixed(2)} (${icpBand(score.icp_fit)}) — ${score.reasoning}`;
+        await callTool(supabase, actor, 'post_to_channel', {
+          channel_id, kind: 'decision', body: bandReasoning, cites: assertedIds,
         }, meta);
       }
     } else {
@@ -793,28 +841,6 @@ export async function runAgent(
       try {
         await setOutreachStage(supabase, actor, ent.data.id, 'researched', { signal_id: sigData?.id ?? payload.signal_id });
       } catch { /* non-fatal — enrichment already landed */ }
-    }
-    // Auto-score: only re-run when the enricher actually asserted new facts.
-    // Score is a pure function of facts; identical facts in = identical score out,
-    // so skipping when nothing changed saves the LLM + 4 embedding calls per
-    // scoreEntity invocation. scoreEntity has its own guard as defense-in-depth.
-    // Post the score reasoning only on band change — the band maps to downstream
-    // action_selector thresholds, so a band shift is what actually changes behavior.
-    if (asserted > 0) {
-      try {
-        const priorScoreText = activeFacts.find((f) => f.predicate === 'score_total')?.object_text
-          ?? activeFacts.find((f) => f.predicate === 'icp_fit')?.object_text;
-        const priorScore = priorScoreText ? parseFloat(priorScoreText) : NaN;
-        const score = await scoreAndAssertFn(supabase, actor, ent.data.id);
-        if (score && (!Number.isFinite(priorScore) || icpBand(priorScore) !== icpBand(score.icp_fit))) {
-          const reasoning = `ICP fit ${score.icp_fit.toFixed(2)} (${icpBand(score.icp_fit)}) — ${score.reasoning}`;
-          await callTool(supabase, actor, 'post_to_channel', {
-            channel_id, kind: 'decision', body: reasoning, cites: assertedIds,
-          }, meta);
-        }
-      } catch {
-        // Non-fatal: enrichment is still useful without the score.
-      }
     }
     // Separate from agent_run_metrics (which captures LLM cost at LLM-call time):
     // this event captures the dispatch outcome and is what source_metrics reads
@@ -1038,7 +1064,7 @@ function buildUserPrompt(
   signal: any,
   entity: { id: string; name: string; attributes: unknown },
   activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number }>,
-  pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null }> = [],
+  pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown> }> = [],
   contacts: Array<{ name: string; email: string; role: string }> = [],
   recommended: FactScore[] = [],
   // Drafters get attributes as readable prose so the email never echoes internal
@@ -1052,7 +1078,17 @@ function buildUserPrompt(
   const pastOutcomesBlock = pastOutcomesList.length
     ? `\nPAST OUTCOMES (recent gate decisions on this entity or semantically similar ones — pay attention to repeated patterns):\n${pastOutcomesList.map((o) => {
         const sim = o.similarity != null ? ` sim=${o.similarity.toFixed(2)}` : '';
-        return `  ${o.decided_at.slice(0, 10)} ${o.entity_name}${sim}: ${o.decision} (policy=${o.gate_policy})`;
+        const res = o.resolution ?? {};
+        const parts: string[] = [];
+        if (typeof res.note === 'string' && res.note) parts.push(`note: "${res.note}"`);
+        if (res.edited) {
+          const sd = res.subject_diff as { from: string; to: string } | undefined;
+          const bd = res.body_diff as Array<{ from: string; to: string }> | undefined;
+          if (sd) parts.push(`subject: "${sd.from}" → "${sd.to}"`);
+          if (bd?.length) parts.push(`body: ${bd.map((d) => `"${d.from}" → "${d.to}"`).join('; ')}`);
+        }
+        const detail = parts.length ? ` — ${parts.join('; ')}` : '';
+        return `  ${o.decided_at.slice(0, 10)} ${o.entity_name}${sim}: ${o.decision} (policy=${o.gate_policy})${detail}`;
       }).join('\n')}\n`
     : '';
 
@@ -1184,27 +1220,6 @@ async function noteDecision(
   }, { parent_event_id });
   if (!post.ok) return { ok: false, error: post.error };
   return { ok: true, channel_post_id: post.target_id };
-}
-
-async function gateAndPost(
-  supabase: SupabaseClient,
-  actor: { workspace_id: string; actor_kind: 'agent' | 'user' | 'system'; actor_id: string },
-  channel_id: string,
-  parent_event_id: string | undefined,
-  body: string,
-  cites: string[],
-  policy: string,
-  condition: Record<string, unknown>,
-): Promise<{ ok: boolean; channel_post_id?: string; gate_id?: string; error?: string }> {
-  const post = await callTool(supabase, actor, 'post_to_channel', {
-    channel_id, kind: 'gate_request', body, cites,
-  }, { parent_event_id });
-  if (!post.ok) return { ok: false, error: post.error };
-  const gate = await callTool(supabase, actor, 'request_gate', {
-    channel_post_id: post.target_id, policy, condition,
-  }, { parent_event_id });
-  if (!gate.ok) return { ok: false, error: gate.error, channel_post_id: post.target_id };
-  return { ok: true, channel_post_id: post.target_id, gate_id: gate.target_id };
 }
 
 /**

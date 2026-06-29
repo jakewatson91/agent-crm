@@ -11,9 +11,42 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { act } from '@agent-crm/primitives';
+import { getPolicy, resolveEnvVar, type WorkspacePolicy } from './policy.ts';
+import { scoreAndAssert } from './scoring.ts';
+import { recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS } from './activity_markers.ts';
+import { fetchAll } from './paginate.ts';
 
 const HUNTER_API = 'https://api.hunter.io/v2/domain-search';
 const EXPLORIUM_API = 'https://api.explorium.ai/v1';
+
+// Generic role / group / inbox local-parts — universal email conventions, not a
+// vertical assumption (mirrors the free-provider list the ingest path already
+// hardcodes). An address like info@, support@, or no-reply@ is a shared inbox,
+// never a decision-maker, so we keep them out of the contact graph entirely.
+const ROLE_INBOX_ALIASES = new Set([
+  'info', 'support', 'hello', 'hi', 'hey', 'sales', 'admin', 'administrator',
+  'contact', 'contactus', 'team', 'help', 'helpdesk', 'office', 'accounts',
+  'accounting', 'billing', 'noreply', 'donotreply', 'mailer', 'mail', 'email',
+  'postmaster', 'marketing', 'press', 'media', 'pr', 'jobs', 'careers',
+  'recruiting', 'recruitment', 'hr', 'people', 'enquiries', 'inquiries',
+  'enquiry', 'inquiry', 'general', 'feedback', 'newsletter', 'notifications',
+  'notification', 'security', 'abuse', 'legal', 'privacy', 'webmaster',
+  'service', 'services', 'orders', 'shop', 'store',
+]);
+
+/**
+ * True when an email's local-part is a generic role / group / inbox alias
+ * (info@, support@, no-reply@, ...) rather than a real person. Splits on the
+ * first separator so info-sales@ and sales.team@ also match. No vertical
+ * assumptions — these are standard email conventions.
+ */
+export function isRoleInboxEmail(email: string): boolean {
+  const local = (email.split('@')[0] ?? '').toLowerCase().trim();
+  if (!local) return true;
+  const collapsed = local.replace(/[._\-+]/g, '');  // no-reply -> noreply, do-not-reply -> donotreply
+  const base = local.replace(/[._\-+].*$/, '');       // info-sales -> info, sales.team -> sales
+  return ROLE_INBOX_ALIASES.has(local) || ROLE_INBOX_ALIASES.has(collapsed) || ROLE_INBOX_ALIASES.has(base);
+}
 
 export interface Contact {
   name: string;
@@ -27,8 +60,10 @@ export async function findContacts(args: {
   domain: string;
   limit: number;
   role_filter?: string;
+  /** Workspace-resolved key. Falls back to process.env for keyless dev scripts. */
+  apiKey?: string;
 }): Promise<Contact[]> {
-  const apiKey = process.env.HUNTER_API_KEY;
+  const apiKey = args.apiKey ?? process.env.HUNTER_API_KEY;
   if (!apiKey) throw new Error('HUNTER_API_KEY not set');
 
   const url = new URL(HUNTER_API);
@@ -52,18 +87,20 @@ export async function findContacts(args: {
   const contacts: Contact[] = emails
     .filter((e) => !!e.value)
     .map((e) => {
+      // Require a real name from the provider. Don't fall back to the email
+      // local-part — that fabricates junk "contacts" (info@ -> "info") for
+      // shared inboxes that have no person behind them.
       const fullName = [e.first_name, e.last_name].filter(Boolean).join(' ').trim();
       const email = (e.value ?? '').toLowerCase();
-      const fallbackName = email.split('@')[0] || 'unknown';
       return {
-        name: fullName || fallbackName,
+        name: fullName,
         email,
         role: (e.position ?? '').trim(),
         seniority: e.seniority ?? null,
         source_confidence: typeof e.confidence === 'number' ? e.confidence / 100 : 0,
       };
     })
-    .filter((c) => c.email && c.email.includes('@'))
+    .filter((c) => c.email && c.email.includes('@') && c.name && !isRoleInboxEmail(c.email))
     .sort((a, b) => b.source_confidence - a.source_confidence);
 
   // Apply role_filter as a post-filter too (Hunter's seniority param is coarse)
@@ -161,7 +198,10 @@ export async function findContactsExplorium(args: {
       const rawEmail = (enrichJson.data?.emails ?? [])[0];
       const email = (typeof rawEmail === 'string' ? rawEmail : (rawEmail?.email ?? rawEmail?.address ?? rawEmail?.value ?? '')).toLowerCase().trim();
       if (!email || !email.includes('@')) continue;
-      out.push({ name: (p.full_name ?? '').trim() || email.split('@')[0] || email, email, role: (p.job_title ?? '').trim() });
+      // Require a real name and skip shared inboxes — same quality bar as Hunter.
+      const fullName = (p.full_name ?? '').trim();
+      if (!fullName || isRoleInboxEmail(email)) continue;
+      out.push({ name: fullName, email, role: (p.job_title ?? '').trim() });
     } catch {
       // network hiccup on one prospect — keep the others
     }
@@ -256,13 +296,19 @@ function mapRoleFilterToSeniority(filter: string): string {
 }
 
 export interface LinkResult {
-  contact_entity_id: string;
-  created: boolean;  // true = new, false = existed
+  contact_entity_id: string | null;  // null when skipped (no entity created)
+  created: boolean;                   // true = new, false = existed or skipped
+  skipped?: 'role_inbox' | 'no_name'; // set when we refused to create garbage
 }
 
 /**
  * Idempotent. If a contact entity in the workspace already has a fact
  * (predicate=email, object_text=<email>), reuse it. Otherwise create.
+ *
+ * Garbage guard (single chokepoint for every contact-creating path — Hunter,
+ * Explorium, CSV import): refuse to create a contact for a role/group inbox
+ * (info@, support@, ...) or one with no real name. Returns a skipped result
+ * instead of throwing so callers keep processing the rest of a batch.
  */
 export async function linkContactToAccount(
   supabase: SupabaseClient,
@@ -271,6 +317,9 @@ export async function linkContactToAccount(
 ): Promise<LinkResult> {
   const email = args.email.trim().toLowerCase();
   if (!email || !email.includes('@')) throw new Error(`invalid email: ${args.email}`);
+
+  if (isRoleInboxEmail(email)) return { contact_entity_id: null, created: false, skipped: 'role_inbox' };
+  if (!args.name.trim()) return { contact_entity_id: null, created: false, skipped: 'no_name' };
 
   // Look up existing contact by email fact
   const existing = await supabase.from('facts')
@@ -308,4 +357,180 @@ export async function linkContactToAccount(
   }
 
   return { contact_entity_id, created: true };
+}
+
+const MAX_CONTACTS_PER_ACCOUNT = 5;
+
+export interface PullContactsResult {
+  ok: boolean;           // false only on a provider error (so health can flag it)
+  reason?: string;
+  provider?: string;     // provider that produced contacts (or was attempted)
+  found: number;
+  created: number;
+}
+
+/** Ordered provider list: primary then fallback, de-duped, 'none'/unset dropped. */
+function providerOrder(policy: WorkspacePolicy): string[] {
+  const seen = new Set<string>();
+  const order: string[] = [];
+  for (const p of [policy.enrichment?.contact_provider, policy.enrichment?.contact_provider_fallback]) {
+    if (p && p !== 'none' && !seen.has(p)) { seen.add(p); order.push(p); }
+  }
+  return order;
+}
+
+/**
+ * Pull decision-makers for one account through the workspace's configured
+ * provider(s), link + score each, and write a `contacts_completed` audit fact
+ * either way. Tries providers in order (primary, then fallback) and stops at
+ * the first that returns contacts — so an Explorium-first, Hunter-fallback
+ * workspace only spends Hunter credits when Explorium found nobody.
+ *
+ * Single source of truth for a contact pull: both the Inngest contactsRunner
+ * and the daily loop call this, so behavior can't drift between the two.
+ */
+export async function pullContactsForAccount(
+  supabase: SupabaseClient,
+  args: { workspace_id: string; entity_id: string },
+): Promise<PullContactsResult> {
+  const { workspace_id, entity_id } = args;
+  const actor = { workspace_id, actor_kind: 'agent' as const, actor_id: 'contacts_runner' };
+
+  async function audit(text: string): Promise<void> {
+    // Records that a contact pull attempt finished (and how) — what the system
+    // did, not a fact about the account, so it goes to the event log. The sweep
+    // contact-pull health check and drainPendingContactRequests read it back by
+    // action name. summary carries the text the error-share check greps.
+    await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.CONTACTS_COMPLETED, entity_id, {
+      summary: text.slice(0, 200),
+    });
+  }
+
+  const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
+  const domain = (ent.data?.attributes as { domain?: string } | null)?.domain;
+  if (!domain) { await audit('no domain on account'); return { ok: false, reason: 'no domain', found: 0, created: 0 }; }
+
+  const policy = await getPolicy(supabase, workspace_id);
+  const order = providerOrder(policy);
+  if (!order.length) { await audit('no contact_provider configured'); return { ok: false, reason: 'no contact_provider', found: 0, created: 0 }; }
+
+  let pulled: Array<{ name: string; email: string; role: string }> = [];
+  let usedProvider = '';
+  const errors: string[] = [];
+  for (const provider of order) {
+    try {
+      if (provider === 'hunter') {
+        const apiKey = resolveEnvVar(policy, 'HUNTER_API_KEY');
+        if (!apiKey) { errors.push('hunter: HUNTER_API_KEY not set'); continue; }
+        const cs = await findContacts({ domain, apiKey, limit: MAX_CONTACTS_PER_ACCOUNT, role_filter: 'founder' });
+        pulled = cs.filter((c) => c.email).map((c) => ({ name: c.name, email: c.email, role: c.role }));
+      } else if (provider === 'explorium') {
+        const apiKey = resolveEnvVar(policy, 'EXPLORIUM_API_KEY');
+        if (!apiKey) { errors.push('explorium: EXPLORIUM_API_KEY not set'); continue; }
+        pulled = await findContactsExplorium({ domain, apiKey, limit: MAX_CONTACTS_PER_ACCOUNT, role_filter: 'founder' });
+      } else {
+        continue;
+      }
+      usedProvider = provider;
+      if (pulled.length) break; // got contacts — don't spend the fallback
+    } catch (e) {
+      errors.push(`${provider}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  if (!pulled.length) {
+    const msg = errors.length ? `no contacts; ${errors.join('; ')}` : `no contacts found via ${order.join('/')}`;
+    await audit(msg);
+    // ok:false only when a provider actually errored, so the health sweep can
+    // tell a real failure (bad key, quota) from a clean "matched, found nobody".
+    return { ok: errors.length === 0, reason: errors.length ? 'provider error' : 'no contacts found', provider: usedProvider || order[0], found: 0, created: 0 };
+  }
+
+  let created = 0;
+  for (const c of pulled) {
+    try {
+      const r = await linkContactToAccount(supabase, actor, { account_entity_id: entity_id, name: c.name, email: c.email, role: c.role });
+      if (r.created && r.contact_entity_id) { await scoreAndAssert(supabase, actor, r.contact_entity_id); created++; }
+    } catch { /* skip one bad contact; the rest still land */ }
+  }
+  await audit(`${created} new contact(s) via ${usedProvider} (${pulled.length} found)`);
+  return { ok: true, provider: usedProvider, found: pulled.length, created };
+}
+
+export interface DrainResult {
+  pending: number;          // total unfulfilled requests found
+  attempted: number;        // how many we ran this pass (capped)
+  contacts_created: number;
+  errors: number;           // pulls that hit a provider error
+  results: Array<{ entity_id: string; provider?: string; found: number; created: number; ok: boolean; reason?: string }>;
+}
+
+/**
+ * Run any enrich_contacts requests that haven't been fulfilled yet. The action
+ * selector writes a `contacts_requested` fact and emits a `contacts.requested`
+ * event for the Inngest contactsRunner; while Inngest is out, the daily loop
+ * calls this so pulls still happen. A request is "pending" until a
+ * `contacts_completed` fact lands after it. Highest account score first, capped
+ * per pass so a backlog can't drain the whole provider quota in one night.
+ */
+export async function drainPendingContactRequests(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  cap: number,
+): Promise<DrainResult> {
+  const out: DrainResult = { pending: 0, attempted: 0, contacts_created: 0, errors: 0, results: [] };
+  if (cap <= 0) return out;
+
+  // Most recent contacts_requested per account — event-log markers now, not
+  // facts. Paginated so a busy workspace's request log doesn't truncate at 1000.
+  const reqs = await fetchAll<{ target_id: string | null; created_at: string }>((f, t) =>
+    supabase.from('events').select('target_id, created_at')
+      .eq('workspace_id', workspace_id).eq('target_kind', 'entity')
+      .eq('action', ACTIVITY_MARKERS.CONTACTS_REQUESTED)
+      .order('created_at', { ascending: true }).range(f, t));
+  const requestedAt = new Map<string, string>();
+  for (const r of reqs) {
+    if (!r.target_id) continue;
+    const prev = requestedAt.get(r.target_id);
+    if (!prev || r.created_at > prev) requestedAt.set(r.target_id, r.created_at);
+  }
+  if (!requestedAt.size) return out;
+
+  // Latest contacts_completed per account (event-log markers — take max).
+  const subs = [...requestedAt.keys()];
+  const completedMs = await latestMarkerByEntity(supabase, workspace_id, subs, [ACTIVITY_MARKERS.CONTACTS_COMPLETED]);
+
+  // Pending = requested with no completion landing after the request.
+  const pending = subs.filter((s) => {
+    const done = completedMs.get(s);
+    return !done || done < Date.parse(requestedAt.get(s)!);
+  });
+  out.pending = pending.length;
+  if (!pending.length) return out;
+
+  // Order by current account score_total desc — scarce credits go to the best
+  // accounts first. (The current score is the row no other row supersedes.)
+  const scoreRows = await supabase.from('facts')
+    .select('id, subject_entity, object_text, supersedes')
+    .eq('workspace_id', workspace_id)
+    .eq('predicate', 'score_total')
+    .in('subject_entity', pending);
+  const rows = (scoreRows.data ?? []) as Array<{ id: string; subject_entity: string; object_text: string | null; supersedes: string | null }>;
+  const pointed = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const scoreByEnt = new Map<string, number>();
+  for (const r of rows) {
+    if (pointed.has(r.id)) continue;
+    const v = parseFloat(r.object_text ?? '');
+    if (Number.isFinite(v)) scoreByEnt.set(r.subject_entity, v);
+  }
+  const ordered = [...pending].sort((a, b) => (scoreByEnt.get(b) ?? 0) - (scoreByEnt.get(a) ?? 0));
+
+  for (const entity_id of ordered.slice(0, cap)) {
+    const r = await pullContactsForAccount(supabase, { workspace_id, entity_id });
+    out.attempted++;
+    out.contacts_created += r.created;
+    if (!r.ok && r.reason === 'provider error') out.errors++;
+    out.results.push({ entity_id, provider: r.provider, found: r.found, created: r.created, ok: r.ok, reason: r.reason });
+  }
+  return out;
 }

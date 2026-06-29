@@ -20,9 +20,18 @@ export function FeedHealth({ ws }: { ws: string }) {
   if (!data || data.error) return null;
 
   const badges = [
-    { label: 'pending approvals stale', value: data.stale_gates, hint: '>7d undecided' },
-    { label: 'stale drafts', value: data.stale_drafts, hint: '>7d, no follow-up' },
-    { label: 'errored sources', value: data.errored_sources, hint: 'last run failed' },
+    {
+      label: 'pending approvals stale', value: data.stale_gates,
+      hint: (n: number) => `${n} outreach approval${n === 1 ? '' : 's'} ${n === 1 ? 'has' : 'have'} been waiting on you for over a week`,
+    },
+    {
+      label: 'stale drafts', value: data.stale_drafts,
+      hint: (n: number) => `${n} drafted email${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} 7+ days old with no agent follow-up since`,
+    },
+    {
+      label: 'errored sources', value: data.errored_sources,
+      hint: (n: number) => `${n} data source${n === 1 ? '' : 's'} failed ${n === 1 ? 'its' : 'their'} last run`,
+    },
   ];
   const allHealthy = badges.every((b) => b.value === 0);
 
@@ -37,7 +46,7 @@ export function FeedHealth({ ws }: { ws: string }) {
       <span className="subtle">system</span>
       {allHealthy && <span className="badge badge-green">✓ all clear</span>}
       {!allHealthy && badges.filter((b) => b.value > 0).map((b) => (
-        <span key={b.label} title={b.hint} className={`badge ${b.value > 5 ? 'badge-coral' : 'badge-amber'}`}>
+        <span key={b.label} title={b.hint(b.value)} className={`badge ${b.value > 5 ? 'badge-coral' : 'badge-amber'}`}>
           {b.label}: {b.value}
         </span>
       ))}

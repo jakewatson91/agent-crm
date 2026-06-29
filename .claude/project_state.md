@@ -1,6 +1,6 @@
 # Project State
 
-Last Update: 2026-06-22
+Last Update: 2026-06-28
 
 > Open items + reference only. Dated session history → `progress_log.md`. Current system map → `architecture.md`. Cross-project lessons → agent_memory daily log.
 
@@ -67,6 +67,8 @@ Full current system map moved to `architecture.md`.
 ## Known issues (deferred)
 
 - **`unstable_cache` invalidation not wired to mutations.** Gates, feed, entities, and health are cached server-side (tags: 'gates', 'feed', 'entities', 'health'). Mutation routes (e.g. `gates/decide`) must call `revalidateTag('gates')` after writes or users will see stale data for up to the TTL (15-60s). Add these as the write paths are touched.
+- **WATCH (2026-06-28): confirm Supabase egress drops in next 24-48h.** Root causes were the entities/index route (30s cache TTL × 2.5MB response = 2GB+/day), health actionDistribution (reading 10K post bodies × 2 windows at 60s TTL), and feed/list (20s TTL). All three fixed in commit `60171bd` and pushed. If egress is still high: check for other routes with short TTLs hitting Supabase on every browser poll.
+- **launchd daily enrichment job (`sh.jakewatson.agentcrm.enrich`) was broken** — `node tsx.mjs` bypassed pnpm's module linker so `@supabase/supabase-js` couldn't resolve. Fixed to `pnpm tsx`, reloaded. Runs daily 09:00. When Inngest resets ~2026-07-01, entityResearchDispatcher (4h cron) resumes — analyzed and acceptable (id+channel_id only, 308KB total).
 - IndieHackers RSS feed returns 0 raw items (feed URL or content-type changed). Lenny's and TechCrunch parse fine.
 - RSS false-positive entity creation: tightened again in 2026-05-15 prompt push, still imperfect
 - Render free-tier host sleeps on idle → recurring feed-death. **Real root cause found + fixed 2026-06-16:** `/api/health` was 307-redirecting to login (auth middleware `PUBLIC_PATHS` didn't whitelist it), so every cron-job.org keepalive ping logged as failed → keepalive went dead → host slept → Inngest unreachable → dispatcher stopped. Fix: added `/api/health` to `apps/web/middleware.ts` whitelist (deployed, returns 200). Keepalive must still stay enabled; bulletproof option = always-on paid Render tier (no sleep, keepalive becomes optional).

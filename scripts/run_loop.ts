@@ -26,7 +26,7 @@ config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
 import { runAgent } from '../inngest/functions/agent_logic.js';
 import { getConnector } from '../inngest/functions/sources/registry.js';
-import { runRetention } from '@agent-crm/tools';
+import { runRetention, drainPendingContactRequests } from '@agent-crm/tools';
 
 const INTERVAL_MIN = parseInt(process.env.INTERVAL_MIN ?? '60', 10);
 
@@ -132,6 +132,23 @@ async function tick() {
     }
   }
   console.log(`  ${runs} agent runs, ${posted} posts created`);
+
+  // 2b. Drain enrich_contacts requests. agent_logic emits a `contacts.requested`
+  //     event for the Inngest contactsRunner; while Inngest is out those never
+  //     run, so pull contacts here instead. Capped per workspace (policy) so a
+  //     backlog can't drain the provider quota in one pass; best accounts first.
+  const drainWs = await sb.from('workspaces').select('id, policy');
+  for (const w of drainWs.data ?? []) {
+    try {
+      const cap = (w.policy as { enrichment?: { max_contact_pulls_per_run?: number } } | null)?.enrichment?.max_contact_pulls_per_run ?? 5;
+      const d = await drainPendingContactRequests(sb, w.id as string, cap);
+      if (d.pending > 0 || d.attempted > 0) {
+        console.log(`  [contacts ${w.id}] pending=${d.pending} pulled=${d.attempted} new_contacts=${d.contacts_created} provider_errors=${d.errors}`);
+      }
+    } catch (e) {
+      console.error(`  [contacts ${w.id}] error:`, e instanceof Error ? e.message : String(e));
+    }
+  }
 
   // 3. Retention pass — bound the unbounded tables (signals embeddings, telemetry
   //    events). Internally throttled to ~once/day per workspace, so calling it

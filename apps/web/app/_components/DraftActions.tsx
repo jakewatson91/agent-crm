@@ -31,6 +31,7 @@ interface Gate {
 interface Props {
   postId: string;
   workspaceId: string;
+  initialGate?: Gate | null;
   onDecided?: () => void;
 }
 
@@ -41,17 +42,26 @@ const PILL_BASE: React.CSSProperties = {
   cursor: 'pointer', borderRadius: 4, fontWeight: 500,
 };
 
-export function DraftActions({ postId, workspaceId, onDecided }: Props) {
-  const [gate, setGate] = useState<Gate | null>(null);
-  const [mode, setMode] = useState<Mode>('idle');
+export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Props) {
+  const [gate, setGate] = useState<Gate | null>(initialGate ?? null);
+  const [mode, setMode] = useState<Mode>(() => {
+    if (initialGate === undefined) return 'idle'; // will fetch
+    if (!initialGate) return 'no_gate';
+    if (initialGate.decided_at)
+      return initialGate.decision === 'approve' || initialGate.decision === 'modify' ? 'sent' : 'rejected';
+    return 'idle';
+  });
   const [editedSubject, setEditedSubject] = useState('');
   const [editedHtml, setEditedHtml] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sentInfo, setSentInfo] = useState<{ effective_to: string; override_active: boolean } | null>(null);
 
   useEffect(() => {
+    // Skip fetch when the parent already inlined the gate (feed path).
+    if (initialGate !== undefined) return;
     let alive = true;
     fetch(`/api/gates/by-post?post_id=${postId}`)
       .then((r) => r.json())
@@ -65,7 +75,7 @@ export function DraftActions({ postId, workspaceId, onDecided }: Props) {
       })
       .catch(() => alive && setMode('no_gate'));
     return () => { alive = false; };
-  }, [postId]);
+  }, [postId, initialGate]);
 
   // No gate (legacy drafts created before C2 shipped) — hide silently.
   if (mode === 'no_gate' || !gate) {
@@ -130,9 +140,15 @@ export function DraftActions({ postId, workspaceId, onDecided }: Props) {
           style={{ width: '100%', padding: '.4rem .55rem', fontSize: '.85rem', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginBottom: '.5rem' }}
         />
         <RichTextEditor initialHtml={editedHtml} onChange={setEditedHtml} />
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="note (optional) — e.g. why you changed it"
+          style={{ width: '100%', padding: '.4rem .55rem', fontSize: '.85rem', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginTop: '.5rem' }}
+        />
         <div style={{ display: 'flex', gap: '.5rem', marginTop: '.5rem' }}>
           <button
-            onClick={() => decide('approve', { edited_subject: editedSubject, edited_html: editedHtml })}
+            onClick={() => decide('approve', { edited_subject: editedSubject, edited_html: editedHtml, reason: note || undefined })}
             disabled={busy}
             style={{ ...PILL_BASE, background: 'var(--accent-green)', color: '#fff', opacity: busy ? 0.4 : 1 }}
           >
@@ -182,33 +198,41 @@ export function DraftActions({ postId, workspaceId, onDecided }: Props) {
   }
 
   return (
-    <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.5rem', flexWrap: 'wrap' }}>
-      <button
-        onClick={() => decide('approve')}
-        disabled={busy}
-        style={{ ...PILL_BASE, background: 'var(--accent-green)', color: '#fff', opacity: busy ? 0.4 : 1 }}
-      >
-        {busy ? 'sending…' : 'accept · send'}
-      </button>
-      <button
-        onClick={() => { setEditedSubject(condSubject); setEditedHtml(textToHtml(condBody)); setMode('editing'); }}
-        disabled={busy}
-        style={{ ...PILL_BASE, background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--border)' }}
-      >
-        edit
-      </button>
-      <button
-        onClick={() => setMode('rejecting')}
-        disabled={busy}
-        style={{ ...PILL_BASE, background: 'transparent', color: 'var(--accent-coral)', border: '1px solid var(--accent-coral)' }}
-      >
-        reject
-      </button>
-      {intendedTo && (
-        <span className="subtle mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
-          intended: {intendedTo}
-        </span>
-      )}
+    <div style={{ marginTop: '.5rem' }}>
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="note (optional)"
+        style={{ width: '100%', padding: '.35rem .55rem', fontSize: '.78rem', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginBottom: '.4rem' }}
+      />
+      <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          onClick={() => decide('approve', { reason: note || undefined })}
+          disabled={busy}
+          style={{ ...PILL_BASE, background: 'var(--accent-green)', color: '#fff', opacity: busy ? 0.4 : 1 }}
+        >
+          {busy ? 'sending…' : 'accept · send'}
+        </button>
+        <button
+          onClick={() => { setEditedSubject(condSubject); setEditedHtml(textToHtml(condBody)); setMode('editing'); }}
+          disabled={busy}
+          style={{ ...PILL_BASE, background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--border)' }}
+        >
+          edit
+        </button>
+        <button
+          onClick={() => setMode('rejecting')}
+          disabled={busy}
+          style={{ ...PILL_BASE, background: 'transparent', color: 'var(--accent-coral)', border: '1px solid var(--accent-coral)' }}
+        >
+          reject
+        </button>
+        {intendedTo && (
+          <span className="subtle mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
+            intended: {intendedTo}
+          </span>
+        )}
+      </div>
       {error && <div style={{ marginTop: '.4rem', color: 'var(--accent-coral)', fontSize: '.78rem', width: '100%' }}>{error}</div>}
     </div>
   );

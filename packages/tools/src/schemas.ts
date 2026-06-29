@@ -85,6 +85,10 @@ export const PostToChannelSchema = z.object({
   cites: z.array(UuidSchema).default([]),
   parent_post_id: UuidSchema.optional(),
   thread_root_id: UuidSchema.optional(),
+  // How much this claim's facts moved the account's score (score_after -
+  // score_before), computed by the caller at rescore time. Only set on
+  // enricher-sourced claims that triggered a rescore.
+  score_delta: z.number().optional(),
 });
 
 export const QuerySchema = z.object({
@@ -106,6 +110,7 @@ export const RequestGateSchema = z.object({
 export const DecideGateSchema = z.object({
   gate_id: UuidSchema,
   decision: z.enum(['approve', 'reject', 'modify']),
+  resolution: z.record(z.unknown()).optional(),
 });
 
 // ─── Read-side tools ──────────────────────────────────────────────────────────

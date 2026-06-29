@@ -18,7 +18,7 @@
  * the cooldown even before researchRunner finishes.
  */
 import { createServerClient } from '@agent-crm/db';
-import { callTool, entityIdsOfType } from '@agent-crm/tools';
+import { entityIdsOfType, recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 // PostgREST builds `.in(col, ids)` into the request URL. Past a few hundred ids
@@ -80,8 +80,9 @@ export const entityResearchDispatcher = inngest.createFunction(
         total_evaluated += accounts.length;
         const acctIds = accounts.map((a) => a.id);
 
-        // Batched fact load — every predicate we care about, in one query.
-        // Active facts only (supersedes is null).
+        // Batched fact load — score + lifecycle predicates, in one query.
+        // Active facts only (supersedes is null). Research timing no longer
+        // lives in facts; it's read from the event log below.
         const factRows = await chunkedIn<{ subject_entity: string; predicate: string; object_text: string | null; observed_at: string }>(
           acctIds,
           (chunk) => supabase
@@ -91,10 +92,15 @@ export const entityResearchDispatcher = inngest.createFunction(
             .in('subject_entity', chunk)
             .in('predicate', [
               'icp_fit', 'score_total', 'score_signal_strength', 'dropped_until',
-              'research_triggered', 'research_completed',
             ])
             .is('supersedes', null),
         );
+
+        // Last-research time per entity — from the research_triggered /
+        // research_completed event-log markers (batched, paginated).
+        const lastResearchByEntity = await latestMarkerByEntity(supabase, ws.id, acctIds, [
+          ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ACTIVITY_MARKERS.RESEARCH_COMPLETED,
+        ]);
 
         interface EntityState {
           score_total: number | null;
@@ -104,12 +110,14 @@ export const entityResearchDispatcher = inngest.createFunction(
         }
         const stateByEntity = new Map<string, EntityState>();
         for (const a of accounts) {
-          stateByEntity.set(a.id, { score_total: null, signal_strength: null, dropped_until: null, last_research_at: 0 });
+          stateByEntity.set(a.id, {
+            score_total: null, signal_strength: null, dropped_until: null,
+            last_research_at: lastResearchByEntity.get(a.id) ?? 0,
+          });
         }
         for (const f of factRows) {
           const s = stateByEntity.get(f.subject_entity);
           if (!s) continue;
-          const ts = Date.parse(f.observed_at);
           if (f.predicate === 'score_total') {
             const v = parseFloat(f.object_text ?? '');
             if (Number.isFinite(v)) s.score_total = v;
@@ -124,8 +132,6 @@ export const entityResearchDispatcher = inngest.createFunction(
             if (Number.isFinite(v)) s.signal_strength = v;
           } else if (f.predicate === 'dropped_until') {
             s.dropped_until = f.object_text ?? null;
-          } else if (f.predicate === 'research_triggered' || f.predicate === 'research_completed') {
-            if (Number.isFinite(ts) && ts > s.last_research_at) s.last_research_at = ts;
           }
         }
 
@@ -229,14 +235,11 @@ export const entityResearchDispatcher = inngest.createFunction(
         by_tier[c.tier]++;
         const actor = { workspace_id: c.workspace_id, actor_kind: 'system' as const, actor_id: 'entity_research_dispatcher' };
         try {
-          // Dispatch marker — reuses the same predicate the reactive path uses
-          // so action_selector's cooldown read picks this up too.
-          await callTool(supabase, actor, 'assert_fact', {
-            subject_entity: c.entity_id,
-            predicate: 'research_triggered',
-            object_text: new Date().toISOString(),
-            confidence: 1.0,
-          });
+          // Dispatch marker — same event the reactive path writes, so
+          // action_selector's cooldown read picks this up too. Event log, not
+          // a fact (it records what the system did, not a truth about the account).
+          await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_TRIGGERED, c.entity_id,
+            { tier: c.tier });
           await inngest.send({
             name: 'research.requested',
             data: {

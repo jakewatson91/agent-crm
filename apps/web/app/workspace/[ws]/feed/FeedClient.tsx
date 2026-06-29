@@ -26,6 +26,8 @@ interface FeedItem {
   reasoning: string | null;
   dup_count: number;
   pending_approval: boolean;
+  gate: { id: string; policy: string; condition: Record<string, unknown> | null; decision: 'approve' | 'reject' | 'modify' | null; decided_at: string | null } | null;
+  score_delta: number | null;
 }
 
 export function FeedClient({ ws, initialItems }: { ws: string; initialItems: FeedItem[] }) {

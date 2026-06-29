@@ -21,6 +21,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ScoreBreakdown } from './scoring.ts';
+import { latestMarkerAt, ACTIVITY_MARKERS } from './activity_markers.ts';
 export type Action =
   | 'draft_outreach'
   | 'enrich_contacts'
@@ -119,10 +120,11 @@ interface SelectArgs {
   breakdown: ScoreBreakdown;
   icp_total: number;
   /**
-   * Best contact_score over the account's contacts (max). Optional: when
-   * undefined the selector behaves exactly as before (account-only routing),
-   * so callers can adopt it incrementally. When provided, it drives the
-   * priority gate and the enrich_contacts action.
+   * Best contact_score over the account's contacts (max). undefined means the
+   * account has no linked, scored contact — treated as "no reachable
+   * decision-maker," which routes a strong-fit account to enrich_contacts and
+   * blocks drafting (we never draft to a missing recipient). A defined value
+   * below DRAFT_MIN_CONTACT_SCORE also routes to enrich_contacts.
    */
   best_contact_score?: number;
   // Recent activity context (already loaded in agent_logic before this call).
@@ -169,31 +171,41 @@ export function selectAction(args: SelectArgs): ActionDecision {
   }
 
   // 0c. Two-tier gate: a strong-fit account with no reachable decision-maker
-  //     routes to enrich_contacts — go find/buy a better contact before drafting.
-  //     Only fires when the caller supplied best_contact_score (else skipped, so
-  //     account-only callers are unaffected). Placed before draft so a high-fit
-  //     account never drafts to a weak/missing contact.
+  //     routes to enrich_contacts — go find a real contact before drafting.
+  //     Two cases route here: (a) no contact linked at all (best_contact_score
+  //     undefined), and (b) only a weak contact below the draft bar. Both mean
+  //     "find a real person first." Placed before draft so a high-fit account
+  //     never drafts to a missing or weak contact. The cooldown stops us
+  //     re-requesting before an in-flight pull lands.
   const contactsReqAge = args.recent_contacts_request_at
     ? (now - Date.parse(args.recent_contacts_request_at)) / 86400_000
     : Infinity;
+  const noReachableContact =
+    args.best_contact_score === undefined ||
+    args.best_contact_score < THRESH.DRAFT_MIN_CONTACT_SCORE;
   if (
-    args.best_contact_score !== undefined &&
+    noReachableContact &&
     args.icp_total >= THRESH.ENRICH_CONTACTS_ACCOUNT_ICP &&
-    args.best_contact_score < THRESH.DRAFT_MIN_CONTACT_SCORE &&
     contactsReqAge >= THRESH.ENRICH_CONTACTS_COOLDOWN_DAYS
   ) {
+    const contactDesc = args.best_contact_score === undefined
+      ? 'no contact is linked yet'
+      : `best contact ${args.best_contact_score.toFixed(2)} is below ${THRESH.DRAFT_MIN_CONTACT_SCORE}`;
     return {
       action: 'enrich_contacts',
-      policy: 'good_account_weak_contact',
-      reason: `Enrich contacts: account fit ${args.icp_total.toFixed(2)} is strong but best contact ${args.best_contact_score.toFixed(2)} is below ${THRESH.DRAFT_MIN_CONTACT_SCORE}. Find a real decision-maker before drafting.`,
+      policy: args.best_contact_score === undefined ? 'good_account_no_contact' : 'good_account_weak_contact',
+      reason: `Enrich contacts: account fit ${args.icp_total.toFixed(2)} is strong but ${contactDesc}. Find a real decision-maker before drafting.`,
     };
   }
 
   // 1. Draft if fit, trigger, and evidence all clear the bar. The "is there a
   //    real on-pitch reason to reach out" judgment lives in signal_strength (an
   //    LLM rubric scored against the workspace value prop), so the draft bar
-  //    here IS the trigger gate — no separate keyword/theme check. When a contact
-  //    score is supplied it must also clear the bar (else 0c would have caught it).
+  //    here IS the trigger gate — no separate keyword/theme check. Drafting now
+  //    requires a real scored contact that clears the bar — never draft to a
+  //    missing recipient. A zero-contact account would have routed to
+  //    enrich_contacts at 0c; it only reaches here during the enrich cooldown
+  //    window, in which case we watch instead of drafting to nobody.
   const draftAge = args.recent_draft_at
     ? (now - Date.parse(args.recent_draft_at)) / 86400_000
     : Infinity;
@@ -202,7 +214,8 @@ export function selectAction(args: SelectArgs): ActionDecision {
     b.signal_strength >= THRESH.DRAFT_SIGNAL_STRENGTH &&
     b.evidence_depth >= THRESH.DRAFT_EVIDENCE_DEPTH &&
     draftAge >= THRESH.DRAFT_SUPPRESSION_DAYS &&
-    (args.best_contact_score === undefined || args.best_contact_score >= THRESH.DRAFT_MIN_CONTACT_SCORE)
+    args.best_contact_score !== undefined &&
+    args.best_contact_score >= THRESH.DRAFT_MIN_CONTACT_SCORE
   ) {
     return {
       action: 'draft_outreach',
@@ -279,18 +292,10 @@ export async function loadActionContext(
     .limit(1)
     .maybeSingle();
 
-  // Most recent deep_research event (we write a `research_triggered` fact
-  // with observed_at when we kick off Exa for an entity).
-  const research = await supabase
-    .from('facts')
-    .select('observed_at')
-    .eq('workspace_id', workspace_id)
-    .eq('subject_entity', entity_id)
-    .eq('predicate', 'research_triggered')
-    .is('supersedes', null)
-    .order('observed_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // Most recent research trigger — an event-log marker written when we kick off
+  // Exa for an entity (reactive path or dispatcher). Used to enforce the
+  // research cooldown so we don't re-trigger every cron tick.
+  const recentResearchAt = await latestMarkerAt(supabase, workspace_id, entity_id, [ACTIVITY_MARKERS.RESEARCH_TRIGGERED]);
 
   // dropped_until fact — value is an ISO date string. If present and in the
   // future, action_selector short-circuits to continue/suppressed.
@@ -317,23 +322,14 @@ export async function loadActionContext(
     .limit(1)
     .maybeSingle();
 
-  // contacts_requested fact — asserted when enrich_contacts fired, so the
-  // selector doesn't re-request before the pull lands (cooldown window).
-  const contactsReq = await supabase
-    .from('facts')
-    .select('observed_at')
-    .eq('workspace_id', workspace_id)
-    .eq('subject_entity', entity_id)
-    .eq('predicate', 'contacts_requested')
-    .is('supersedes', null)
-    .order('observed_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // contacts_requested marker — written to the event log when enrich_contacts
+  // fired, so the selector doesn't re-request before the pull lands (cooldown).
+  const recentContactsRequestAt = await latestMarkerAt(supabase, workspace_id, entity_id, [ACTIVITY_MARKERS.CONTACTS_REQUESTED]);
 
   return {
     recent_draft_at: (draft.data?.created_at as string) ?? null,
-    recent_research_at: (research.data?.observed_at as string) ?? null,
-    recent_contacts_request_at: (contactsReq.data?.observed_at as string) ?? null,
+    recent_research_at: recentResearchAt,
+    recent_contacts_request_at: recentContactsRequestAt,
     dropped_until: (dropped.data?.object_text as string) ?? null,
     cooldown_until: (cooldown.data?.object_text as string) ?? null,
   };

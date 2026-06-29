@@ -288,7 +288,9 @@ export async function ingestRows(
           role: contactRole,
         });
         contactId = link.contact_entity_id;
-        if (link.created) result.contacts_created++; else result.contacts_reused++;
+        // skipped = role inbox / no name → not created and not a real reuse.
+        if (link.created) result.contacts_created++;
+        else if (!link.skipped) result.contacts_reused++;
       }
 
       // Mapped facts.

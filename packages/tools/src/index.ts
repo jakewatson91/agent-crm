@@ -12,7 +12,7 @@ import {
 } from '@agent-crm/primitives';
 import { TOOL_SCHEMAS, type ToolName } from './schemas.ts';
 import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, fetchSeenSignalTags, type EntityStatus } from './reads.ts';
-import { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId } from './contacts.ts';
+import { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId, pullContactsForAccount, drainPendingContactRequests, isRoleInboxEmail } from './contacts.ts';
 import { scoreEntity, scoreAndAssert, combineSubScores, scoreContact } from './scoring.ts';
 import { selectAction, loadActionContext } from './action_selector.ts';
 import { graphProximity } from './graph.ts';
@@ -36,11 +36,12 @@ export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts }
 export { diffDraftBody, type ParagraphDiff } from './diff_draft.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, fetchSeenSignalTags };
-export { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId };
+export { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId, pullContactsForAccount, drainPendingContactRequests, isRoleInboxEmail };
+export type { PullContactsResult, DrainResult } from './contacts.ts';
 export { scoreEntity, scoreAndAssert, combineSubScores, scoreContact };
 export { buildContactWeights, DEFAULT_CONTACT_WEIGHTS, decisionPower, personaMatch } from './scoring.ts';
 export { selectAction, loadActionContext, loadBestContactScore, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.ts';
-export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights } from './scoring.ts';
+export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights, isSubstantiveFact, ADMIN_PREDICATES, type ScoreBreakdown } from './scoring.ts';
 export { graphProximity, type GraphProximityResult } from './graph.ts';
 export { resolveOrCreateEntity, normalizeEntityName, trigramSim, looksLikeEntityName, type ResolveResult } from './resolve.ts';
 export { getEntityTypes, getEntityTypesBatch, isEntityOfType, entityIdsOfType, listWorkspaceTypes } from './entity_types.ts';
@@ -48,6 +49,7 @@ export { ingestRows, getPath, normalizeDomain, hashItem, type IngestSpec, type I
 export { setOutreachStage, DEFAULT_STAGE_FACT_NAME } from './lifecycle.ts';
 export type { LifecyclePolicy, OutreachTransition } from './policy.ts';
 export { factFamilyOf, type FactGroup, type DisplayPolicy } from './fact_groups.ts';
+export { ACTIVITY_MARKERS, recordActivityMarker, latestMarkerAt, latestMarkerByEntity, type ActivityMarker } from './activity_markers.ts';
 export type { EntityStatus };
 
 export interface ToolResult {
@@ -318,14 +320,15 @@ export async function callTool(
 
       case 'find_contacts': {
         const a = args as { domain: string; limit: number; role_filter?: string };
-        const data = await findContacts(a);
+        const policy = await getPolicy(supabase, actor.workspace_id);
+        const data = await findContacts({ ...a, apiKey: resolveEnvVar(policy, 'HUNTER_API_KEY') });
         return { ok: true, event_id: '', target_id: '', data };
       }
 
       case 'link_contact_to_account': {
         const a = args as { account_entity_id: string; name: string; email: string; role?: string };
         const data = await linkContactToAccount(supabase, actor, a);
-        return { ok: true, event_id: '', target_id: data.contact_entity_id, data };
+        return { ok: true, event_id: '', target_id: data.contact_entity_id ?? '', data };
       }
 
       case 'score_entity': {

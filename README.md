@@ -26,7 +26,10 @@ another):
 
 ```bash
 pnpm status                  # full pipeline overview: active sources, signals by type,
-                             #   pipeline output (posts by kind, 24h/7d), enrichment markers, pending gates
+                             #   pipeline output (posts by kind, 24h/7d), enrichment markers,
+                             #   LLM + Exa cost (24h / 7d / run-rate), pending gates
+pnpm status cost             # full LLM-spend breakdown by model + behavior, plus Exa search cost
+pnpm status cost 24          # ...over a custom window in hours (default 168 = 7d)
 pnpm status hiring_post      # dump the 20 most recent signals of one type (entity + body + source)
 pnpm status research_result 50   # ...any signal type, any count
 

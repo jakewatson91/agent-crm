@@ -10,6 +10,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { cronToMinIntervalMinutes } from './cron.ts';
 import { getSourceMetrics } from './source_metrics.ts';
 import { fetchAll } from './paginate.ts';
+import { ACTIVITY_MARKERS } from './activity_markers.ts';
+import { isSubstantiveFact } from './scoring.ts';
 import { createHash } from 'node:crypto';
 
 export type Severity = 'red' | 'yellow' | 'green';
@@ -52,21 +54,23 @@ export const SWEEP_THRESHOLDS = {
   // them, or the enricher saw them and found nothing worth recording.
   // Whichever it is, the source is spending its budget for no return.
   dead_weight_min_signals: 5,
+
+  // Contact-pull health. A recent batch of contacts_completed audit facts that's
+  // mostly errors means the provider is broken (bad key / quota). Pending
+  // enrich_contacts requests with no pull at all in the stall window mean
+  // draining stopped (loop down or disabled) — not just a slow backlog.
+  contact_error_share_red: 0.50,
+  contact_min_completions: 3,
+  contact_stall_hours: 48,
 };
 
 const HOUR = 3600_000;
 const DAY = 86_400_000;
 
-// Bookkeeping predicates that aren't evidence about the account — score outputs,
-// lifecycle flags, cooldown timers. Excluded when deciding whether an entity has
-// "substantive" facts or received a genuinely new fact.
-const ADMIN_PREDICATES = new Set([
-  'icp_fit', 'icp_fit_breakdown', 'domain', 'contact_lookup_attempted',
-  'dropped_until', 'outreach_cooldown_until', 'last_outreach_at',
-  'research_triggered', 'research_completed', 'no_reply_marked',
-  'outreach_rejected_at', 'replied_at',
-]);
-const isSubstantive = (predicate: string) => !ADMIN_PREDICATES.has(predicate) && !predicate.startsWith('score_');
+// "Is this fact real evidence about the account?" — imported from scoring so the
+// sweep and the scorer share one definition and can't drift (the drift is what
+// let the scorer count self-pings as evidence). See scoring.ts ADMIN_PREDICATES.
+const isSubstantive = isSubstantiveFact;
 
 function hashBody(s: string): string {
   return createHash('sha256').update(s).digest('hex').slice(0, 16);
@@ -451,6 +455,73 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   } catch (e) {
     // Non-fatal: sweep should still return the other checks even if metrics fail.
     console.error('source_dead_weight check failed:', (e as Error)?.message ?? e);
+  }
+
+  // Contact-pull health. Surfaces a silently-broken provider or a stalled drain
+  // so a backlog of enrich_contacts requests doesn't sit forever — or quietly
+  // start adding junk. Reads the contacts_completed event-log markers the pull
+  // writes on every attempt, plus the contacts_requested markers that gate it.
+  try {
+    const [reqRows, compRows] = await Promise.all([
+      fetchAll<{ target_id: string | null; created_at: string }>((f, t) => sb.from('events')
+        .select('target_id, created_at')
+        .eq('workspace_id', workspace_id).eq('target_kind', 'entity')
+        .eq('action', ACTIVITY_MARKERS.CONTACTS_REQUESTED)
+        .order('created_at', { ascending: true }).range(f, t)),
+      fetchAll<{ target_id: string | null; payload: { summary?: string } | null; created_at: string }>((f, t) => sb.from('events')
+        .select('target_id, payload, created_at')
+        .eq('workspace_id', workspace_id).eq('target_kind', 'entity')
+        .eq('action', ACTIVITY_MARKERS.CONTACTS_COMPLETED)
+        .gte('created_at', since7d)
+        .order('created_at', { ascending: true }).range(f, t)),
+    ]);
+    const requestedAt = new Map<string, number>();
+    for (const r of reqRows) {
+      if (!r.target_id) continue;
+      requestedAt.set(r.target_id, Math.max(requestedAt.get(r.target_id) ?? 0, Date.parse(r.created_at)));
+    }
+    // Normalize to the shape the checks below use: { entity, summary, created_at }.
+    const comps = compRows.map((c) => ({ subject_entity: c.target_id ?? '', summary: c.payload?.summary ?? '', created_at: c.created_at }));
+    const completedAt = new Map<string, number>();
+    for (const c of comps) {
+      if (!c.subject_entity) continue;
+      completedAt.set(c.subject_entity, Math.max(completedAt.get(c.subject_entity) ?? 0, Date.parse(c.created_at)));
+    }
+
+    // (a) Provider-error share over the last 24h of completions. A clean "found
+    //     nobody" or "no domain" is not an error — only key/quota/HTTP failures.
+    const recent = comps.filter((c) => Date.parse(c.created_at) >= now - DAY);
+    const errRe = /not set|error|\b401\b|\b403\b|\b429\b|quota|insufficient|unauthor/i;
+    const errs = recent.filter((c) => errRe.test(c.summary)).length;
+    if (recent.length >= T.contact_min_completions) {
+      const share = errs / recent.length;
+      if (share >= T.contact_error_share_red) {
+        out.push({
+          id: 'contact_pull_errors',
+          severity: 'red',
+          metric: `${errs}/${recent.length} contact pulls errored in 24h (${fmtPct(share)})`,
+          threshold: `< ${fmtPct(T.contact_error_share_red)}`,
+          action: `contact provider failing — check EXPLORIUM_API_KEY / HUNTER_API_KEY and provider quota`,
+        });
+      }
+    }
+
+    // (b) Stalled drain: requests pending but not a single pull ran in the stall
+    //     window. A slow capped backlog still lands completions nightly, so this
+    //     only fires when draining truly stops (loop down / cap set to 0).
+    const pendingCount = [...requestedAt].filter(([ent, reqT]) => (completedAt.get(ent) ?? 0) < reqT).length;
+    const ranInWindow = comps.some((c) => Date.parse(c.created_at) >= now - T.contact_stall_hours * HOUR);
+    if (pendingCount > 0 && !ranInWindow) {
+      out.push({
+        id: 'contact_pull_stalled',
+        severity: 'yellow',
+        metric: `${pendingCount} enrich_contacts request(s) pending, 0 pulls ran in ${T.contact_stall_hours}h`,
+        threshold: `>= 1 pull / ${T.contact_stall_hours}h while pending`,
+        action: `contact draining stopped — confirm the daily loop ran and enrichment.max_contact_pulls_per_run > 0`,
+      });
+    }
+  } catch (e) {
+    console.error('contact_pull check failed:', (e as Error)?.message ?? e);
   }
 
   return out;

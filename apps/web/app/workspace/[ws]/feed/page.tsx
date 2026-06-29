@@ -22,6 +22,8 @@ interface FeedItem {
   reasoning: string | null;
   dup_count: number;
   pending_approval: boolean;
+  gate: { id: string; policy: string; condition: Record<string, unknown> | null; decision: 'approve' | 'reject' | 'modify' | null; decided_at: string | null } | null;
+  score_delta: number | null;
 }
 
 // Mirror of /api/feed/list — same Supabase pipeline.
@@ -44,15 +46,19 @@ const getFeedItems = async (ws: string): Promise<FeedItem[]> => {
     channels: { id: string; title: string; account_entity_id: string };
   }>;
 
-  // Which touch_draft posts still have an undecided gate → live approval queue.
+  type GateRow = { id: string; policy: string; condition: Record<string, unknown> | null; decision: 'approve' | 'reject' | 'modify' | null; decided_at: string | null; requested_at: string; channel_post_id: string };
   const draftIds = rows.filter((r) => r.kind === 'touch_draft').map((r) => r.id);
+  const gateByPost = new Map<string, FeedItem['gate']>();
   const pendingDraft = new Set<string>();
   if (draftIds.length) {
     const { data: gateRows } = await supabase
       .from('gates')
-      .select('channel_post_id, decided_at')
-      .in('channel_post_id', draftIds);
-    for (const g of (gateRows ?? []) as Array<{ channel_post_id: string; decided_at: string | null }>) {
+      .select('id, policy, condition, decision, decided_at, requested_at, channel_post_id')
+      .in('channel_post_id', draftIds)
+      .order('requested_at', { ascending: false });
+    for (const g of (gateRows ?? []) as GateRow[]) {
+      if (gateByPost.has(g.channel_post_id)) continue;
+      gateByPost.set(g.channel_post_id, { id: g.id, policy: g.policy, condition: g.condition, decision: g.decision, decided_at: g.decided_at });
       if (!g.decided_at) pendingDraft.add(g.channel_post_id);
     }
   }
@@ -107,6 +113,8 @@ const getFeedItems = async (ws: string): Promise<FeedItem[]> => {
       reasoning: childrenByParent.get(r.id)?.body ?? null,
       dup_count: 1,
       pending_approval: pendingDraft.has(r.id),
+      gate: gateByPost.get(r.id) ?? null,
+      score_delta: null,
     }));
 
   const DEDUP_WINDOW_MS = 14 * 86400 * 1000;

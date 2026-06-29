@@ -1438,3 +1438,105 @@ Commits: `956999c` (connector cost gate), `acfd573` (middleware /api/health whit
 **Added CLI commands to README.**
 
 Commits (all on main): `3253dd8` (dispatcher .in() + query keywords), `d5bedfc` (runner insert path + `_check_research.ts`), `3f59a90` (`pnpm status` CLI).
+
+## 2026-06-18 — Runaway enrichment loop killed (recovery cron never saw a "matched" marker) + 2.7k junk feed posts purged
+
+**Context:** Jake, frustrated: "It's just extracting the same god damn facts every time and acting like they are new… Two new investor facts extracted: Y Combinator and General Catalyst." Pasted a feed wall of identical/near-identical "new info" enrichment claims.
+
+**Diagnosis (verified on live data, not theory):** workspace `af602fa1` had **50 signals → 785 `agent_dispatch_result` events**; AgentMail had **1 signal but 89 enrichment runs** (one every ~18 min over 27h), and **0 rows** in the `events` table with `action='subscription.matched'`.
+
+**Root cause — `recoverUnmatchedSignals` (cron, `inngest/functions/system_tasks.ts`).** It decides a signal is "unmatched" by looking for an `events`-table row `action='subscription.matched'` keyed by `payload.signal_id`. **Nothing ever wrote that row** — `matchSignal` only `step.sendEvent`s an *Inngest* event of that name, never a DB row. So every signal looked unmatched forever; the 15-min cron re-emitted `signal.created` for the newest 25 (`RECOVERY_LIMIT_PER_RUN`) each tick → re-match → re-enrich, endlessly. Three readers assume that never-written row: the recovery cron, `healthCheck.unmatched_signals` (`reads.ts`), and the source-signals UI badge — all broken the same way. The existing same-signal enricher guard (`agent_logic.ts:220`) couldn't help: `.neq('id', sigData.id)` only catches *different* signals with identical bodies, never re-runs of the same id.
+
+**Fix 1 (shipped, merged to main `17bfefb`, deployed, verified):** `matchSignal` now writes one durable `subscription.matched` events row per signal — for every signal incl. zero-match — `payload={signal_id, matched_count}`, before the zero-match early return. Marker present == matcher ran (the question recovery should actually ask); a genuinely dropped `signal.created` leaves no marker so recovery still re-emits it. Un-breaks the health metric + UI badge for free. UI badge changed to require `matched_count > 0` (legacy rows w/o the field stay truthy). **Live-verified ~20s after deploy:** markers 0→6 and climbing, AgentMail `agent_dispatch_result` 0/12h, workspace 0/2h. Loop dead.
+
+**Process note — planned before coding.** Ran `/plan` (EnterPlanMode), and when Jake pushed "is this the simplest lowest-code solution for now AND the future?" I cut scope: deferred Fix 2 (it was ~99% the loop), trimmed the marker payload, and documented the rejected Fix-2 variants (count-delta = not race-safe; RPC return-column = migration on the central write path). Plan file: `tranquil-squishing-axolotl.md`. Jake chose "Fix 1 now, defer Fix 2."
+
+**Fix 2 (DEFERRED, in state + plan):** enricher counts content-hash-deduped re-asserts as new (`if (r.ok) asserted++`; `assert_fact` returns `ok:true` on a dedup hit) → spurious "N new facts" post + needless re-score. Now low-stakes. Fix when it resurfaces: compare asserted fact's `source_event_id` to the `event_id` `act()` returned (equal == new); gate the count on that.
+
+**Feed cleanup — 2,693 junk posts deleted (Jake: "clean up the garbage signals").** The Fix-2 bug made physical: re-extracted known facts got dedup-counted as `asserted>0`, so the enricher posted its own LLM summary "No new facts; data already known or signal too vague." as a *claim*, over and over. Workspace had **1,994 channels / 5,918 posts**; **1,440 identical zero-cite "No new facts" claims + 1,253 descendant reply posts = 2,693** removed (descendants-first, BFS levels, to respect the `parent_post_id` FK). Remaining "No new facts" claims: 0; posts 5,918→3,225. Facts/signals/events untouched; fact-citing investor claims left intact (loop fix stops them multiplying). **Screwup owned:** first estimated "376" — my channel query silently capped at PostgREST's 1000-row limit, returning a different arbitrary slice each call; the auto-mode classifier (correctly) blocked the first bulk delete, I re-confirmed scope with Jake, then paginated properly and found the true 7× number. Reported the correction immediately.
+
+**Hygiene:** branch `fix/enrichment-recovery-loop` → committed only the 2 Fix-1 files (working tree had unrelated edits, left alone) → pushed → `--no-ff` merged to main → branch deleted local+remote. All ~9 scratch `_diag_*`/`_clean_noise`/`_verify_fix1` scripts deleted after use.
+
+Commits: `052c19c` (Fix 1), merge `17bfefb` on main.
+
+## 2026-06-20 — Inngest run-budget blowout traced to the 1000-row read cap; fixed across recovery loop, health check, and connector dedup
+
+**Trigger:** Jake — "we're getting close to our Inngest monthly limits (89% of 50k runs). Is our current setup doable within 50k?"
+
+**Answer: no, not as-was — on track for ~115k runs/month (2.3× over).** Enumerated all 9 cron functions (fixed baseline ~7,470 runs/mo, fine) and the event-fan-out functions, then pulled real prod volume instead of theorizing. Last-24h event log: `create_signal`=1,048 but `subscription.matched` markers=3,449. A marker is written once per `matchSignal` run, so 3,449 matchSignal runs for ~1,073 distinct signals = **3.2× re-processing**. `agent_run`=0, so the expensive cascade wasn't even firing — the runs were almost entirely the matcher chewing the same signals.
+
+**Root cause — the 2026-06-18 recovery-loop fix was only half done.** That fix made `matchSignal` *write* the `subscription.matched` marker. But `recoverUnmatchedSignals` *reads* markers with an unbounded `select('payload').eq('action','subscription.matched')` — no `.limit()`, so PostgREST silently caps at 1000 rows. Workspace had **5,120 markers**; recovery saw 1000, so ~4,000 signals' markers were invisible → looked unmatched → re-emitted `signal.created` (25/tick × 96 ticks = ~2,400/day), each re-emit spawning a matchSignal run that wrote *another* marker → self-feeding. **Verified before touching code:** unbounded query returns exactly 1000 vs 5,120 true; of 200 recent signals the capped logic calls 198 "unmatched" when scoped-by-`target_id` shows 0 truly unmatched; 0 markers where `target_id != payload.signal_id` (so the swap is exactly equivalent).
+
+**Fix 1 (`f6bad9f`):** scope the recovery lookup to its candidate signals — `.in('target_id', sigIds)` (marker `target_id` IS the signal_id). Bounded by the candidate set, never the row cap. Same one-line class of fix as 06-18, but on the read side. Also fixed `recover_backlog.ts` (same pattern).
+
+**Then Jake asked the right question: "shouldn't you have caught this in dev? why didn't you."** Honest answer given: the bug is invisible below 1000 markers (passes every test on a fresh workspace; only detonates after weeks of prod volume), and PostgREST's cap is silent (no error/warning, looks correct on the page). But it's a known footgun — "load-all-into-a-Set and treat as complete, on a table that grows forever" — that a careful review should flag. Real miss, owned, not excused. Same cap bit the 06-18 channel-count estimate too.
+
+**Grepped the whole codebase for the pattern (`scripts/_audit_unbounded.ts`, since deleted):** 118 unbounded growth-table reads → 36 same-shape (workspace-scoped, no `.in()` narrowing) → ~10 genuinely dangerous (rest are per-entity reads bounded to a few rows).
+
+**Fix 2 (`bf93e3e`):**
+- `healthCheck` stale-gate count read ALL `gate_decision` events workspace-wide → past 1000, old gates looked undecided → `staleGates` overcounted → `systemHealthMonitor` opened phantom approval requests hourly. Scoped with `.in('parent_event_id', gateIds)` (the request-gate half already had `.limit(200)` — someone bounded one half, missed the other).
+- 8 connectors (`exa`, `hn`, `github`, `producthunt`, `web`, `api_call`, `custom_http`, `github_trending`) + the bulk CSV-import path dedup new items against prior signals of the same type in a window; the window read capped at 1000, so any source producing >1000 signals of one type in-window re-created duplicates → more matchSignal runs (feeds the same cost problem). Added `fetchSeenSignalTags()` in `reads.ts` (paginates past the cap via `.range()`, ordered for stable paging); swapped all 9 sites. Re-audit: HIGH-risk reads 36→26 (remainder = per-entity + UI list reads).
+
+**Verification:** typecheck clean (0 non-TS5097 errors; TS5097 is the pre-existing `.ts`-import config noise on every file). No leftover `.data` refs on swapped vars. Expected effect: matchSignal ~3,450/day → ~330/day; monthly ~115k → ~15–20k, well under 50k. The 89% this month is sunk (resets on billing date); fix takes effect next deploy + cron tick.
+
+**Deferred (in state):** UI list reads (`entities/index`, `feed/list`, intake rankings) still cap at 1000 — cosmetic until a workspace passes ~1000 entities. Offered a lint rule banning unbounded workspace-scoped selects; not built.
+
+**Hygiene:** committed only the fix files (working tree has unrelated edits, left alone); deleted both scratch diagnostics (`_audit_unbounded.ts`, `_inngest_estimate.ts`) after use. Commits on main: `f6bad9f` (recovery + backlog), `bf93e3e` (healthCheck stale-gate + connector dedup).
+
+## 2026-06-22 — Feed-health "broken enrichment" was false alarms; fixed the health surface + shipped the created-flag fix
+
+Acted on `feed-health-diagnosis.md` (4 named bugs); verified all four against live code + prod data first. **Headline: enrichment was never broken — it ran the whole time** (324 enricher runs/24h, 2.1M tokens, 260 "extracted facts" claim posts, 0 errors). The recurring pain was a pile of false alarms on top of healthy work.
+
+**The one real code bug was already fixed in the working tree** (prior session, uncommitted): `assert_fact`'s `created` flag compared a stringified `event_id` to a numeric `source_event_id` → always false → every run reported 0 new facts → no rescore / claim post / stage advance. Confirmed the in-tree fix works (`created:true` on a fresh fact; 4/4 enriched entities rescored), and committed + pushed it (prod never had it). Closes the 06-18 "DEFERRED — Fix 2."
+
+**The actual recurring engine: PostgREST's 1000-row cap again — this time in the sweep + `source_metrics`.** Same class as the 06-20 recovery-loop fix, on the health-monitoring reads. `.limit(20000)` is silently capped at 1000 by the server, oldest-first with no `.order()`. Once the workspace passed 1000 rows in a window (2,725 `agent_run_metrics`/7d; 4,811 signals/24h), the sweep read the oldest 1000 and dropped everything recent → false `enricher_silence (runs_24h=0)`, `cost_per_claim (spend=0)`, `score_signal_coupling (0%)` while enrichment was busy. Proven: the exact sweep query returns 1000 rows, newest = Jun-18, vs 2,725 true; `.order(desc)` returns newest = now. Fix: new `packages/tools/src/paginate.ts` `fetchAll()` pages via `.range()`; applied to every high-volume read in `sweep.ts` + `source_metrics.ts`.
+
+**>1000 channels broke channel-scoped reads.** This workspace has >1000 channels; `.in(channel_ids)` both caps the list at 1000 and 400s once combined with order+range (it broke the sweep mid-run). Fixed `sweep.ts` claims + `reads.ts` stale_drafts to filter via the FK (`channels!inner(workspace_id)`) instead of a giant id list.
+
+**Killed `systemHealthMonitor` + cleaned 134 phantom approvals.** It opened a `system_health` approval every hour (de-dup guard queried a non-existent `events.ts` column → never suppressed). Per decide-and-notify, system health isn't approval-worthy — removed the function + its registration (Inngest serve route + functions index). Marked all 134 pending `system_health` approvals resolved in the DB (decided_at + reject + resolution note); the 1 real `outreach_send` approval untouched. Health now lives only in the sweep + read-only feed strip.
+
+**Made the feed strip honest.** `healthCheck`: stale approvals now read the approvals table directly (was rebuilding from the wrong event name + link field → saturated at 200; true 0); stale_drafts scoped to the workspace via FK (was counting every workspace's drafts → 51; true 0); **removed `unmatched_signals`** entirely (Jake's call — it counted signals the filters skip on purpose; 5,500 "unmatched" in 48h were 3,829 hiring + 1,671 research the matcher correctly ignores, so it could never reach 0). Dropped the badge from `FeedHealth.tsx` + the field from the health-check tool descriptor.
+
+**Redefined `score_signal_coupling`** to measure what it was built to catch: of entities the enricher asserted ≥1 new fact for (`agent_dispatch_result.facts_asserted>0`), how many were rescored — not "any new signal" (diluted to ~0 by filtered hiring posts). Proven 4/4 healthy; skips below 5 such entities/24h.
+
+**Fixed the research-enricher setup script.** `create_research_enricher_sub.ts` truncated the *joined* string at 1800 chars, landing inside the 2,691-char `about` and dropping the "look for funding/hiring/launches/pain" instruction. Cap `about` (800) + `pain` (400) before assembling. Deleted + recreated the live `research_signal_enricher` subscription so the embedded query is corrected now, not just on future setups.
+
+**Net sweep state:** false reds gone; the remaining 2 reds are real (`signal_diversity:ats` 0.21 + `source_concentration` ats=80%) and both point to the `ats` hiring source flooding ingestion (~3,829 sigs/24h, 79% near-dup) — a source-config tuning job, not code (open in state).
+
+**Hygiene:** committed only the 12 health/enrichment files (10 touched + the 2 build deps `diff_draft.ts` / `gate.ts` carried by `index.ts`'s pre-existing changes); left all unrelated working-tree edits alone. Commit `36238c7` on main (pushed; Render auto-deploys). Deleted all this-session diagnostics + the prior `_diag_*` scripts + `feed-health-diagnosis.md` after the fix landed.
+
+## 2026-06-24 — ATS connector was re-emitting jobs it already saw; trimmed job-posting over-extraction
+
+The two sweep reds left over from 06-22 (`signal_diversity:ats` 0.21, `source_concentration` ats=80%) turned out to be a dedup bug, not a sourcing/config problem as a prior session had concluded.
+
+**Root cause:** `ats.ts`'s per-entity seen-jobs cache trimmed with `slice(-200)` every run. Any board with more than 200 open roles (SpaceX 600 sigs/24h, Brex 528, OpenAI 397, Airbnb 299, Stripe 232 — all sitting at exactly `ats_seen_jobs: 200`) forgot its overflow each run, so those jobs looked "new" again and got re-emitted. 3,829 ATS signals/24h were really 723 distinct jobs (81% re-emits, confirmed via `scripts/_diag_ats_flood.ts`, since deleted). Each re-emit burned an embedding call (`create_signal` had no dedup) and an enricher LLM run on a fact set the enricher had already extracted.
+
+**Fix (`ats.ts`):** replaced the blind `slice(-200)` with "keep every currently-live job id, plus a bounded tail (`HISTORY_BUDGET=500`) of no-longer-live ids for flicker tolerance." No live job can be forgotten regardless of board size.
+
+**Plus two general/connector-config additions:** `create_signal` (`packages/tools/src/index.ts` + `schemas.ts`) now accepts an optional `dedup_key`; on a repeat it skips the embed + insert and returns `deduped: true` — a safety net for any connector, not just ATS. The ATS connector gained an optional `max_new_signals_per_entity` cap (`sources.config`, no default = no cap) so one big employer can't flood a single run.
+
+**Also fixed (Jake's ask, same pass): job-posting over-extraction.** Live fact data showed postings shredded into 10-15+ granular facts under sprawling near-synonym predicates (`hiring_requirement`, `hiring_responsibility`, ...) — almost all describing the candidate the company wants, which an outbound agent never uses. Worst offenders: 33, 32, 28 facts from a single job posting. Root cause was the enricher's DEPTH instruction telling it to "extract every specific atomic detail the payload states." Rescoped it to "extract details about the SUBJECT company, not the internals of the artifact" — explicitly calling out that a job posting's candidate requirements describe a hypothetical hire, not the company. Verified live on a fresh, never-enriched signal (Monzo, Director of Partnerships): old-style postings produced 28-33 facts; the new prompt produced 4 (`hiring_role`, `hiring_salary_range`, `hiring_location`, `recent_event`) — no requirement/responsibility sprawl. Re-running the fix against an already-over-extracted entity (Lance, Founding AE) correctly returned 0 new facts with reasoning "already fully captured in active facts" — proves it won't pile more junk onto already-bad entities either.
+
+**DeepSeek note:** the live verification needed a same-day top-up (second one in a week, ~$8+/mo so far) since the account hit `Insufficient Balance` mid-test. Worth flagging: most of that spend is plausibly *this* bug — every ATS re-emit was a wasted enricher call. Should taper once this fix has run for a few days; worth checking DeepSeek usage again after ~1 week on prod to confirm.
+
+**Hygiene:** committed only the 5 fix files. Two of them (`agent_logic.ts`, `schemas.ts`) had unrelated uncommitted work mixed in from an earlier session (a channel-auto-create fix + a gate-resolution/`pastOutcomes` feature) — staged surgical hunks via `git apply --cached --unidiff-zero` instead of the whole file, so that other work stays uncommitted and untouched. Commit `a56f8aa` on main (pushed; Render auto-deploys). Deleted this-session diagnostics; accidentally also deleted the pre-existing `scripts/_diag_ats_flood.ts` before re-running it for verification — owned the mistake, Jake said don't bother recreating it (disposable per this project's own convention).
+
+## 2026-06-28 — Supabase egress fix (16GB → target <3GB/month)
+
+Workspace was at 16.18 GB egress against a 5 GB free-tier cap (251%), with 2 GB consumed in a single idle day. Root cause was short `unstable_cache` TTLs on routes that return large Supabase payloads — every browser tab re-triggers a Supabase round-trip on TTL expiry.
+
+**Root cause analysis:** Egress = data leaving Supabase to Render over the wire. Only PostgREST responses count, not internal Postgres scans. Next.js `unstable_cache` is in-process on the Render server; when the TTL expires, the route re-fetches from Supabase. With a browser tab open and SWR revalidating, short TTLs = Supabase hammered continuously.
+
+**Three culprits fixed (commit `60171bd`, pushed, Render auto-deploys):**
+
+1. **`/api/entities/index`** — fetched all 2,557 entities with attributes (~2.5MB per call) at a 30s cache TTL. At 8 hours of active browsing: 2.5MB × 960 calls = 2.4GB/day from this route alone. Fixed: TTL 30s → 300s (10x fewer calls). Also scoped icp_fit query to active-only facts (`.is('supersedes', null)`) — was fetching ~1,546 rows including superseded history; now ~400.
+
+2. **`/api/admin/health`** — `actionDistribution()` was reading the `body` field of up to 10,000 channel posts (avg 240B each = ~2.4MB) twice (24h + 7d windows) just to count action type prefixes (`[draft_outreach]`, `[drop]`, etc.) at a 60s TTL. Replaced with 5 targeted `COUNT + ilike` queries — COUNT returns a single integer, near-zero egress. TTL 60s → 300s.
+
+3. **`/api/feed/list`** — TTL 20s → 60s (3x fewer calls). Same icp_fit active-only fix.
+
+**launchd job fixed (separate issue):** Daily enricher (`sh.jakewatson.agentcrm.enrich` at 09:00) was broken — `ProgramArguments` called `node tsx.mjs script.ts` which bypasses pnpm's virtual store, so `@supabase/supabase-js` couldn't resolve (it's not hoisted to root `node_modules`). Fixed to `pnpm tsx scripts/run_loop.ts`. Reloaded with `launchctl`. Tested working.
+
+**Expected impact:** 2GB/day → ~200MB/day from entities route (10x TTL increase); health route ~0 egress (count queries). Total should drop from ~16GB/month to well under 5GB free tier assuming normal browse patterns.
+
+**Watch:** Supabase egress dashboard should show a material drop within 24-48h of the deploy. If not, check for other short-TTL routes via a grep for `revalidate:` values under 60 in `apps/web/app/api/`.

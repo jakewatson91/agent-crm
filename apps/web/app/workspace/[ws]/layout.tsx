@@ -6,6 +6,7 @@ import { StatusBar } from '../../_components/StatusBar';
 import { WorkspaceShell } from '../../_components/WorkspaceShell';
 import { NavLinkPrefetch } from '../../_components/NavLinkPrefetch';
 import { PageContextProvider } from '../../_components/PageContext';
+import { SignOutButton } from '../../_components/SignOutButton';
 import { requireRole } from '../../_lib/auth';
 
 export default async function WorkspaceLayout({
@@ -16,12 +17,11 @@ export default async function WorkspaceLayout({
   params: Promise<{ ws: string }>;
 }) {
   const { ws } = await params;
-  await requireRole(ws, 'viewer');
+  const { user } = await requireRole(ws, 'viewer');
 
   const workspace = [
-    { href: `/workspace/${ws}/feed`,     label: 'Feed',      hint: 'every action the agent took',                       prefetchUrl: `/api/feed/list?workspace_id=${ws}` },
+    { href: `/workspace/${ws}/feed`,     label: 'Feed',      hint: 'every action the agent took · approvals live here', prefetchUrl: `/api/feed/list?workspace_id=${ws}` },
     { href: `/workspace/${ws}/entities`, label: 'Entities',  hint: 'everything in the system, by kind',                 prefetchUrl: `/api/entities/index?workspace_id=${ws}` },
-    { href: `/workspace/${ws}/gates`,    label: 'Approvals', hint: 'things needing your sign-off · empty = healthy',    prefetchUrl: `/api/gates/list?workspace_id=${ws}` },
   ];
   const setup = [
     { href: `/workspace/${ws}/sources`,  label: 'Sources',  hint: 'where signals come from',                            prefetchUrl: `/api/sources/list?workspace_id=${ws}` },
@@ -68,6 +68,8 @@ export default async function WorkspaceLayout({
         height: '100vh',
         overflowY: 'auto',
         flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column',
       }}
     >
       <Link href={`/workspace/${ws}`} style={{ display: 'block', padding: '0 .65rem', marginBottom: '1rem', textDecoration: 'none', color: 'var(--text)' }}>
@@ -80,6 +82,9 @@ export default async function WorkspaceLayout({
       <Section title="Workspace" items={workspace} />
       <Section title="Setup" items={setup} />
       <Section title="Audit" items={audit} />
+      <div style={{ marginTop: 'auto', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
+        <SignOutButton email={user.email ?? ''} />
+      </div>
     </aside>
   );
 

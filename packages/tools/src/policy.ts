@@ -17,9 +17,23 @@ export interface OutreachPolicy {
 }
 
 export interface EnrichmentPolicy {
-  // 'hunter' works today (keyed by HUNTER_API_KEY). 'explorium' is preferred for
-  // young startups but needs the workspace's Explorium key + REST client (pending).
+  // Primary contact provider. 'hunter' (keyed by HUNTER_API_KEY) is broad but
+  // weak on young startups; 'explorium' (keyed per-workspace via EXPLORIUM_API_KEY)
+  // covers small startups better.
   contact_provider?: 'none' | 'hunter' | 'explorium';
+  /**
+   * Optional second provider, tried only when the primary returns zero contacts
+   * or errors. Lets a workspace run e.g. Explorium-first, Hunter-fallback. Unset
+   * = no fallback (single-provider behavior).
+   */
+  contact_provider_fallback?: 'none' | 'hunter' | 'explorium';
+  /**
+   * Max contact pulls the daily loop runs per pass for this workspace. Caps how
+   * fast a backlog of enrich_contacts requests drains so one run can't burn the
+   * whole provider quota; highest-scoring accounts go first. Default 5. Set 0 to
+   * disable loop-driven draining (e.g. rely on Inngest only).
+   */
+  max_contact_pulls_per_run?: number;
   /**
    * Hard cap on contact-provider lookups per calendar month for this workspace.
    * Counted via `contact_lookup_attempted` facts asserted this month. When
@@ -302,8 +316,10 @@ export interface WorkspacePolicy {
    *   DEFAULT_CHAT_MODEL  — workspace default model override
    *   DRAFTER_MODEL       — drafter-behavior model override
    *   RESEND_API_KEY      — outbound email (send_email.ts)
-   * Setting other vars here is fine — they're stored, but no reader consults
-   * them yet (e.g. HUNTER_API_KEY is read from process.env only, pending follow-up).
+   *   HUNTER_API_KEY      — Hunter contact provider (contacts.ts)
+   *   EXPLORIUM_API_KEY   — Explorium contact provider (contacts.ts)
+   * Setting other vars here is fine — they're stored. A forked workspace can paste
+   * either contact-provider key here and it's used ahead of process.env.
    */
   env?: Record<string, string>;
 }

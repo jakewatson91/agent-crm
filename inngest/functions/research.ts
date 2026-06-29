@@ -12,7 +12,7 @@
  * fact (audit trail preserves what we tried).
  */
 import { createServerClient } from '@agent-crm/db';
-import { callTool } from '@agent-crm/tools';
+import { callTool, recordActivityMarker, ACTIVITY_MARKERS } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 const EXA_API = 'https://api.exa.ai/search';
@@ -79,11 +79,10 @@ export const researchRunner = inngest.createFunction(
         });
         if (!r.ok) {
           const msg = (await r.text()).slice(0, 200);
-          await callTool(supabase, actor, 'assert_fact', {
-            subject_entity: entity_id,
-            predicate: 'research_error',
-            object_text: `Exa ${r.status}: ${msg}`,
-            confidence: 1.0,
+          // Failed-attempt marker — event log, not a fact (it records that the
+          // research call errored, not anything true about the account).
+          await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_ERROR, entity_id, {
+            status: r.status, message: msg, summary: `Exa ${r.status}: ${msg}`,
           });
           return { ok: false, reason: `Exa ${r.status}` };
         }
@@ -134,13 +133,13 @@ export const researchRunner = inngest.createFunction(
         }
       }
 
-      // Mark research as completed — action_selector will skip re-triggering
-      // for the cooldown window.
-      await callTool(supabase, actor, 'assert_fact', {
-        subject_entity: entity_id,
-        predicate: 'research_completed',
-        object_text: `${created} new results from "${query.slice(0, 60)}"`,
-        confidence: 1.0,
+      // Mark research as completed. Event-log marker (what the system did), not
+      // a fact about the account — the dispatcher reads it to time the next
+      // research pass; it must not count as evidence in scoring.
+      await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_COMPLETED, entity_id, {
+        results_created: created,
+        query: query.slice(0, 60),
+        summary: `${created} new results from "${query.slice(0, 60)}"`,
       });
 
       return { ok: true, query, results_total: results.length, signals_created: created };

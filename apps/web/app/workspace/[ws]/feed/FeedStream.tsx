@@ -26,6 +26,8 @@ interface FeedItem {
   reasoning: string | null;
   dup_count: number;
   pending_approval: boolean;
+  gate: { id: string; policy: string; condition: Record<string, unknown> | null; decision: 'approve' | 'reject' | 'modify' | null; decided_at: string | null } | null;
+  score_delta: number | null;
 }
 
 const KIND_META: Record<FeedItem['kind'], { label: string; badge: string; verb: string }> = {
@@ -74,7 +76,13 @@ function matchesFilter(it: FeedItem, key: FilterKey): boolean {
     case 'audit':          return true;
     case 'default':
     default:
-      if (it.kind === 'touch_draft' || it.kind === 'gate_request' || it.kind === 'outcome') return true;
+      // gate_request is excluded here on purpose: it's a legacy post kind
+      // (the code path that created it has been removed) that's permanently
+      // badged "needs approval" with no resolution shown, regardless of how
+      // the gate it pointed at was actually decided. touch_draft already
+      // carries the live pending_approval flag — gate_request stays visible
+      // under Audit only.
+      if (it.kind === 'touch_draft' || it.kind === 'outcome') return true;
       if (it.kind === 'claim' && it.cites.length > 0) return true;
       if (it.kind === 'decision') {
         // Only state-changing action-selector decisions surface in the default view.
@@ -272,6 +280,21 @@ function FeedRow({
             score {item.icp_fit.toFixed(2)}
           </span>
         )}
+        {item.score_delta !== null && Math.abs(item.score_delta) >= 0.005 && (
+          <span
+            className="mono"
+            style={{
+              fontSize: '.72rem',
+              color: item.score_delta > 0 ? 'var(--accent-green)' : 'var(--accent-coral)',
+              padding: '1px 6px',
+              background: 'var(--panel-2)',
+              borderRadius: 4,
+            }}
+            title="how much this signal moved the score"
+          >
+            {item.score_delta > 0 ? '+' : ''}{item.score_delta.toFixed(2)}
+          </span>
+        )}
         {item.dup_count > 1 && (
           <span
             className="mono muted"
@@ -300,7 +323,7 @@ function FeedRow({
           : display}
       </div>
 
-      {isDraft && <DraftActions postId={item.id} workspaceId={ws} />}
+      {isDraft && <DraftActions postId={item.id} workspaceId={ws} initialGate={item.gate} />}
 
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.55rem', flexWrap: 'wrap' }}>
         {truncated && (

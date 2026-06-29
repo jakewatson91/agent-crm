@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { callTool, getPolicy, setOutreachStage } from '@agent-crm/tools';
+import { callTool, getPolicy, setOutreachStage, diffDraftBody } from '@agent-crm/tools';
 import { sendEmail } from '../../_lib/send_email';
 import { sanitizeEmailHtml, htmlToPlainText } from '../../_lib/html_email';
 
@@ -47,6 +47,12 @@ export async function POST(req: Request) {
   const channelId = gate.channel_posts?.channel_id ?? null;
   const isOutreachApprove = gate.policy === 'outreach_send' && body.decision === 'approve';
 
+  // Unified resolution payload: a free-text note (any decision type) plus,
+  // on an edited approval, what actually changed. Persisted on the gate and
+  // surfaced to future drafts on similar accounts via pastOutcomes.
+  const note = body.reason?.trim() || undefined;
+  let resolution: Record<string, unknown> = note ? { note } : {};
+
   let sendInfo: { effective_to?: string; override_active?: boolean; message_id?: string; intended_to?: string | null; edited?: boolean } | null = null;
 
   // On outreach approve, send the email BEFORE updating the gate. If the send
@@ -62,6 +68,19 @@ export async function POST(req: Request) {
     if (!text) {
       return NextResponse.json({ error: 'gate condition has no body to send' }, { status: 400 });
     }
+    const edited = body.edited_subject !== undefined || body.edited_body !== undefined || body.edited_html !== undefined;
+    if (edited) {
+      const originalSubject = cond.subject ?? '';
+      const originalBody = cond.body ?? '';
+      const subjectDiff = originalSubject !== subject ? { from: originalSubject, to: subject } : undefined;
+      const bodyDiff = diffDraftBody(originalBody, text);
+      resolution = {
+        ...resolution,
+        edited: true,
+        ...(subjectDiff ? { subject_diff: subjectDiff } : {}),
+        ...(bodyDiff.length ? { body_diff: bodyDiff } : {}),
+      };
+    }
     const sendRes = await sendEmail({ supabase, workspace_id: body.workspace_id, intended_to, subject, body: text, html: html ?? undefined });
     if (!sendRes.ok) {
       return NextResponse.json({ error: `send failed: ${sendRes.error}` }, { status: 502 });
@@ -71,12 +90,12 @@ export async function POST(req: Request) {
       override_active: sendRes.override_active,
       message_id: sendRes.message_id,
       intended_to,
-      edited: body.edited_subject !== undefined || body.edited_body !== undefined || body.edited_html !== undefined,
+      edited,
     };
   }
 
   // Update the gate row.
-  const r = await callTool(supabase, actor, 'decide_gate', { gate_id: body.gate_id, decision: body.decision });
+  const r = await callTool(supabase, actor, 'decide_gate', { gate_id: body.gate_id, decision: body.decision, resolution });
   if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
 
   // Audit + state-change side effects per decision.

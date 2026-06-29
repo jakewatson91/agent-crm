@@ -26,15 +26,31 @@ const SCORE_MODEL = 'deepseek-v4-flash';
 const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 
-// Predicates that don't count as "substantive" evidence for evidence_depth.
-// Exported so audit surfaces (e.g. score timeline) can use the same canonical
-// "what counts as a score-driving fact" filter.
+// Bookkeeping facts that are NOT substantive evidence about the account — score
+// outputs, lifecycle flags, cooldown timers. Excluded from evidence_depth and
+// recency. This is the single canonical list: sweep.ts imports it too, so the
+// scorer and the health sweep can never disagree about what counts as evidence
+// (they used to, which is how the scorer counted self-pings as evidence).
+//
+// The research_triggered / research_completed / contacts_requested /
+// contacts_completed names are kept here as transition safety: they moved to the
+// event log, but leaving them in the denylist neutralizes any straggler rows.
 export const ADMIN_PREDICATES = new Set([
   'icp_fit',
   'icp_fit_breakdown',
   'domain',
   'contact_lookup_attempted',
   'dropped_until',
+  'outreach_cooldown_until',
+  'last_outreach_at',
+  'no_reply_marked',
+  'outreach_rejected_at',
+  'replied_at',
+  'research_triggered',
+  'research_completed',
+  'research_error',
+  'contacts_requested',
+  'contacts_completed',
   'score_industry_match',
   'score_stage_match',
   'score_evidence_depth',
@@ -44,6 +60,14 @@ export const ADMIN_PREDICATES = new Set([
   'score_total',
   'contact_score',
 ]);
+
+// True when a fact is real evidence about the account (not bookkeeping, not a
+// score output). The score_ prefix guard catches any future score_* sub-score
+// without enumerating it. Use this everywhere "does the account have evidence"
+// is asked, so the definition stays in one place.
+export function isSubstantiveFact(predicate: string): boolean {
+  return !ADMIN_PREDICATES.has(predicate) && !predicate.startsWith('score_');
+}
 
 export interface ScoreBreakdown {
   industry_match: number;
@@ -68,15 +92,19 @@ export interface EntityScore {
 function clamp01(x: number): number { return Math.max(0, Math.min(1, x)); }
 
 function evidenceDepth(facts: Array<{ predicate: string }>): number {
-  const substantive = facts.filter((f) => !ADMIN_PREDICATES.has(f.predicate)).length;
+  const substantive = facts.filter((f) => isSubstantiveFact(f.predicate)).length;
   // 6 substantive facts = full depth. Linear up to that.
   return clamp01(substantive / 6);
 }
 
-function recencyScore(facts: Array<{ created_at?: string; observed_at?: string }>): number {
-  if (!facts.length) return 0;
+function recencyScore(facts: Array<{ predicate: string; created_at?: string; observed_at?: string }>): number {
+  // Freshness must mean "when did we last learn something real about the
+  // account" — so only substantive facts count. Score outputs are rewritten
+  // every scoring run; counting them pinned recency at ~1.0 forever.
+  const real = facts.filter((f) => isSubstantiveFact(f.predicate));
+  if (!real.length) return 0;
   let mostRecent = 0;
-  for (const f of facts) {
+  for (const f of real) {
     const t = Date.parse(f.observed_at ?? f.created_at ?? '');
     if (Number.isFinite(t) && t > mostRecent) mostRecent = t;
   }

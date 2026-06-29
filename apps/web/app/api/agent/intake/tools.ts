@@ -12,7 +12,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   callTool, scoreAndAssert, selectAction, buildThresholds, loadActionContext, loadBestContactScore,
-  lookupEntity, getPolicy,
+  lookupEntity, getPolicy, resolveEnvVar,
   chatCompleteForWorkspace, getSourceMetrics,
   findContacts, linkContactToAccount,
   getEntityTypes, getEntityTypesBatch, entityIdsOfType,
@@ -563,7 +563,8 @@ const enrichContactsTool: ToolHandler = {
     }
     let contacts;
     try {
-      contacts = await findContacts({ domain: rawDomain, limit: args.limit ?? 5, role_filter: args.role_filter });
+      const policy = await getPolicy(ctx.supabase, ctx.workspace_id);
+      contacts = await findContacts({ domain: rawDomain, limit: args.limit ?? 5, role_filter: args.role_filter, apiKey: resolveEnvVar(policy, 'HUNTER_API_KEY') });
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -575,6 +576,8 @@ const enrichContactsTool: ToolHandler = {
           account_entity_id: args.account_entity_id,
           name: c.name, email: c.email, role: c.role || undefined,
         });
+        // skipped = role inbox / no name — don't surface or count it.
+        if (r.skipped || !r.contact_entity_id) continue;
         if (r.created) created++; else existed++;
         linkedRows.push({ contact_entity_id: r.contact_entity_id, name: c.name, email: c.email, role: c.role, created: r.created });
       } catch (e) {
