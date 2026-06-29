@@ -5,8 +5,9 @@
  *
  * The ICP description (workspaces.icp + workspaces.about) is stable per
  * workspace, so we hash the input and cache the resulting vector in
- * workspaces.policy.icp_embedding_cache — keyed by hash so a stale cache
- * auto-invalidates when ICP/about changes.
+ * workspaces.embedding_cache.icp_embedding_cache — keyed by hash so a stale
+ * cache auto-invalidates when ICP/about changes. Stored in its own column
+ * (not policy) so policy stays small on the hot read path.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createHash } from 'node:crypto';
@@ -41,6 +42,16 @@ function buildPerspectiveStrings(about: string, icp: Record<string, unknown>): R
 }
 
 /**
+ * In-process memo so a scoring batch (many scoreEntity calls in one process)
+ * reads the ~75 KB perspective-vector cache from the DB once, not once per
+ * entity. TTL bounds staleness if ICP/about changes mid-run. This is the bulk
+ * of the egress fix for the per-entity path; the DB column move only stops
+ * policy reads from carrying the vectors.
+ */
+const VEC_MEMO_TTL_MS = 5 * 60_000;
+const icpVecMemo = new Map<string, { at: number; value: IcpPerspectiveVectors | null }>();
+
+/**
  * Get cached perspective vectors for the workspace, computing + storing if
  * the cache is missing or the input hash changed.
  */
@@ -48,21 +59,29 @@ export async function getIcpPerspectiveVectors(
   supabase: SupabaseClient,
   workspace_id: string,
 ): Promise<IcpPerspectiveVectors | null> {
+  const memo = icpVecMemo.get(workspace_id);
+  if (memo && Date.now() - memo.at < VEC_MEMO_TTL_MS) return memo.value;
+
   const ws = await supabase
     .from('workspaces')
-    .select('icp, about, policy')
+    .select('icp, about, embedding_cache')
     .eq('id', workspace_id)
     .maybeSingle();
-  if (!ws.data) return null;
+  if (!ws.data) {
+    icpVecMemo.set(workspace_id, { at: Date.now(), value: null });
+    return null;
+  }
 
   const about = (ws.data.about as string) ?? '';
   const icp = (ws.data.icp as Record<string, unknown>) ?? {};
-  const policy = (ws.data.policy as Record<string, unknown>) ?? {};
+  const cache = (ws.data.embedding_cache as Record<string, unknown>) ?? {};
   const hash = inputHash(about, icp);
 
-  const cached = (policy.icp_embedding_cache as { hash?: string; vectors?: Record<Perspective, number[]> } | undefined);
+  const cached = (cache.icp_embedding_cache as { hash?: string; vectors?: Record<Perspective, number[]> } | undefined);
   if (cached?.hash === hash && cached.vectors) {
-    return { hash, vectors: cached.vectors };
+    const value = { hash, vectors: cached.vectors };
+    icpVecMemo.set(workspace_id, { at: Date.now(), value });
+    return value;
   }
 
   // Recompute all 4 perspectives in parallel.
@@ -80,14 +99,18 @@ export async function getIcpPerspectiveVectors(
     vertical: verticalV,
   };
 
-  // Persist back to workspaces.policy.icp_embedding_cache.
-  const newPolicy = { ...policy, icp_embedding_cache: { hash, vectors } };
+  // Persist back to workspaces.embedding_cache.icp_embedding_cache. Kept out
+  // of policy so the ~9 hot paths that `select policy` don't drag these vectors
+  // over the wire on every read.
+  const newCache = { ...cache, icp_embedding_cache: { hash, vectors } };
   await supabase
     .from('workspaces')
-    .update({ policy: newPolicy })
+    .update({ embedding_cache: newCache })
     .eq('id', workspace_id);
 
-  return { hash, vectors };
+  const value = { hash, vectors };
+  icpVecMemo.set(workspace_id, { at: Date.now(), value });
+  return value;
 }
 
 /**

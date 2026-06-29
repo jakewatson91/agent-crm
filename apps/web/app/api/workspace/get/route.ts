@@ -12,9 +12,10 @@ const getWorkspace = async (workspace_id: string) => {
     .eq('id', workspace_id)
     .single();
   if (error) return { error: error.message, code: error.code } as const;
-  // Strip embedding caches from policy — they live there for the agent's runtime
-  // use but are 150KB+ and the UI never reads them. Shipping them on every
-  // settings load made the page feel broken.
+  // Mask secret-shaped env values before returning. The embedding caches used
+  // to live in policy (150KB+) and were stripped here; they now live in their
+  // own embedding_cache column which this route never selects, so the
+  // cache-key destructure below is a harmless guard for old/in-flight rows.
   if (data?.policy && typeof data.policy === 'object') {
     const { icp_embedding_cache: _ie, pitch_embedding_cache: _pe, env, ...rest } = data.policy as Record<string, unknown>;
     // Mask secret-shaped env values so DevTools / network captures / support

@@ -281,6 +281,11 @@ export async function scoreFacts(
   return scored.filter((s) => s.score >= cfg.min_score).slice(0, cfg.k);
 }
 
+// In-process memo: a scoring batch reads the pitch vector once, not once per
+// entity. TTL bounds staleness if about/constitution change mid-run.
+const PITCH_MEMO_TTL_MS = 5 * 60_000;
+const pitchVecMemo = new Map<string, { at: number; value: number[] | null }>();
+
 /**
  * Build (and cache) the workspace's pitch embedding from `about` + `constitution`.
  * These are the canonical place workspaces describe what they sell and how they
@@ -291,11 +296,17 @@ async function getPitchVector(
   supabase: SupabaseClient,
   workspace_id: string,
 ): Promise<number[] | null> {
+  const memo = pitchVecMemo.get(workspace_id);
+  if (memo && Date.now() - memo.at < PITCH_MEMO_TTL_MS) return memo.value;
+
   const ws = await supabase
-    .from('workspaces').select('about, constitution, policy').eq('id', workspace_id).maybeSingle();
+    .from('workspaces').select('about, constitution, embedding_cache').eq('id', workspace_id).maybeSingle();
   const about = ((ws.data?.about as string | undefined) ?? '').trim();
   const constitution = ((ws.data?.constitution as string | undefined) ?? '').trim();
-  if (!about && !constitution) return null;
+  if (!about && !constitution) {
+    pitchVecMemo.set(workspace_id, { at: Date.now(), value: null });
+    return null;
+  }
 
   const text = [
     about ? `What we sell:\n${about}` : '',
@@ -303,14 +314,19 @@ async function getPitchVector(
   ].filter(Boolean).join('\n\n').slice(0, 4000);
 
   // Cache keyed by hash of the input — auto-invalidates when about/constitution change.
-  const policy = (ws.data?.policy ?? {}) as Record<string, unknown>;
-  const cached = (policy.pitch_embedding_cache ?? {}) as { hash?: string; vector?: number[] };
+  // Stored in workspaces.embedding_cache (not policy) so the hot policy reads stay small.
+  const cache = (ws.data?.embedding_cache ?? {}) as Record<string, unknown>;
+  const cached = (cache.pitch_embedding_cache ?? {}) as { hash?: string; vector?: number[] };
   const { createHash } = await import('node:crypto');
   const hash = createHash('sha256').update(text).digest('hex').slice(0, 24);
-  if (cached.hash === hash && cached.vector) return cached.vector;
+  if (cached.hash === hash && cached.vector) {
+    pitchVecMemo.set(workspace_id, { at: Date.now(), value: cached.vector });
+    return cached.vector;
+  }
 
   const vector = await embed(text);
-  const newPolicy = { ...policy, pitch_embedding_cache: { hash, vector } };
-  await supabase.from('workspaces').update({ policy: newPolicy }).eq('id', workspace_id);
+  const newCache = { ...cache, pitch_embedding_cache: { hash, vector } };
+  await supabase.from('workspaces').update({ embedding_cache: newCache }).eq('id', workspace_id);
+  pitchVecMemo.set(workspace_id, { at: Date.now(), value: vector });
   return vector;
 }
