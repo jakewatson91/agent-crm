@@ -99,10 +99,12 @@ const DESCRIPTION_EXCERPT_FOR_EMBEDDING = 1500;
 
 // ---- Per-provider fetchers ----
 
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchGreenhouse(slug: string): Promise<JobsFetchResult> {
   // ?content=true returns the description inline so we don't need a per-job fetch.
   const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=true`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
   const j = await r.json() as { jobs?: Array<{
     id: number;
@@ -135,7 +137,7 @@ async function fetchGreenhouse(slug: string): Promise<JobsFetchResult> {
 
 async function fetchLever(slug: string): Promise<JobsFetchResult> {
   const url = `https://api.lever.co/v0/postings/${encodeURIComponent(slug)}?mode=json`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
   const arr = await r.json() as Array<{
     id: string;
@@ -171,7 +173,7 @@ async function fetchLever(slug: string): Promise<JobsFetchResult> {
 async function fetchAshby(slug: string): Promise<JobsFetchResult> {
   // includeCompensation=true asks Ashby to include comp on roles that opt in to display it.
   const url = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}?includeCompensation=true`;
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
   const j = await r.json() as { jobs?: Array<{
     id: string;
@@ -215,7 +217,7 @@ async function fetchWorkable(slug: string): Promise<JobsFetchResult> {
   // List endpoint has no description — only metadata. The description requires
   // a per-job detail fetch (done lazily for NEW jobs only, capped per run).
   const url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(slug)}/jobs`;
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '' }) });
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '' }), signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!r.ok) return { ok: false, jobs: [], status: r.status };
   const j = await r.json() as { results?: Array<{ id: string; title: string; shortcode?: string; locations?: Array<{ location_str?: string }>; department?: string; published_on?: string; employment_type?: string }> };
   const jobs: JobPosting[] = (j.results ?? []).map((p) => ({
@@ -244,7 +246,7 @@ async function enrichWorkableJob(slug: string, shortcode: string): Promise<{
 }> {
   try {
     const url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(slug)}/jobs/${encodeURIComponent(shortcode)}`;
-    const r = await fetch(url);
+    const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!r.ok) return {};
     const j = await r.json() as {
       description?: string;
@@ -333,7 +335,7 @@ async function verifyBoardMatchesEntity(
   if (sampleJob?.url) urls.push(sampleJob.url);
   for (const url of urls) {
     try {
-      const r = await fetch(url, { headers: { 'User-Agent': 'agent-crm-ats-discovery/1.0' } });
+      const r = await fetch(url, { headers: { 'User-Agent': 'agent-crm-ats-discovery/1.0' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (!r.ok) continue;
       const html = (await r.text()).toLowerCase();
       if (html.includes(target)) return true;
