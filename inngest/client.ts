@@ -57,15 +57,18 @@ export type Events = {
       workspace_id: string;
     };
   };
-  // Action-selector emits this when an entity looks like a fit but has too
-  // few facts to draft. Triggers a targeted Exa pull scoped to the entity
-  // name + workspace ICP context.
+  // Action-selector (reactive) or the entity-research dispatcher (proactive) emits
+  // this when an entity merits a deep web pull. The runner executes the workspace's
+  // AI-planned research strategy (angles) scoped to the entity, running `angle_count`
+  // of them (set by the dispatcher's per-tier budget; default = all).
   'research.requested': {
     data: {
       workspace_id: string;
       entity_id: string;
       entity_name: string;
       reason: string;
+      tier?: 'hot' | 'default' | 'cold';
+      angle_count?: number;
     };
   };
   // Action-selector emits this when an account fits but lacks a strong enough

@@ -19,7 +19,17 @@ interface Workspace {
   updated_at?: string;
 }
 
-type Tab = 'about' | 'writing' | 'thresholds';
+type Tab = 'about' | 'writing' | 'research' | 'thresholds';
+
+interface Angle {
+  id: string;
+  label: string;
+  query_template: string;
+  domain_scope: 'own_site' | 'news' | 'open_web';
+  recency_days?: number;
+  num_results?: number;
+  enabled?: boolean;
+}
 
 const ABOUT_PLACEHOLDER = `Plain English. What you do, who you sell to, how the agent should come across. Everything structured (ICP, persona, pain points, example facts) is derived from this when you save.
 
@@ -35,6 +45,11 @@ Example:
 - Always cite a specific fact about the company.
 - Don't pitch features. Describe the problem we solve.
 - Sign off with first name only.`;
+
+const RESEARCH_PLACEHOLDER = `Plain English. What's worth knowing about a prospect that would make outreach land?
+
+Example:
+"Dig up what they shipped recently, who they sell to (customer logos, case studies), and any leadership changes. We sell to eng-led teams, so their engineering blog and tech choices matter. Skip generic funding-announcement noise unless it's a fresh round."`;
 
 export default function SettingsWorkspacePage() {
   const params = useParams<{ ws: string }>();
@@ -74,8 +89,18 @@ export default function SettingsWorkspacePage() {
   const [hireExcludeFamilies, setHireExcludeFamilies] = useState<string[]>([]);
   const [hireAlwaysExec, setHireAlwaysExec] = useState<boolean>(false);
 
+  const [outreachChannel, setOutreachChannel] = useState<'email' | 'linkedin'>('email');
   const [fromEmail, setFromEmail] = useState('');
   const [overrideTo, setOverrideTo] = useState('');
+
+  // Research strategy
+  const [guidance, setGuidance] = useState('');
+  const [guidanceAtLoad, setGuidanceAtLoad] = useState('');
+  const [alwaysInclude, setAlwaysInclude] = useState<string[]>([]);
+  const [alwaysIncludeAtLoad, setAlwaysIncludeAtLoad] = useState<string[]>([]);
+  const [strategy, setStrategy] = useState<Angle[]>([]);
+  const [strategyAt, setStrategyAt] = useState<string | null>(null);
+  const [regen, setRegen] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -95,6 +120,8 @@ export default function SettingsWorkspacePage() {
     setOverrideTo((out.override_to ?? '') as string);
     setFromEmail((out.from_email ?? '') as string);
     setBannedPhrases(((out.banned_phrases ?? []) as string[]));
+    const dr = (policy.drafter ?? {}) as Record<string, any>;
+    setOutreachChannel((dr.outreach_channel === 'linkedin' ? 'linkedin' : 'email'));
     const enr = (policy.enrichment ?? {}) as Record<string, any>;
     setContactProvider(((enr.contact_provider as 'none' | 'hunter') ?? 'none'));
     setHunterCap(typeof enr.hunter_monthly_cap === 'number' ? enr.hunter_monthly_cap : 0);
@@ -124,6 +151,13 @@ export default function SettingsWorkspacePage() {
     setHireIncludeSeniorities(Array.isArray(hf.include_seniorities) ? hf.include_seniorities : []);
     setHireExcludeFamilies(Array.isArray(hf.exclude_families) ? hf.exclude_families : []);
     setHireAlwaysExec(Boolean(hf.always_include_exec));
+    const rs = (policy.research ?? {}) as Record<string, any>;
+    setGuidance((rs.guidance ?? '') as string);
+    setGuidanceAtLoad((rs.guidance ?? '') as string);
+    setAlwaysInclude(Array.isArray(rs.always_include) ? rs.always_include : []);
+    setAlwaysIncludeAtLoad(Array.isArray(rs.always_include) ? rs.always_include : []);
+    setStrategy(Array.isArray(rs.strategy) ? (rs.strategy as Angle[]) : []);
+    setStrategyAt((rs.strategy_generated_at ?? null) as string | null);
     setBudget(w.budget_cents ?? 0);
   }
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [params.ws]);
@@ -137,6 +171,10 @@ export default function SettingsWorkspacePage() {
         override_to: overrideTo.trim() === '' ? null : overrideTo.trim(),
         from_email: fromEmail.trim() || undefined,
         banned_phrases: bannedPhrases,
+      },
+      drafter: {
+        ...(base.drafter ?? {}),
+        outreach_channel: outreachChannel,
       },
       enrichment: {
         ...(base.enrichment ?? {}),
@@ -172,16 +210,26 @@ export default function SettingsWorkspacePage() {
         exclude_families: hireExcludeFamilies,
         always_include_exec: hireAlwaysExec,
       },
+      research: {
+        ...(base.research ?? {}),
+        guidance: guidance.trim() || undefined,
+        always_include: alwaysInclude,
+        // Persist the angle list so per-angle on/off toggles survive a save. The
+        // planner overwrites this when guidance/About changes.
+        strategy,
+        strategy_generated_at: strategyAt ?? undefined,
+      },
     };
   }, [
     ws,
-    overrideTo, fromEmail, bannedPhrases,
+    outreachChannel, overrideTo, fromEmail, bannedPhrases,
     contactProvider, hunterCap,
     draftIcp, draftSignal, draftEvidence, draftSuppress,
     researchIcp, researchEvidenceMax, researchCooldown,
     dropIcp, dropEvidenceMin, dropSuppress, watchIcp,
     wIndustry, wStage, wSignal, wEvidence, wRecency, wGraph, rrfGate,
     hireIncludeFamilies, hireIncludeSeniorities, hireExcludeFamilies, hireAlwaysExec,
+    guidance, alwaysInclude, strategy, strategyAt,
   ]);
 
   async function save() {
@@ -236,11 +284,40 @@ export default function SettingsWorkspacePage() {
       });
       const j = await r.json();
       if (!r.ok) { setErr(j.error ?? 'save failed'); return; }
+      // When About / research guidance / must-include terms changed, refresh the AI
+      // search plan from the now-saved values so it stays in sync automatically.
+      const researchChanged = aboutChanged
+        || guidance.trim() !== guidanceAtLoad.trim()
+        || JSON.stringify(alwaysInclude) !== JSON.stringify(alwaysIncludeAtLoad);
+      if (researchChanged) {
+        await fetch('/api/workspaces/research-strategy', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspace_id: params.ws }),
+        }).catch(() => {});
+      }
       setMsg(aboutChanged
         ? `saved + regenerated structured fields at ${new Date().toLocaleTimeString()}`
+        : researchChanged ? `saved + refreshed research plan at ${new Date().toLocaleTimeString()}`
         : `saved at ${new Date().toLocaleTimeString()}`);
       await load();
     } finally { setSaving(false); }
+  }
+
+  function toggleAngle(id: string) {
+    setStrategy((prev) => prev.map((a) => (a.id === id ? { ...a, enabled: a.enabled === false } : a)));
+  }
+
+  async function regenerateStrategy() {
+    setRegen(true); setErr(null);
+    try {
+      const r = await fetch('/api/workspaces/research-strategy', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id: params.ws }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setErr(j.error ?? 'regenerate failed'); return; }
+      await load();
+    } finally { setRegen(false); }
   }
 
   if (!ws) return <div><h2 style={{ marginTop: 0 }}>Workspace</h2><p style={{ color: 'var(--text-3)' }}>loading…</p></div>;
@@ -256,6 +333,7 @@ export default function SettingsWorkspacePage() {
       <div style={{ display: 'flex', gap: '.25rem', marginTop: '1.25rem', borderBottom: '1px solid var(--border)' }}>
         <Tab id="about" current={tab} onClick={setTab} label="About" />
         <Tab id="writing" current={tab} onClick={setTab} label="Writing style" />
+        <Tab id="research" current={tab} onClick={setTab} label="Research" />
         <Tab id="thresholds" current={tab} onClick={setTab} label="Thresholds" />
       </div>
 
@@ -277,6 +355,17 @@ export default function SettingsWorkspacePage() {
             <ChipList values={bannedPhrases} onChange={setBannedPhrases} placeholder="e.g. hope this finds you well" />
           </HelpRow>
 
+          <HelpRow label="Outreach channel" help="Email drafts a full cold email with subject + body. LinkedIn drafts a connection request (max 250 chars, no subject).">
+            <div style={{ display: 'flex', gap: '.75rem' }}>
+              {(['email', 'linkedin'] as const).map((ch) => (
+                <label key={ch} style={{ display: 'flex', alignItems: 'center', gap: '.35rem', fontSize: '.85rem', cursor: 'pointer' }}>
+                  <input type="radio" name="outreach_channel" value={ch} checked={outreachChannel === ch} onChange={() => setOutreachChannel(ch)} />
+                  {ch === 'email' ? 'Email' : 'LinkedIn'}
+                </label>
+              ))}
+            </div>
+          </HelpRow>
+
           <HelpRow label="From address" help="The address outbound is sent from. Defaults to onboarding@resend.dev (no domain verification needed).">
             <input value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} placeholder="onboarding@resend.dev" style={textInput} />
           </HelpRow>
@@ -287,6 +376,61 @@ export default function SettingsWorkspacePage() {
 
           <div style={{ padding: '.5rem .75rem', borderRadius: 6, background: 'var(--panel-2)', fontSize: '.72rem', color: 'var(--text-3)' }}>
             Your Resend API key lives in <strong>Developer → Environment variables</strong> as <code>RESEND_API_KEY</code>.
+          </div>
+        </div>
+      )}
+
+      {tab === 'research' && (
+        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div style={{ fontSize: '.72rem', color: 'var(--text-3)' }}>
+            The agent plans its own web searches per prospect from your About text and the guidance below, then runs them within a fixed budget. You give direction; it writes and tunes the actual searches.
+          </div>
+
+          <HelpRow label="What to research" help="Plain English: what should the agent dig up about a prospect beyond hiring? e.g. recent launches, who they sell to, leadership changes, security posture. This shapes the searches the agent writes.">
+            <textarea value={guidance} onChange={(e) => setGuidance(e.target.value)} rows={7} placeholder={RESEARCH_PLACEHOLDER} style={prose} />
+          </HelpRow>
+
+          <HelpRow label="Always include" help="Specific topics or terms every search plan must cover. Optional. Leave empty to let the agent decide entirely.">
+            <ChipList values={alwaysInclude} onChange={setAlwaysInclude} placeholder="e.g. SOC 2, Series B, new VP of Sales" />
+          </HelpRow>
+
+          <div style={{ marginTop: '.5rem', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Current search plan</div>
+            {strategyAt && <span style={{ fontSize: '.68rem', color: 'var(--text-3)' }}>generated {new Date(strategyAt).toLocaleString()}</span>}
+          </div>
+          <div style={{ fontSize: '.72rem', color: 'var(--text-3)' }}>
+            AI-written. Toggle one off to stop running it. To change the queries, edit the guidance above and regenerate — they aren&apos;t hand-edited.
+          </div>
+
+          {strategy.length === 0 ? (
+            <p style={{ fontSize: '.8rem', color: 'var(--text-3)' }}>No plan yet. Save your About text, or click Regenerate to build one now.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
+              {strategy.map((a) => {
+                const on = a.enabled !== false;
+                return (
+                  <div key={a.id} style={{ display: 'flex', gap: '.6rem', alignItems: 'flex-start', padding: '.5rem .6rem', borderRadius: 6, border: '1px solid var(--border)', background: on ? 'var(--panel-2)' : 'transparent', opacity: on ? 1 : 0.5 }}>
+                    <input type="checkbox" checked={on} onChange={() => toggleAngle(a.id)} style={{ marginTop: '.15rem' }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: '.82rem', color: 'var(--text)' }}>
+                        {a.label}
+                        <code style={{ marginLeft: '.5rem', fontSize: '.68rem', color: 'var(--text-3)' }}>{a.domain_scope}{a.recency_days ? ` · ${a.recency_days}d` : ''}</code>
+                      </div>
+                      <div style={{ fontSize: '.72rem', color: 'var(--text-3)', fontFamily: 'monospace', wordBreak: 'break-word' }}>{a.query_template}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div>
+            <button onClick={regenerateStrategy} disabled={regen} style={{ padding: '.4rem .8rem', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', opacity: regen ? 0.4 : 1, fontFamily: 'inherit', fontSize: '.8rem' }}>
+              {regen ? 'regenerating…' : 'Regenerate plan from saved settings'}
+            </button>
+            <div style={{ fontSize: '.68rem', color: 'var(--text-3)', marginTop: '.35rem' }}>
+              Uses your saved About + guidance. Save first if you just edited them. Toggles are stored with the page&apos;s Save button.
+            </div>
           </div>
         </div>
       )}

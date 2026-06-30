@@ -30,13 +30,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
+import { callTool, entityIdsOfType, fetchSeenSignalTags, runExaSearch } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
 
 const EXTRACT_MODEL = 'deepseek-v4-flash';
-const EXA_API = 'https://api.exa.ai/search';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
@@ -109,30 +108,17 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     ...(keywords.length ? [keywords.join(' ')] : []),
   ].join(' ').slice(0, 500);
 
-  let exaResults: ExaResult[];
-  try {
-    const reqBody: Record<string, unknown> = {
-      query: effectiveQuery,
-      type: search_type,
-      numResults: Math.min(num_results, 100),
-      contents: { text: { maxCharacters: 1500 } },
-      startPublishedDate,
-    };
-    if (include_domains.length) reqBody.includeDomains = include_domains;
-    if (exclude_domains.length) reqBody.excludeDomains = exclude_domains;
-
-    const r = await fetch(EXA_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
-      body: JSON.stringify(reqBody),
-    });
-    if (!r.ok) { result.errors.push(`Exa ${r.status}: ${(await r.text()).slice(0, 300)}`); return result; }
-    const j = await r.json() as { results: ExaResult[] };
-    exaResults = j.results ?? [];
-  } catch (e) {
-    result.errors.push(`Exa fetch failed: ${e instanceof Error ? e.message : String(e)}`);
-    return result;
-  }
+  const exaRes = await runExaSearch(apiKey, {
+    query: effectiveQuery,
+    type: search_type,
+    num_results,
+    text_chars: 1500,
+    start_published_date: startPublishedDate,
+    include_domains,
+    exclude_domains,
+  });
+  if (!exaRes.ok) { result.errors.push(`Exa ${exaRes.status ?? ''}: ${exaRes.error}`.trim()); return result; }
+  const exaResults: ExaResult[] = exaRes.results;
 
   // Dedup against signals seen in window (by Exa's result id).
   const cutoffMs = Date.now() - since_hours * 3600 * 1000;

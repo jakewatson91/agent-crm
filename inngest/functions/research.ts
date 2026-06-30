@@ -1,22 +1,125 @@
 /**
- * Deep-research handler. Triggered by action_selector when it sees an entity
- * that looks like a possible fit but has too few facts to draft against.
+ * Deep-research handler. Triggered by the action_selector (reactive) or the
+ * entity_research_dispatcher (proactive, score-tiered) for an entity that merits a
+ * web pull.
  *
- * Runs a one-shot Exa search scoped to this specific entity (name + a few
- * key keywords pulled from its existing facts), creates `research_result`
- * signals attributed back to the entity, then asserts a `research_completed`
- * fact so the action_selector cooldown picks up next time.
+ * Instead of one bare name search, it runs the workspace's AI-planned research
+ * strategy — a small set of search angles (own-site posts, news, customers, ...) the
+ * planner authored from the workspace's own description (see research_strategy.ts).
+ * Each angle is one Exa search scoped to this entity; results become `research_result`
+ * signals tagged with the angle id so we can later tell which angles actually move a
+ * score.
  *
- * Concurrency-limited per workspace to avoid Exa bursts. Exa credit budget
- * still applies — if the account is 402'ing this just no-ops with an error
- * fact (audit trail preserves what we tried).
+ * Budget: the dispatcher decides how many angles to run for this entity (`angle_count`)
+ * by tier, against the workspace's per-run Exa budget. Concurrency-limited per workspace.
  */
 import { createServerClient } from '@agent-crm/db';
-import { callTool, recordActivityMarker, ACTIVITY_MARKERS } from '@agent-crm/tools';
+import {
+  callTool, recordActivityMarker, ACTIVITY_MARKERS,
+  getPolicy, resolveEnvVar, resolveStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
+} from '@agent-crm/tools';
+import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
-const EXA_API = 'https://api.exa.ai/search';
-const MAX_RESULTS = 8;
+const SEEN_WINDOW_DAYS = 30;
+
+/**
+ * Pull a few descriptive keywords from the entity's facts — only used by angles whose
+ * template references {keywords}. Mirrors the old runner's filter: stack/customer/
+ * vertical-ish facts, no scores/flags/dates.
+ */
+async function entityKeywords(
+  supabase: ReturnType<typeof createServerClient>,
+  workspace_id: string,
+  entity_id: string,
+): Promise<string> {
+  const facts = await supabase
+    .from('facts')
+    .select('predicate, object_text')
+    .eq('workspace_id', workspace_id)
+    .eq('subject_entity', entity_id)
+    .is('supersedes', null)
+    .limit(20);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const f of (facts.data ?? []) as Array<{ predicate: string; object_text: string | null }>) {
+    const val = f.object_text?.trim();
+    if (!val) continue;
+    if (/^score_/.test(f.predicate) || /_breakdown$/.test(f.predicate)) continue;
+    if (!/stack|uses|integrat|customer|target|industry|vertical/.test(f.predicate)) continue;
+    if (/^[\d.]+$/.test(val) || /^(true|false|yes|no)$/i.test(val) || /^\d{4}-\d{2}-\d{2}/.test(val)) continue;
+    if (val.length < 3) continue;
+    const k = val.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(val);
+  }
+  return out.slice(0, 3).join(' ');
+}
+
+/**
+ * Short grounding blurb used to disambiguate same-name companies: the company's own
+ * homepage/blog snippets (strongest) plus any descriptive facts we already hold.
+ */
+async function entityContext(
+  supabase: ReturnType<typeof createServerClient>,
+  workspace_id: string,
+  entity_id: string,
+  ownSiteSnippets: string[],
+): Promise<string> {
+  const facts = await supabase
+    .from('facts')
+    .select('predicate, object_text')
+    .eq('workspace_id', workspace_id)
+    .eq('subject_entity', entity_id)
+    .is('supersedes', null)
+    .limit(40);
+  const desc: string[] = [];
+  for (const f of (facts.data ?? []) as Array<{ predicate: string; object_text: string | null }>) {
+    if (/^score_/.test(f.predicate) || /_breakdown$/.test(f.predicate)) continue;
+    if (!/desc|industr|sector|product|offer|what|target|customer|vertical|categor|summary|tagline|business|market|does/.test(f.predicate)) continue;
+    const v = f.object_text?.trim();
+    if (!v || v.length < 3) continue;
+    desc.push(`${f.predicate}: ${v}`);
+    if (desc.length >= 6) break;
+  }
+  return [ownSiteSnippets.slice(0, 2).join(' | '), desc.join('; ')].filter(Boolean).join(' || ').slice(0, 600);
+}
+
+/** Turn one angle into an Exa request for this entity. Returns null if unrunnable. */
+function buildAngleRequest(
+  angle: ResearchAngle,
+  entity_name: string,
+  domain: string,
+  keywords: string,
+): { query: string; params: Parameters<typeof runExaSearch>[1] } | null {
+  const query = angle.query_template
+    .replaceAll('{entity}', entity_name)
+    .replaceAll('{domain}', domain)
+    .replaceAll('{keywords}', keywords)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+  if (!query) return null;
+
+  const start_published_date = angle.recency_days
+    ? new Date(Date.now() - angle.recency_days * 86400 * 1000).toISOString()
+    : undefined;
+  const num_results = angle.num_results ?? 4;
+
+  if (angle.domain_scope === 'own_site') {
+    if (!domain) return null; // can't scope to a site we don't know
+    // No recency on own-site: a company's own blog/product/customer pages are worth
+    // surfacing regardless of age, and date-filtering an own-domain search tends to
+    // return nothing (their pages aren't always freshly dated/indexed).
+    return { query, params: { query, num_results, include_domains: [domain] } };
+  }
+  if (angle.domain_scope === 'news') {
+    return { query, params: { query, num_results, category: 'news', start_published_date, include_text: [entity_name] } };
+  }
+  // open_web
+  return { query, params: { query, num_results, start_published_date, include_text: [entity_name] } };
+}
 
 export const researchRunner = inngest.createFunction(
   {
@@ -24,97 +127,119 @@ export const researchRunner = inngest.createFunction(
     concurrency: { limit: 2, key: 'event.data.workspace_id' },
   },
   { event: 'research.requested' },
-  async ({ event, step }) => {
-    const { workspace_id, entity_id, entity_name, reason } = event.data;
-    const apiKey = process.env.EXA_API_KEY;
-    if (!apiKey) return { ok: false, reason: 'EXA_API_KEY not set' };
+  async ({ event, step }) =>
+    step.run('search-and-attribute', async () => runEntityResearch(createServerClient(), event.data)),
+);
 
-    return await step.run('search-and-attribute', async () => {
-      const supabase = createServerClient();
+export interface EntityResearchParams {
+  workspace_id: string;
+  entity_id: string;
+  entity_name: string;
+  reason: string;
+  angle_count?: number;
+}
+
+/**
+ * Core of the research runner — exported so it can be invoked directly (scripts /
+ * tests / a local loop) as well as from the Inngest handler above.
+ */
+export async function runEntityResearch(
+  supabase: ReturnType<typeof createServerClient>,
+  params: EntityResearchParams,
+) {
+  const { workspace_id, entity_id, entity_name, reason, angle_count } = params;
+  {
+    {
       const actor = { workspace_id, actor_kind: 'agent' as const, actor_id: 'research_runner' };
 
-      // Pull a few keywords from this entity's existing facts so the query
-      // is targeted, not just the company name. Prefer facts that suggest
-      // pain / stack / customers — those are what tells Exa what to look for.
-      const facts = await supabase
-        .from('facts')
-        .select('predicate, object_text')
-        .eq('workspace_id', workspace_id)
-        .eq('subject_entity', entity_id)
-        .is('supersedes', null)
-        .limit(20);
-      const keywords: string[] = [];
-      const seen = new Set<string>();
-      for (const f of (facts.data ?? []) as Array<{ predicate: string; object_text: string | null }>) {
-        const val = f.object_text?.trim();
-        if (!val) continue;
-        // Skip scoring/bookkeeping predicates. They name-match the topic regex
-        // ("score_industry_match") but carry a number, not a search term.
-        if (/^score_/.test(f.predicate) || /_breakdown$/.test(f.predicate)) continue;
-        if (!/stack|uses|integrat|customer|target|industry|vertical|hiring/.test(f.predicate)) continue;
-        // Skip non-descriptive values that pollute the query: pure numbers (scores),
-        // boolean flags, and dates/timestamps. Keep real phrases like "B2B".
-        if (/^[\d.]+$/.test(val)) continue;
-        if (/^(true|false|yes|no)$/i.test(val)) continue;
-        if (/^\d{4}-\d{2}-\d{2}/.test(val)) continue;
-        if (val.length < 3) continue;
-        const key = val.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        keywords.push(val);
-      }
-      const query = [entity_name, ...keywords.slice(0, 3)].join(' ').slice(0, 300);
+      const policy = await getPolicy(supabase, workspace_id);
+      const apiKey = resolveEnvVar(policy, 'EXA_API_KEY');
+      if (!apiKey) return { ok: false, reason: 'EXA_API_KEY not set' };
 
-      let results: Array<{ id: string; title: string | null; url: string; text?: string; publishedDate?: string }>;
-      try {
-        const r = await fetch(EXA_API, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
-          body: JSON.stringify({
-            query,
-            type: 'auto',
-            numResults: MAX_RESULTS,
-            contents: { text: { maxCharacters: 1200 } },
-          }),
-        });
-        if (!r.ok) {
-          const msg = (await r.text()).slice(0, 200);
-          // Failed-attempt marker — event log, not a fact (it records that the
-          // research call errored, not anything true about the account).
-          await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_ERROR, entity_id, {
-            status: r.status, message: msg, summary: `Exa ${r.status}: ${msg}`,
-          });
-          return { ok: false, reason: `Exa ${r.status}` };
-        }
-        const j = await r.json() as { results: typeof results };
-        results = j.results ?? [];
-      } catch (e) {
-        return { ok: false, reason: e instanceof Error ? e.message : String(e) };
-      }
+      // The strategy is generated + cached by the dispatcher; the runner only reads it.
+      const allAngles = resolveStrategy(policy);
+      const toRun = typeof angle_count === 'number' && angle_count > 0
+        ? allAngles.slice(0, angle_count)
+        : allAngles;
+      if (!toRun.length) return { ok: true, reason: 'no angles', signals_created: 0 };
 
-      // Dedup against existing signals for this entity by Exa result id.
-      const since30d = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
+      // Entity domain drives the own_site angle + collision guards.
+      const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
+      const domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+      const keywords = toRun.some((a) => a.query_template.includes('{keywords}'))
+        ? await entityKeywords(supabase, workspace_id, entity_id)
+        : '';
+
+      // Cross-run dedup: collect Exa result ids already seen for this entity.
+      const since = new Date(Date.now() - SEEN_WINDOW_DAYS * 86400 * 1000).toISOString();
       const seenRes = await supabase
         .from('signals')
         .select('structured_tags')
         .eq('workspace_id', workspace_id)
         .eq('entity_id', entity_id)
-        .gte('observed_at', since30d);
+        .gte('observed_at', since);
       const seenIds = new Set<string>();
       for (const s of (seenRes.data ?? []) as Array<{ structured_tags: { exa_id?: string } | null }>) {
         const id = s.structured_tags?.exa_id;
         if (id) seenIds.add(id);
       }
 
+      let searches = 0;
+      const errors: string[] = [];
+
+      // --- Fetch phase: collect candidates, separating own-site (collision-proof,
+      // domain-scoped) from news/open_web (searched by name -> must be disambiguated). ---
+      interface Candidate { angleId: string; scope: ResearchAngle['domain_scope']; er: ExaResult }
+      const candidates: Candidate[] = [];
+      const ownSiteSnippets: string[] = [];
+      for (const angle of toRun) {
+        const built = buildAngleRequest(angle, entity_name, domain, keywords);
+        if (!built) continue;
+        searches++;
+        const res = await runExaSearch(apiKey, built.params);
+        if (!res.ok) {
+          errors.push(`${angle.id}: Exa ${res.status ?? ''} ${res.error ?? ''}`.trim());
+          continue;
+        }
+        for (const er of res.results) {
+          if (!er.id || seenIds.has(er.id)) continue;
+          seenIds.add(er.id); // dedup within this run too
+          candidates.push({ angleId: angle.id, scope: angle.domain_scope, er });
+          if (angle.domain_scope === 'own_site') {
+            const snip = [er.title, (er.text ?? '').slice(0, 200)].filter(Boolean).join(' — ');
+            if (snip) ownSiteSnippets.push(snip);
+          }
+        }
+      }
+
+      // --- Relevance phase: own-site results are trusted; everything else must pass the
+      // same-name disambiguation gate (domain-host auto-accept, else one LLM check). ---
+      const ownIds = new Set(candidates.filter((c) => c.scope === 'own_site').map((c) => c.er.id));
+      const toGate = candidates
+        .filter((c) => c.scope !== 'own_site')
+        .map((c) => ({ id: c.er.id, title: c.er.title, url: c.er.url, text: c.er.text }));
+      let collisions_dropped = 0;
+      const acceptedIds = new Set<string>(ownIds);
+      if (toGate.length) {
+        // Ground the disambiguation in the company's own words. Reuse own-site snippets
+        // when we have them; otherwise fetch the homepage so a thin, common-named entity
+        // (no facts, own-site not indexed) still anchors to the right company.
+        let grounding = ownSiteSnippets.slice(0, 2).join(' | ');
+        if (!grounding && domain) grounding = await fetchEntityGrounding(apiKey, entity_name, domain);
+        const context = await entityContext(supabase, workspace_id, entity_id, grounding ? [grounding] : []);
+        const rel = await filterResultsByEntity({ name: entity_name, domain, context }, toGate);
+        for (const id of rel.accepted) acceptedIds.add(id);
+        collisions_dropped = rel.dropped;
+      }
+
+      // --- Create phase: only accepted results become signals. ---
       let created = 0;
-      for (const er of results) {
-        if (seenIds.has(er.id)) continue;
-        const body = [er.title, er.text].filter(Boolean).join('\n').slice(0, 1500);
+      const perAngle: Record<string, number> = {};
+      for (const c of candidates) {
+        if (!acceptedIds.has(c.er.id)) continue;
+        const body = [c.er.title, c.er.text].filter(Boolean).join('\n').slice(0, 1500);
         if (!body) continue;
         try {
-          // create_signal builds the event, computes the embedding, and sets
-          // source_event_id — a raw insert can't (signals.source_event_id is
-          // NOT NULL, and facts.source_event_id is a FK to events).
           const sig = await callTool(supabase, actor, 'create_signal', {
             entity_id,
             type: 'research_result',
@@ -122,27 +247,43 @@ export const researchRunner = inngest.createFunction(
             body_for_embedding: body,
             structured_tags: {
               signal_source: 'research',
-              exa_id: er.id,
-              url: er.url,
+              research_angle: c.angleId,
+              exa_id: c.er.id,
+              url: c.er.url,
+              published_at: c.er.publishedDate ?? null,
               triggered_by: reason,
             },
           });
-          if (sig.ok) created++;
+          if (sig.ok) { created++; perAngle[c.angleId] = (perAngle[c.angleId] ?? 0) + 1; }
         } catch {
-          // skip; partial failure is acceptable for a research pull
+          // partial failure is acceptable for a research pull
         }
       }
 
-      // Mark research as completed. Event-log marker (what the system did), not
-      // a fact about the account — the dispatcher reads it to time the next
-      // research pass; it must not count as evidence in scoring.
+      if (searches === 0) {
+        await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_ERROR, entity_id, {
+          message: 'no runnable angles (missing domain / empty templates)',
+          summary: 'research produced no searches',
+        });
+        return { ok: false, reason: 'no runnable angles' };
+      }
+      if (errors.length && created === 0) {
+        await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_ERROR, entity_id, {
+          message: errors.slice(0, 3).join('; '),
+          summary: `research errored on ${errors.length}/${searches} angles`,
+        });
+      }
+
+      // Event-log marker the dispatcher / action_selector read to time the next pass.
       await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_COMPLETED, entity_id, {
         results_created: created,
-        query: query.slice(0, 60),
-        summary: `${created} new results from "${query.slice(0, 60)}"`,
+        searches,
+        collisions_dropped,
+        per_angle: perAngle,
+        summary: `${created} results from ${searches} angle(s)${collisions_dropped ? `, ${collisions_dropped} same-name dropped` : ''}`,
       });
 
-      return { ok: true, query, results_total: results.length, signals_created: created };
-    });
-  },
-);
+      return { ok: true, searches, signals_created: created, collisions_dropped, per_angle: perAngle, errors: errors.slice(0, 3) };
+    }
+  }
+}

@@ -17,17 +17,20 @@ import { scoreEntity, scoreAndAssert, combineSubScores, scoreContact } from './s
 import { selectAction, loadActionContext } from './action_selector.ts';
 import { graphProximity } from './graph.ts';
 import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.ts';
-import { getPolicy, DEFAULT_POLICY, resolveEnvVar, type WorkspacePolicy, type OutreachPolicy, type EnrichmentPolicy, type DrafterPolicy, type HiringFilterPolicy } from './policy.ts';
+import { getPolicy, DEFAULT_POLICY, resolveEnvVar } from './policy.ts';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
+export { runExaSearch, type ExaResult, type ExaSearchParams, type ExaSearchResult } from './exa_search.ts';
+export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, resolveStrategy, filterResultsByEntity, fetchEntityGrounding, BASELINE_ANGLES, type PlannerContext, type RelevanceResult } from './research_strategy.ts';
 export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
 export { runRetention, type RetentionResult } from './retention.ts';
 export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
-export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy };
+export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, TIER_ANGLE_COUNT } from './policy.ts';
+export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy, ResearchPolicy, ResearchAngle } from './policy.ts';
 export { cronToMinIntervalMinutes } from './cron.ts';
 export { compress, estimateTokens, type CompressOptions, type CompressResult, type UrlRef } from './compress.ts';
 export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, resolveChatModel, type ChatForWorkspaceArgs } from './chat_workspace.ts';

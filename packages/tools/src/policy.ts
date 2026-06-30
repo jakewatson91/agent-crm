@@ -65,6 +65,13 @@ export interface EnrichmentPolicy {
 export interface DrafterPolicy {
   cooldown_days?: number;
 
+  /**
+   * Which channel to draft for. Defaults to 'email' when unset.
+   * 'linkedin' produces a short connection-request message (≤250 chars, no subject)
+   * instead of a full cold email.
+   */
+  outreach_channel?: 'email' | 'linkedin';
+
   // ---- email formula (new in Phase 3) ----
   /** How the subject line looks. Default 'one_word'. */
   subject_style?: 'one_word' | 'short_phrase' | 'question';
@@ -282,6 +289,57 @@ export interface RetentionPolicy {
   prunable_event_actions?: string[];
 }
 
+/**
+ * One AI-written search angle. The planner (generateResearchStrategy) authors the
+ * query text; the only field a human edits is `enabled`. Shape lives in code, the
+ * contents are generated per-workspace from the About text + guidance — nothing
+ * vertical-specific is baked here.
+ *
+ * domain_scope drives the Exa request shape (NOT a free-form category) because Exa's
+ * `company`/`people` categories reject date/domain/text filters, while `news` and no
+ * category accept them:
+ *   - own_site : includeDomains=[entity domain], recency window. The company's own
+ *                blog / changelog / launch / case-study pages. Highest-value, no slug
+ *                collisions.
+ *   - news     : category='news', recency window, includeText=[entity name]. Press /
+ *                funding / launch coverage by others.
+ *   - open_web : no category, recency window, includeText=[entity name]. Everything else.
+ */
+export interface ResearchAngle {
+  id: string;
+  label: string;
+  query_template: string;          // uses {entity} and optionally {domain} / {keywords}
+  domain_scope: 'own_site' | 'news' | 'open_web';
+  recency_days?: number;           // startPublishedDate window; unset = no date filter
+  num_results?: number;            // small, default 4
+  enabled?: boolean;               // human on/off toggle; unset = enabled
+}
+
+/**
+ * Research policy. Drives the per-entity deep-research path (researchRunner +
+ * entity_research_dispatcher). The AI plans the searches; the human gives high-level
+ * guidance and budget. Vertical-neutral: a fresh workspace runs a neutral baseline
+ * strategy (see research_strategy.ts) with zero config.
+ *
+ *   guidance         : plain-English "what should the agent dig up about prospects?".
+ *                      Folded into the planner prompt. Default empty.
+ *   always_include   : must-have topics/terms the planner must cover. Default empty.
+ *   searches_per_run : Exa searches the dispatcher may spend per 4h tick (×6 = daily).
+ *                      Caps spend; default DEFAULT_RESEARCH_SEARCHES_PER_RUN. Spent
+ *                      top-down across the selection buckets.
+ *   selection_mix    : share of the per-run budget each bucket gets. Defaults sum to 1.
+ *   strategy         : the AI-generated angles, cached. Regenerated on About/guidance
+ *                      change or when stale. Empty/unset = generate lazily.
+ */
+export interface ResearchPolicy {
+  guidance?: string;
+  always_include?: string[];
+  searches_per_run?: number;
+  selection_mix?: { high_value?: number; active_comms?: number; exploration?: number };
+  strategy?: ResearchAngle[];
+  strategy_generated_at?: string;
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
@@ -303,6 +361,7 @@ export interface WorkspacePolicy {
   hiring_filter?: HiringFilterPolicy;
   lifecycle?: LifecyclePolicy;
   display?: DisplayPolicy;
+  research?: ResearchPolicy;
 
   /**
    * Generic env-var bag for this workspace. Flat dict of NAME → value.
@@ -344,6 +403,16 @@ export function resolveEnvVar(
   return process.env[name];
 }
 
+/**
+ * Research budget defaults. The dispatcher runs every 4h (6 ticks/day), so the
+ * per-run default ×6 sets the daily Exa ceiling. 30/run ≈ 180/day — at ~$0.005/search
+ * that's flat against the prior behavior (RESEARCH_FANOUT_LIMIT 25/tick × 1 search).
+ */
+export const DEFAULT_RESEARCH_SEARCHES_PER_RUN = 30;
+export const DEFAULT_SELECTION_MIX = { high_value: 0.55, active_comms: 0.30, exploration: 0.15 } as const;
+/** Exa searches each tier spends per entity researched. Exploration grants a cold account 1. */
+export const TIER_ANGLE_COUNT = { hot: 3, default: 1, cold: 0 } as const;
+
 export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrichment' | 'drafter' | 'llm' | 'routing' | 'scoring'>> & WorkspacePolicy = {
   outreach: {
     override_to: null,
@@ -377,6 +446,7 @@ export async function getPolicy(supabase: SupabaseClient, workspace_id: string):
     llm: { ...DEFAULT_POLICY.llm, ...(raw.llm ?? {}) },
     routing: { ...DEFAULT_POLICY.routing, ...(raw.routing ?? {}) },
     scoring: { ...DEFAULT_POLICY.scoring, ...(raw.scoring ?? {}) },
+    research: { ...(raw.research ?? {}) },
     env: { ...(raw.env ?? {}) },
   };
 }
