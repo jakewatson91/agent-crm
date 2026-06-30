@@ -48,6 +48,8 @@ export function renderAttributesProse(attributes: unknown): string {
 }
 
 export interface DrafterDecisionOpts {
+  /** Which channel to draft for. Defaults to 'email'. */
+  outreach_channel?: 'email' | 'linkedin';
   subject_style?: 'one_word' | 'short_phrase' | 'question';
   paragraph_count?: number;
   pain_points?: string[];
@@ -72,6 +74,42 @@ export interface DrafterDecisionOpts {
 }
 
 export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
+  if ((opts.outreach_channel ?? 'email') === 'linkedin') {
+    const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);
+    const values = (opts.value_props ?? []).filter((s) => s.trim().length > 0);
+    const tones = (opts.tone_keywords ?? []).filter((s) => s.trim().length > 0);
+    const painBlock = pains.length
+      ? `The pains your product addresses (pick whichever fits THIS account):\n${pains.map((p) => `   - ${p}`).join('\n')}`
+      : `Anchor on a pain this account plausibly has, grounded in their facts.`;
+    const valueBlock = values.length
+      ? `One concrete thing your product does (pick what connects to the pain):\n${values.map((v) => `   - ${v}`).join('\n')}`
+      : `State one concrete behavior of your product — no vague claims.`;
+    const toneBlock = tones.length ? `\nTONE — ${tones.join(', ')}.` : '';
+    return `A new high-fit signal matched your saved filter rule. Write a LinkedIn connection request message.
+
+RULES:
+- Maximum 250 characters total. Count carefully — LinkedIn hard-cuts at 300.
+- No greeting and no sign-off. LinkedIn prepends the sender's name automatically.
+- One concrete hook from the signal or their facts. Never a generic opener.
+- No pitch-speak. Write like a person, not a sales deck.
+- End with a single low-commitment ask.
+- No subject line — set "subject" to null in your output.
+- Do NOT mention "our system", "your profile", "according to our data", or any internal field name.
+${toneBlock}
+${painBlock}
+
+${valueBlock}
+
+LEAD-FACT SELECTION — same as always: prefer the RECOMMENDED FACTS shortlist when present. Anchor on evidence they have a problem you solve, not just any fact about them.
+
+DON'T BEND THE SIGNAL — if the signal suggests they've already solved the problem (hired the team, built in-house), that's a disqualifier, not an angle.
+
+REASONING — include a "reasoning" field: 1-2 sentences on which facts you anchored to. Shown in the audit channel, not sent to the recipient.
+
+Output strictly valid JSON:
+{"action":"post_touch_draft","subject":null,"body":"<linkedin message, max 250 chars>","cites":["<fact_id_uuid>",...],"reasoning":"<which facts you anchored to>","to_email":null}`;
+  }
+
   const style = opts.subject_style ?? 'one_word';
   const paraCount = opts.paragraph_count ?? 4;
   const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);

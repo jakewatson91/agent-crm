@@ -46,6 +46,7 @@ export async function POST(req: Request) {
   };
   const channelId = gate.channel_posts?.channel_id ?? null;
   const isOutreachApprove = gate.policy === 'outreach_send' && body.decision === 'approve';
+  const channelType = ((gate.condition ?? {}) as { channel_type?: string }).channel_type ?? 'email';
 
   // Unified resolution payload: a free-text note (any decision type) plus,
   // on an edited approval, what actually changed. Persisted on the gate and
@@ -55,9 +56,10 @@ export async function POST(req: Request) {
 
   let sendInfo: { effective_to?: string; override_active?: boolean; message_id?: string; intended_to?: string | null; edited?: boolean } | null = null;
 
-  // On outreach approve, send the email BEFORE updating the gate. If the send
+  // On outreach approve for email, send BEFORE updating the gate. If the send
   // fails, leave the gate undecided so the user can retry.
-  if (isOutreachApprove) {
+  // LinkedIn drafts are approved for copy-to-send manually — no automated send.
+  if (isOutreachApprove && channelType !== 'linkedin') {
     const cond = (gate.condition ?? {}) as { to_email?: string | null; subject?: string; body?: string; entity_id?: string };
     const subject = body.edited_subject ?? cond.subject ?? '';
     const intended_to = cond.to_email ?? null;
@@ -102,16 +104,24 @@ export async function POST(req: Request) {
   try {
     const entity_id = (gate.condition as { entity_id?: string } | null)?.entity_id ?? null;
 
-    if (isOutreachApprove && channelId && sendInfo) {
-      const overrideNote = sendInfo.override_active
-        ? ` (override active; intended recipient: ${sendInfo.intended_to ?? 'no contact resolved'})`
-        : '';
-      const editedNote = sendInfo.edited ? ' Edited before send.' : '';
-      const auditBody = `Sent → ${sendInfo.effective_to}${overrideNote}.${editedNote} message_id=${sendInfo.message_id ?? '?'}`;
-      await callTool(supabase, actor, 'post_to_channel', {
-        channel_id: channelId, kind: 'system', body: auditBody,
-        parent_post_id: gate.channel_post_id ?? undefined,
-      });
+    if (isOutreachApprove && channelId) {
+      // Audit note varies by channel type, but cooldown + stage are the same.
+      if (channelType === 'linkedin') {
+        await callTool(supabase, actor, 'post_to_channel', {
+          channel_id: channelId, kind: 'system', body: 'LinkedIn message approved — send manually via LinkedIn.',
+          parent_post_id: gate.channel_post_id ?? undefined,
+        });
+      } else if (sendInfo) {
+        const overrideNote = sendInfo.override_active
+          ? ` (override active; intended recipient: ${sendInfo.intended_to ?? 'no contact resolved'})`
+          : '';
+        const editedNote = sendInfo.edited ? ' Edited before send.' : '';
+        const auditBody = `Sent → ${sendInfo.effective_to}${overrideNote}.${editedNote} message_id=${sendInfo.message_id ?? '?'}`;
+        await callTool(supabase, actor, 'post_to_channel', {
+          channel_id: channelId, kind: 'system', body: auditBody,
+          parent_post_id: gate.channel_post_id ?? undefined,
+        });
+      }
       if (entity_id) {
         await callTool(supabase, actor, 'assert_fact', {
           subject_entity: entity_id,
@@ -130,9 +140,6 @@ export async function POST(req: Request) {
           object_text: until,
           confidence: 1.0,
         });
-        // Lifecycle: the email is out the door → contacted. setOutreachStage's
-        // only_advance guard makes re-approving a gate a no-op (already contacted),
-        // matching the cooldown's idempotency.
         await setOutreachStage(supabase, actor, entity_id, 'contacted');
       }
     } else if (channelId) {

@@ -403,6 +403,8 @@ export async function runAgent(
               entity_id: ent.data.id,
               entity_name: ent.data.name,
               reason: decision.reason,
+              // Reactive deep-research is high-intent: run the full angle set.
+              tier: 'hot',
             },
           });
         } catch { /* non-fatal: next rescore tick can retry */ }
@@ -536,6 +538,7 @@ export async function runAgent(
     edgeVocab,
     nodeTypes,
   }, {
+    outreach_channel: policy.drafter?.outreach_channel,
     subject_style: policy.drafter?.subject_style,
     paragraph_count: policy.drafter?.paragraph_count,
     pain_points: policy.drafter?.pain_points,
@@ -639,17 +642,16 @@ export async function runAgent(
   }
 
   if (decision.action === 'post_touch_draft' && behavior === 'drafter') {
+    const outreachChannel = policy.drafter?.outreach_channel ?? 'email';
     const subject = sanitize((decision.subject as string) ?? '');
     const body = sanitize((decision.body as string) ?? '');
-    // Recipient the LLM picked from linked contacts. When the account has no
-    // linked contact email, fall back to the workspace routing address
-    // (outreach.override_to) so the draft is addressed to where it would
-    // actually send, instead of a confusing null. The send path already
-    // reroutes everything to override_to anyway.
     const llmTo = ((decision as { to_email?: string | null }).to_email ?? '').toString().trim();
-    const toEmail = llmTo || (policy.outreach?.override_to ?? '').toString().trim();
+    const toEmail = outreachChannel === 'linkedin' ? '' : (llmTo || (policy.outreach?.override_to ?? '').toString().trim());
     const toLine = toEmail ? `To: ${toEmail}\n` : '';
-    const composed = subject ? `${toLine}Subject: ${subject}\n\n${body}` : `${toLine}${body}`;
+    // LinkedIn: body only (no To/Subject headers). Email: full composed header block.
+    const composed = outreachChannel === 'linkedin'
+      ? body
+      : (subject ? `${toLine}Subject: ${subject}\n\n${body}` : `${toLine}${body}`);
     const r = await callTool(supabase, actor, 'post_to_channel', {
       channel_id, kind: 'touch_draft', body: composed, cites: validCites,
     }, meta);
@@ -662,8 +664,9 @@ export async function runAgent(
       channel_post_id: r.target_id,
       policy: 'outreach_send',
       condition: {
+        channel_type: outreachChannel,
         to_email: toEmail || null,
-        subject,
+        subject: outreachChannel === 'linkedin' ? undefined : subject,
         body,
         entity_id: ent.data.id,
         entity_name: ent.data.name,
@@ -911,6 +914,7 @@ function buildSystemPrompt(
   icp: unknown,
   enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[]; resolveEntities?: boolean; edgeVocab?: string[]; nodeTypes?: string[] },
   drafterPolicy?: {
+    outreach_channel?: 'email' | 'linkedin';
     subject_style?: 'one_word' | 'short_phrase' | 'question';
     paragraph_count?: number;
     pain_points?: string[];
@@ -923,7 +927,9 @@ function buildSystemPrompt(
   },
 ): string {
   const identity = behavior === 'drafter'
-    ? 'You are an outbound-email drafter for an agent-native CRM.'
+    ? (drafterPolicy?.outreach_channel === 'linkedin'
+      ? 'You are an outbound LinkedIn message drafter for an agent-native CRM.'
+      : 'You are an outbound-email drafter for an agent-native CRM.')
     : behavior === 'enricher'
     ? 'You are a fact extractor for an agent-native CRM. You read incoming signals and turn them into atomic, citable claims about entities.'
     : 'You are an autonomous CRM agent.';
