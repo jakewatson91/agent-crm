@@ -35,6 +35,17 @@ export interface EnrichmentPolicy {
    */
   max_contact_pulls_per_run?: number;
   /**
+   * Coalesce window in minutes for repeat enrichment of the SAME entity on the
+   * SAME signal type. A company with N open job posts emits N hiring_post signals;
+   * without this, each fires a full LLM enrich. When the enricher is triggered for
+   * a signal whose entity already had an earlier same-type signal within this
+   * window, the run skips the LLM extraction — the burst's first signal already
+   * captured the trend. Generic and vertical-neutral: only collapses same-entity +
+   * same-type bursts, so different signal types and different entities always run.
+   * Default 60. Set 0 to disable and enrich every signal.
+   */
+  coalesce_window_min?: number;
+  /**
    * Hard cap on contact-provider lookups per calendar month for this workspace.
    * Counted via `contact_lookup_attempted` facts asserted this month. When
    * reached, drafter pre-flight skips the call and posts a system note. Unset
@@ -340,6 +351,36 @@ export interface ResearchPolicy {
   strategy_generated_at?: string;
 }
 
+/**
+ * Deep account qualification — the one adaptive multi-step loop in the system.
+ * On a high-fit account it researches step by step (search → read a page →
+ * follow the relevant thread → identify the buyer → decide the angle) and writes
+ * a sourced verdict. Distinct from the cheap single-shot enrich/score path and
+ * from the fixed-fan-out research path (researchRunner): this is the expensive,
+ * high-value path, so it is OFF by default and only fires autonomously on
+ * accounts that already clear min_icp.
+ *
+ *   enabled         : autonomous trigger on/off. Default false. The chat
+ *                     `qualify_account` tool runs on demand regardless of this —
+ *                     `enabled` governs only the background trigger.
+ *   model           : loop model. Default 'deepseek-v4-pro' (single-shot triage
+ *                     stays on Flash). Any model the registry understands works.
+ *   max_steps       : hard cap on plan→act→observe iterations. Default 8.
+ *   token_budget    : hard cap on total tokens across the run (provider-agnostic
+ *                     stop condition, so no price table in code). Default 60000.
+ *   min_icp         : account fit floor for the AUTONOMOUS trigger. Default 0.65.
+ *   max_empty_steps : stop after this many consecutive empty tool results, to
+ *                     kill a loop that's spinning. Default 2.
+ */
+export interface QualificationPolicy {
+  enabled?: boolean;
+  model?: string;
+  max_steps?: number;
+  token_budget?: number;
+  min_icp?: number;
+  max_empty_steps?: number;
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
@@ -362,6 +403,7 @@ export interface WorkspacePolicy {
   lifecycle?: LifecyclePolicy;
   display?: DisplayPolicy;
   research?: ResearchPolicy;
+  qualification?: QualificationPolicy;
 
   /**
    * Generic env-var bag for this workspace. Flat dict of NAME → value.
@@ -421,6 +463,7 @@ export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrich
   },
   enrichment: {
     contact_provider: 'none',
+    coalesce_window_min: 60,
   },
   drafter: {
     cooldown_days: 14,
@@ -449,4 +492,23 @@ export async function getPolicy(supabase: SupabaseClient, workspace_id: string):
     research: { ...(raw.research ?? {}) },
     env: { ...(raw.env ?? {}) },
   };
+}
+
+/**
+ * Qualification config with defaults applied. The autonomous trigger reads
+ * `enabled` + `min_icp`; the loop runner reads `model` / `max_steps` /
+ * `token_budget` / `max_empty_steps`. All overridable per workspace via
+ * policy.qualification — vertical-neutral, safe to run with zero config.
+ */
+export const DEFAULT_QUALIFICATION: Required<QualificationPolicy> = {
+  enabled: false,
+  model: 'deepseek-v4-pro',
+  max_steps: 8,
+  token_budget: 60000,
+  min_icp: 0.65,
+  max_empty_steps: 2,
+};
+
+export function resolveQualification(policy: WorkspacePolicy): Required<QualificationPolicy> {
+  return { ...DEFAULT_QUALIFICATION, ...(policy.qualification ?? {}) };
 }

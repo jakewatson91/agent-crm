@@ -12,6 +12,8 @@
     "@agent-crm/primitives": "workspace:*",
     "@agent-crm/tools": "workspace:*",
     "@anthropic-ai/sdk": "^0.40.0",
+    "@supabase/supabase-js": "^2.46.0",
+    "ai": "^6.0.185",
     "zod": "^3.23.0"
   },
   "devDependencies": {

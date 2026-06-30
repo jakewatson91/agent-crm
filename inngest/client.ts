@@ -82,6 +82,18 @@ export type Events = {
       reason: string;
     };
   };
+  // Action-selector emits this for a HIGH-fit account (icp_total >= the
+  // workspace's qualification.min_icp) when deep_research fires. Runs the
+  // adaptive multi-step qualification loop (packages/agents/qualify.ts) instead
+  // of the fixed Exa fan-out. Reserved for accounts worth the extra cost.
+  'qualification.requested': {
+    data: {
+      workspace_id: string;
+      entity_id: string;
+      entity_name?: string;
+      reason?: string;
+    };
+  };
 };
 
 export const inngest = new Inngest({

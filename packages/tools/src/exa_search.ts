@@ -10,6 +10,7 @@
  */
 
 const EXA_API = 'https://api.exa.ai/search';
+const EXA_CONTENTS_API = 'https://api.exa.ai/contents';
 const FETCH_TIMEOUT_MS = 15_000;
 
 export interface ExaResult {
@@ -74,5 +75,38 @@ export async function runExaSearch(apiKey: string, params: ExaSearchParams): Pro
     return { ok: true, results: j.results ?? [] };
   } catch (e) {
     return { ok: false, results: [], error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface ExaContentsResult {
+  ok: boolean;
+  url: string;
+  title?: string | null;
+  text?: string;
+  status?: number;
+  error?: string;
+}
+
+/**
+ * Fetch the readable text of one already-known URL via Exa /contents. Used by the
+ * qualification loop's fetch_page tool when the model decides to read a specific
+ * page (a careers page, a changelog) rather than run another search. Separate from
+ * runExaSearch because /contents takes URLs directly and returns no ranking.
+ */
+export async function fetchPageText(apiKey: string, url: string, maxChars = 4000): Promise<ExaContentsResult> {
+  try {
+    const r = await fetch(EXA_CONTENTS_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+      body: JSON.stringify({ ids: [url], text: { maxCharacters: maxChars } }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!r.ok) return { ok: false, url, status: r.status, error: (await r.text()).slice(0, 300) };
+    const j = await r.json() as { results?: ExaResult[] };
+    const hit = j.results?.[0];
+    if (!hit) return { ok: false, url, error: 'no content returned' };
+    return { ok: true, url, title: hit.title, text: hit.text ?? '' };
+  } catch (e) {
+    return { ok: false, url, error: e instanceof Error ? e.message : String(e) };
   }
 }

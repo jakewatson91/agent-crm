@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agent-crm/agents": "workspace:*",
     "@agent-crm/db": "workspace:*",
     "@agent-crm/primitives": "workspace:*",
     "@agent-crm/tools": "workspace:*",

@@ -21,3 +21,20 @@ export interface AgentSpec {
 }
 
 export const REGISTRY: Record<string, AgentSpec> = {};
+
+// Multi-step agent loop scaffolding + the first loop built on it (deep account
+// qualification). The runner is the reusable part; qualify.ts is one use of it.
+export {
+  runAgentLoop,
+  type LoopTool,
+  type LoopToolCtx,
+  type RunAgentLoopArgs,
+  type RunAgentLoopResult,
+  type LoopStopReason,
+} from './runner.ts';
+export {
+  runQualification,
+  buildQualificationTools,
+  type RunQualificationParams,
+  type RunQualificationResult,
+} from './qualify.ts';

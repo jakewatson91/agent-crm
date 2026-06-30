@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
@@ -273,6 +273,49 @@ export async function runAgent(
     }
   }
 
+  // Enricher: coalesce same-type bursts on one entity. A company with N open job
+  // posts emits N distinct hiring_post signals (distinct bodies, so the dedup
+  // above doesn't catch them); each would otherwise fire a full 13.5k-token LLM
+  // enrich. When an earlier signal of the SAME type for this entity landed within
+  // the coalesce window, the first run already captured the trend — skip the LLM
+  // and record the skip as an events row (feed stays clean). Keyed on (entity,
+  // signal type), so different signal types and different entities always run.
+  // Config: policy.enrichment.coalesce_window_min (default 60, 0 disables).
+  const coalesceMin = policy.enrichment?.coalesce_window_min ?? 60;
+  if (behavior === 'enricher' && coalesceMin > 0 && sigData?.type && payload.signal_id && sigData.observed_at) {
+    const windowStart = new Date(Date.parse(sigData.observed_at) - coalesceMin * 60_000).toISOString();
+    const prior = await supabase.from('signals')
+      .select('id')
+      .eq('entity_id', ent.data.id)
+      .eq('type', sigData.type)
+      .neq('id', sigData.id)
+      .lt('observed_at', sigData.observed_at)
+      .gte('observed_at', windowStart)
+      .order('observed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (prior.data?.id) {
+      await supabase.from('events').insert({
+        workspace_id: payload.workspace_id,
+        actor_kind: 'agent',
+        actor_id: payload.agent,
+        action: 'enrichment_skipped',
+        target_kind: 'entity',
+        target_id: ent.data.id,
+        payload: {
+          reason: 'coalesced_recent_enrich',
+          entity_id: ent.data.id,
+          signal_id: sigData.id,
+          signal_type: sigData.type,
+          prior_signal_id: prior.data.id,
+          window_min: coalesceMin,
+        },
+        parent_event_id: payload.parent_event_id ?? null,
+      });
+      return { ok: true, action: 'skip', reason: 'coalesced_recent_enrich', behavior };
+    }
+  }
+
   if (behavior === 'drafter') {
     // Workspace policy: hard suppression-list match. Orthogonal to scoring, so
     // it still lives here, not in action_selector.
@@ -393,20 +436,39 @@ export async function runAgent(
         // and recency in scoring.
         await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ent.data.id,
           { reason: decision.reason }, payload.parent_event_id);
-        // Fire the inngest event the source-runner will consume to pull more
-        // facts via Exa scoped to this entity.
+        // Two research paths. High-fit accounts (icp_total >= min_icp, and the
+        // workspace opted in) get the adaptive multi-step qualification loop —
+        // it reasons step by step and is reserved for accounts worth the cost.
+        // Everyone else gets the cheap fixed Exa fan-out (researchRunner). The
+        // marker above gates re-firing of EITHER path via recent_research_at.
+        const qual = resolveQualification(policy);
+        const useQualLoop = qual.enabled && icpTotal >= qual.min_icp;
         try {
-          await inngest.send({
-            name: 'research.requested',
-            data: {
-              workspace_id: payload.workspace_id,
-              entity_id: ent.data.id,
-              entity_name: ent.data.name,
-              reason: decision.reason,
-              // Reactive deep-research is high-intent: run the full angle set.
-              tier: 'hot',
-            },
-          });
+          if (useQualLoop) {
+            await inngest.send({
+              name: 'qualification.requested',
+              data: {
+                workspace_id: payload.workspace_id,
+                entity_id: ent.data.id,
+                entity_name: ent.data.name,
+                reason: decision.reason,
+              },
+            });
+          } else {
+            // Fire the inngest event the source-runner will consume to pull more
+            // facts via Exa scoped to this entity.
+            await inngest.send({
+              name: 'research.requested',
+              data: {
+                workspace_id: payload.workspace_id,
+                entity_id: ent.data.id,
+                entity_name: ent.data.name,
+                reason: decision.reason,
+                // Reactive deep-research is high-intent: run the full angle set.
+                tier: 'hot',
+              },
+            });
+          }
         } catch { /* non-fatal: next rescore tick can retry */ }
       } else if (decision.action === 'enrich_contacts') {
         // Mark the request so we don't re-fire every tick before the pull lands.
@@ -730,6 +792,7 @@ export async function runAgent(
   if (behavior === 'enricher') {
     const facts = (decision.facts ?? []) as Array<{ predicate: string; object_text: string; object_type?: string; domain?: string; confidence: number }>;
     let asserted = 0;
+    let assertedSubstantive = false;
     const assertedIds: string[] = [];
     for (const f of facts) {
       if (!f.predicate || !f.object_text) continue;
@@ -767,7 +830,7 @@ export async function runAgent(
       // hit returns ok:true with created:false (the fact was already known); the
       // old `if (r.ok)` counted those as new, so re-asserting known facts inflated
       // `asserted` → a spurious "Extracted N facts" claim post + a needless rescore.
-      if (r.ok && r.created) { asserted++; assertedIds.push(r.target_id); }
+      if (r.ok && r.created) { asserted++; assertedIds.push(r.target_id); if (isSubstantiveFact(predicate)) assertedSubstantive = true; }
       // Per-fact failures don't bubble — the run is still useful with N-1 facts.
     }
     // Only post when we extracted something. Zero-fact runs become audit-trail
@@ -786,6 +849,19 @@ export async function runAgent(
       let score: Awaited<ReturnType<typeof scoreAndAssertFn>> = null;
       let priorScore = NaN;
       let scoreDelta: number | null = null;
+      // Promote a candidate on its first substantive fact. resolveOrCreateEntity
+      // creates new accounts as `_candidate: true` thin nodes, and scoreEntity
+      // refuses to score candidates (scoring.ts `_candidate` guard) "until
+      // promoted" — but the promotion step was never built, so candidates piled up
+      // facts the scorer ignored forever (the score_signal_coupling RED). Clearing
+      // the flag here, before scoreAndAssert below, lets the score finally run.
+      if (assertedSubstantive && (ent.data.attributes as { _candidate?: boolean } | null)?._candidate === true) {
+        try {
+          await supabase.from('entities')
+            .update({ attributes: { ...(ent.data.attributes as Record<string, unknown>), _candidate: false } })
+            .eq('id', ent.data.id);
+        } catch { /* non-fatal: scoreAndAssert no-ops this run, next substantive fact retries */ }
+      }
       try {
         const priorScoreText = activeFacts.find((f) => f.predicate === 'score_total')?.object_text
           ?? activeFacts.find((f) => f.predicate === 'icp_fit')?.object_text;
