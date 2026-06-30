@@ -120,6 +120,8 @@ async function tick() {
         .eq('parent_event_id', sig.source_event_id);
       if ((existing.count ?? 0) > 0) continue;
 
+      const behavior = behaviorById.get(match.subscription_id) ?? 'claim_poster';
+      console.log(`    signal=${sig.id} type=${sig.type} behavior=${behavior} agent=${match.owner_id.slice(0, 8)}`);
       runs++;
       const r = await runAgent(sb, {
         workspace_id: sig.workspace_id as string,
@@ -128,6 +130,8 @@ async function tick() {
         signal_id: sig.id as string,
         parent_event_id: String(sig.source_event_id),
       });
+      const status = r.ok ? (r.channel_post_id ? `post=${r.channel_post_id.slice(0, 8)}` : 'ok/no-post') : `err=${(r as { error?: string }).error ?? '?'}`;
+      console.log(`    -> ${status}`);
       if (r.ok && r.channel_post_id) posted++;
     }
   }

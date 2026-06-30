@@ -73,6 +73,13 @@ export interface ChatCompleteResult {
 // Translation: our message/tool shapes <-> AI SDK shapes.
 // ---------------------------------------------------------------
 
+function extractSystem(messages: ChatMessage[]): { system: string | undefined; rest: ChatMessage[] } {
+  if (messages.length > 0 && messages[0].role === 'system') {
+    return { system: messages[0].content, rest: messages.slice(1) };
+  }
+  return { system: undefined, rest: messages };
+}
+
 function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
   return messages.map((m): ModelMessage => {
     if (m.role === 'system') return { role: 'system', content: m.content };
@@ -133,9 +140,11 @@ const FALLBACK_MODEL = 'deepseek/deepseek-v4-pro';
 
 async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   const tools = toToolSet(args.tools);
+  const { system, rest } = extractSystem(args.messages);
   const res = await generateText({
     model: resolveModel(args.model, args.api_keys),
-    messages: toModelMessages(args.messages),
+    system,
+    messages: toModelMessages(rest),
     maxOutputTokens: args.max_tokens,
     temperature: args.temperature,
     tools,
@@ -202,9 +211,11 @@ export async function chatCompleteStream(
   onDelta: (delta: ChatStreamDelta) => void,
 ): Promise<ChatCompleteResult> {
   const tools = toToolSet(args.tools);
+  const { system, rest } = extractSystem(args.messages);
   const result = streamText({
     model: resolveModel(args.model, args.api_keys),
-    messages: toModelMessages(args.messages),
+    system,
+    messages: toModelMessages(rest),
     maxOutputTokens: args.max_tokens,
     temperature: args.temperature,
     tools,

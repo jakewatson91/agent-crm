@@ -398,11 +398,31 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   const entitiesWithNewFacts = new Set<string>();
   for (const d of dispatches) if ((d.payload?.facts_asserted ?? 0) > 0 && d.target_id) entitiesWithNewFacts.add(d.target_id);
   if (entitiesWithNewFacts.size >= 5) {
+    // Current icp_fit per entity = the row with the LATEST observed_at. Do NOT
+    // reuse scoreRows here: scoreRows comes from `.is('supersedes', null)`, which
+    // returns the ORIGINAL fact in a superseded chain (a new score points BACK to
+    // the one it replaces, so the chain head keeps supersedes=null). For an entity
+    // rescored many times that original is months stale, which made this check
+    // report rescores that DID run as if they never happened — a false RED. A
+    // rescore always writes a newer observed_at than the version it supersedes, so
+    // the max observed_at is the current score. Scoped to the fact-bearing entities
+    // so the extra versions don't blow egress.
+    const newFactIds = [...entitiesWithNewFacts];
+    const latestIcp = new Map<string, string>();
+    for (let i = 0; i < newFactIds.length; i += 200) {
+      const slice = newFactIds.slice(i, i + 200);
+      const rows = await fetchAll<{ subject_entity: string; observed_at: string }>((f, t) => sb.from('facts')
+        .select('subject_entity, observed_at')
+        .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
+        .in('subject_entity', slice).order('observed_at', { ascending: false }).range(f, t));
+      for (const r of rows) {
+        const cur = latestIcp.get(r.subject_entity);
+        if (!cur || r.observed_at > cur) latestIcp.set(r.subject_entity, r.observed_at);
+      }
+    }
     let moved = 0;
-    const scoreByEntity = new Map<string, string>();
-    for (const r of scoreRows) scoreByEntity.set(r.entity, r.observed_at);
     for (const eid of entitiesWithNewFacts) {
-      const obs = scoreByEntity.get(eid);
+      const obs = latestIcp.get(eid);
       if (obs && obs >= cutoff) moved += 1;
     }
     const coupling = moved / entitiesWithNewFacts.size;

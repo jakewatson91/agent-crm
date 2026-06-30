@@ -19,6 +19,7 @@ import {
 } from '@agent-crm/tools';
 import { relatedToEntity } from '@agent-crm/primitives';
 import { type ToolSpec } from '@agent-crm/primitives';
+import { runQualification } from '@agent-crm/agents';
 import { inngest } from '@agent-crm/inngest';
 import {
   TOOLKITS as COMPOSIO_TOOLKITS,
@@ -931,6 +932,33 @@ Call composio_list_tools first if you don't know which action slug to use.`,
 };
 
 // ---------------------------------------------------------------
+// qualify_account — run the deep, multi-step web-research qualification loop
+// (packages/agents/qualify.ts) on one account, on demand. Same loop the
+// autonomous path runs; from the chat agent's view it's a single tool call.
+// ---------------------------------------------------------------
+
+const qualifyAccountTool: ToolHandler = {
+  spec: {
+    name: 'qualify_account',
+    description:
+`Run a deep, multi-step web-research qualification on ONE account. The agent searches the web, reads the pages that matter, identifies the likely buyer, and decides whether it's worth reaching out plus the single best angle — writing a sourced verdict you can audit. Returns { verdict, recommended_angle, steps, total_tokens }.
+
+When to use: the user asks to "qualify", "dig into", "research", or "is X worth reaching out to". This actually researches the company live.
+vs propose_action: propose_action only reads existing scores (instant, no research). qualify_account does real web research (slower, costs more). Use propose_action for a quick read; qualify_account when the user wants the agent to go find out.`,
+    parameters: {
+      type: 'object',
+      properties: { entity_id: { type: 'string', description: 'The account entity id to qualify.' } },
+      required: ['entity_id'],
+    },
+  },
+  // Let runQualification default the actor to the 'qualifier' agent so the
+  // verdict + facts are attributed the same way whether run from chat or the
+  // autonomous trigger.
+  run: async (ctx, args: { entity_id: string }) =>
+    runQualification(ctx.supabase, { workspace_id: ctx.workspace_id, entity_id: args.entity_id }),
+};
+
+// ---------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------
 
@@ -942,6 +970,7 @@ export const INTAKE_TOOLS: Record<string, ToolHandler> = {
   assert_facts: assertFactsTool,
   rescore_entity: rescoreTool,
   propose_action: proposeActionTool,
+  qualify_account: qualifyAccountTool,
   trigger_drafter: triggerDrafterTool,
   composio_list_tools: composioListToolsTool,
   composio_execute: composioExecuteTool,
