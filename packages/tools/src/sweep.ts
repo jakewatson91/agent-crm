@@ -12,7 +12,6 @@ import { getSourceMetrics } from './source_metrics.ts';
 import { fetchAll } from './paginate.ts';
 import { ACTIVITY_MARKERS } from './activity_markers.ts';
 import { isSubstantiveFact } from './scoring.ts';
-import { createHash } from 'node:crypto';
 
 export type Severity = 'red' | 'yellow' | 'green';
 export type CheckResult = {
@@ -72,10 +71,6 @@ const DAY = 86_400_000;
 // let the scorer count self-pings as evidence). See scoring.ts ADMIN_PREDICATES.
 const isSubstantive = isSubstantiveFact;
 
-function hashBody(s: string): string {
-  return createHash('sha256').update(s).digest('hex').slice(0, 16);
-}
-
 function median(xs: number[]): number {
   if (!xs.length) return 0;
   const s = [...xs].sort((a, b) => a - b);
@@ -95,16 +90,18 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   const since48 = new Date(now - 2 * DAY).toISOString();
   const since7d = new Date(now - 7 * DAY).toISOString();
 
+  // body_hash (md5 generated column) replaces body_for_embedding fetches — 32 bytes
+  // vs ~2KB per signal. See migration 0043.
   const signals24 = await fetchAll<{
     id: string; type: string; structured_tags: { signal_source?: string } | null;
-    body_for_embedding: string | null; entity_id: string; created_at: string;
+    body_hash: string | null; entity_id: string; created_at: string;
   }>((f, t) => sb.from('signals')
-    .select('id, type, structured_tags, body_for_embedding, entity_id, created_at')
+    .select('id, type, structured_tags, body_hash, entity_id, created_at')
     .eq('workspace_id', workspace_id).gte('created_at', since24)
     .order('created_at', { ascending: false }).range(f, t));
 
-  const signals48 = await fetchAll<{ body_for_embedding: string | null }>((f, t) => sb.from('signals')
-    .select('body_for_embedding')
+  const signals48 = await fetchAll<{ body_hash: string | null }>((f, t) => sb.from('signals')
+    .select('body_hash')
     .eq('workspace_id', workspace_id).gte('created_at', since48).lt('created_at', since24)
     .order('created_at', { ascending: false }).range(f, t));
 
@@ -123,10 +120,9 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   const bySource = new Map<string, { total: number; uniqueHashes: Set<string> }>();
   for (const s of signals24) {
     const src = s.structured_tags?.signal_source ?? '(unknown)';
-    const body = s.body_for_embedding ?? '';
     const rec = bySource.get(src) ?? { total: 0, uniqueHashes: new Set() };
     rec.total += 1;
-    if (body) rec.uniqueHashes.add(hashBody(body));
+    if (s.body_hash) rec.uniqueHashes.add(s.body_hash);
     bySource.set(src, rec);
   }
   for (const [src, rec] of bySource) {
@@ -161,12 +157,12 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
 
   if (signals24.length >= T.novelty_min_signals && signals48.length > 0) {
     const prior = new Set<string>();
-    for (const s of signals48) if (s.body_for_embedding) prior.add(hashBody(s.body_for_embedding));
+    for (const s of signals48) if (s.body_hash) prior.add(s.body_hash);
     let overlap = 0; let withBody = 0;
     for (const s of signals24) {
-      if (!s.body_for_embedding) continue;
+      if (!s.body_hash) continue;
       withBody += 1;
-      if (prior.has(hashBody(s.body_for_embedding))) overlap += 1;
+      if (prior.has(s.body_hash)) overlap += 1;
     }
     const ratio = withBody ? overlap / withBody : 0;
     const sev: Severity = ratio > T.novelty_overlap_red ? 'red' : 'green';
@@ -270,21 +266,19 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   const tokensMedian7d = median(dailyTokens.slice(1));
 
   const uniqueSignals24h = new Set<string>();
-  for (const s of signals24) if (s.body_for_embedding) uniqueSignals24h.add(hashBody(s.body_for_embedding));
+  for (const s of signals24) if (s.body_hash) uniqueSignals24h.add(s.body_hash);
   if (uniqueSignals24h.size > 0 && tokens24 > 0) {
     const costToday = tokens24 / uniqueSignals24h.size;
-    const rows = await fetchAll<{ body_for_embedding: string | null; created_at: string }>((f, t) => sb.from('signals')
-      .select('body_for_embedding, created_at')
-      .eq('workspace_id', workspace_id).gte('created_at', since7d)
-      .order('created_at', { ascending: false }).range(f, t));
-    const perDay: Set<string>[] = Array.from({ length: 7 }, () => new Set());
-    for (const r of rows) {
-      if (!r.body_for_embedding) continue;
-      const ageH = (now - new Date(r.created_at).getTime()) / HOUR;
-      const d = Math.floor(ageH / 24);
-      if (d >= 0 && d < 7) perDay[d]!.add(hashBody(r.body_for_embedding));
+    // count_daily_unique_signals RPC returns 7 rows (one per day) instead of
+    // fetching full signal bodies for the 7d window (~8MB). See migration 0043.
+    const aggRes = await sb.rpc('count_daily_unique_signals', {
+      p_workspace_id: workspace_id,
+      p_since: since7d,
+    });
+    const dailyUnique = new Array(7).fill(0);
+    for (const r of (aggRes.data ?? []) as Array<{ day_offset: number; unique_count: number }>) {
+      if (r.day_offset >= 0 && r.day_offset < 7) dailyUnique[r.day_offset] = Number(r.unique_count);
     }
-    const dailyUnique = perDay.map((s) => s.size);
     const dailyCost = dailyTokens.map((t, i) => (dailyUnique[i] ? t / dailyUnique[i] : 0)).slice(1).filter((x) => x > 0);
     const medCost = median(dailyCost);
     const sev: Severity = medCost > 0 && costToday > medCost * T.cost_ratio_red ? 'red' : 'green';
