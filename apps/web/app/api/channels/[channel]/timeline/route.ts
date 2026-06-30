@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { unstable_cache } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
 import { getEntityTypes } from '@agent-crm/tools';
 
@@ -18,12 +19,11 @@ interface TimelineItem {
  * posts, and gates into one chronological stream. This is the "the system runs
  * itself" view — drag through it and see every agent action that happened.
  */
-export async function GET(_req: Request, { params }: { params: Promise<{ channel: string }> }) {
-  const { channel } = await params;
+const _getTimeline = async (channel: string) => {
   const supabase = createServerClient();
 
   const ch = await supabase.from('channels').select('id, title, account_entity_id, workspace_id').eq('id', channel).maybeSingle();
-  if (ch.error || !ch.data) return NextResponse.json({ error: 'channel not found' }, { status: 404 });
+  if (ch.error || !ch.data) return null;
   const account_id = ch.data.account_entity_id as string;
   const ws_id = ch.data.workspace_id as string;
 
@@ -112,7 +112,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
 
   items.sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));  // newest first
 
-  return NextResponse.json({
+  return {
     channel: ch.data,
     entity: entityWithKind,
     items: items.slice(0, 200),
@@ -122,5 +122,20 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
       posts: posts.data?.length ?? 0,
       gates: gates.data?.length ?? 0,
     },
+  };
+};
+
+const getTimeline = unstable_cache(
+  _getTimeline,
+  ['channel-timeline'],
+  { revalidate: 300, tags: ['timeline'] },
+);
+
+export async function GET(_req: Request, { params }: { params: Promise<{ channel: string }> }) {
+  const { channel } = await params;
+  const data = await getTimeline(channel);
+  if (!data) return NextResponse.json({ error: 'channel not found' }, { status: 404 });
+  return NextResponse.json(data, {
+    headers: { 'Cache-Control': 'private, s-maxage=300, stale-while-revalidate=300' },
   });
 }
