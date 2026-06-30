@@ -28,6 +28,7 @@ interface EntitiesPageData {
   entities: EntityRow[];
   icpEntries: Array<[string, number]>;
   lastActivityEntries: Array<[string, Activity]>;
+  cooldownEntries: Array<[string, string]>;
 }
 
 const ARTICLE_SUFFIX = /\s(story|guide|tips|trends|outlooks?|insights|review|reviews|news)$/i;
@@ -112,13 +113,18 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
 
   const accountIds = entities.filter((e) => e.types.includes('account')).map((e) => e.id);
 
-  // Round 2: channels depend on accountIds derived above.
+  // Round 2: channels + active cooldowns depend on entity ids derived above.
   const icpMap = new Map<string, number>();
   const lastActivity = new Map<string, Activity>();
-  const [chansRes] = await Promise.all([
+  const [chansRes, cooldownRes] = await Promise.all([
     accountIds.length
       ? supabase.from('channels').select('id, account_entity_id').eq('workspace_id', ws).in('account_entity_id', accountIds)
       : Promise.resolve({ data: [] as unknown[] }),
+    supabase.from('facts')
+      .select('subject_entity, object_text')
+      .eq('workspace_id', ws)
+      .eq('predicate', 'outreach_cooldown_until')
+      .is('supersedes', null),
   ]);
 
   for (const f of (fitFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; id: string }>) {
@@ -147,10 +153,19 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
     }
   }
 
+  const now = new Date().toISOString();
+  const cooldownMap = new Map<string, string>();
+  for (const f of (cooldownRes.data ?? []) as Array<{ subject_entity: string; object_text: string }>) {
+    if (ids.has(f.subject_entity) && f.object_text > now) {
+      cooldownMap.set(f.subject_entity, f.object_text);
+    }
+  }
+
   return {
     entities,
     icpEntries: [...icpMap.entries()],
     lastActivityEntries: [...lastActivity.entries()],
+    cooldownEntries: [...cooldownMap.entries()],
   };
 };
 

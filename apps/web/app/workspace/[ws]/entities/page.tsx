@@ -42,6 +42,7 @@ interface EntitiesPageData {
   entities: EntityRow[];
   icpEntries: Array<[string, number]>;
   lastActivityEntries: Array<[string, Activity]>;
+  cooldownEntries: Array<[string, string]>;
 }
 
 // Display order for the legacy types. Anything the agent invents lands after
@@ -71,13 +72,14 @@ export default function EntitiesIndexPage() {
   const [query, setQuery] = useState('');
   const [kindFilter, setKindFilter] = useState<'all' | string>('all');
   const [band, setBand] = useState<Band>('all');
-  const [sortBy, setSortBy] = useState<SortBy>('activity');
+  const [sortBy, setSortBy] = useState<SortBy>('icp');
   const controlsActive = query.trim() !== '' || kindFilter !== 'all' || band !== 'all' || sortBy !== 'activity';
 
   const pageCtx = useMemo<PageContext | null>(() => {
     if (!data) return null;
     const lastActivity = new Map(data.lastActivityEntries);
     const icp = new Map(data.icpEntries);
+    const cooldown = new Map(data.cooldownEntries ?? []);
     const q = query.trim().toLowerCase();
     const ctrlActive = q !== '' || kindFilter !== 'all' || band !== 'all' || sortBy !== 'activity';
 
@@ -92,7 +94,13 @@ export default function EntitiesIndexPage() {
         .filter((e) => q === '' || e.name.toLowerCase().includes(q));
       ordered.sort((a, b) => {
         if (sortBy === 'name') return a.name.localeCompare(b.name);
-        if (sortBy === 'icp') return (icp.get(b.id) ?? -1) - (icp.get(a.id) ?? -1);
+        if (sortBy === 'icp') {
+          // Entities on active outreach cooldown sink to the bottom.
+          const aOnCooldown = cooldown.has(a.id);
+          const bOnCooldown = cooldown.has(b.id);
+          if (aOnCooldown !== bOnCooldown) return aOnCooldown ? 1 : -1;
+          return (icp.get(b.id) ?? -1) - (icp.get(a.id) ?? -1);
+        }
         const aTs = lastActivity.get(a.id)?.ts ?? a.updated_at;
         const bTs = lastActivity.get(b.id)?.ts ?? b.updated_at;
         return Date.parse(bTs) - Date.parse(aTs);
@@ -162,6 +170,7 @@ export default function EntitiesIndexPage() {
   const entities = data.entities;
   const icpMap = new Map(data.icpEntries);
   const lastActivity = new Map(data.lastActivityEntries);
+  const cooldownMap = new Map(data.cooldownEntries ?? []);
 
   const byKind = new Map<string, EntityRow[]>();
   for (const e of entities) {
@@ -192,7 +201,12 @@ export default function EntitiesIndexPage() {
     .filter((e) => q === '' || e.name.toLowerCase().includes(q));
   filtered.sort((a, b) => {
     if (sortBy === 'name') return a.name.localeCompare(b.name);
-    if (sortBy === 'icp') return (icpMap.get(b.id) ?? -1) - (icpMap.get(a.id) ?? -1);
+    if (sortBy === 'icp') {
+      const aOnCooldown = cooldownMap.has(a.id);
+      const bOnCooldown = cooldownMap.has(b.id);
+      if (aOnCooldown !== bOnCooldown) return aOnCooldown ? 1 : -1;
+      return (icpMap.get(b.id) ?? -1) - (icpMap.get(a.id) ?? -1);
+    }
     const aTs = lastActivity.get(a.id)?.ts ?? a.updated_at;
     const bTs = lastActivity.get(b.id)?.ts ?? b.updated_at;
     return Date.parse(bTs) - Date.parse(aTs);
