@@ -345,10 +345,14 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   // correctly on brand-new entities. Same for dropped entities — they're frozen
   // at their last score and shouldn't pollute the live shape either.
   if (scoreRows.length) {
-    const entIds = [...new Set(scoreRows.map((r) => r.entity))];
+    // Scope by workspace_id, NOT .in(entIds): this workspace has hundreds of
+    // scored entities, and encoding every UUID into the request URL blew past
+    // PostgREST's 16KB header limit (UND_ERR_HEADERS_OVERFLOW, URL 18.8KB). The
+    // maps below are only read for entities already in scoreRows, so pulling the
+    // full workspace's live facts gives the identical result with a short URL.
     const factRows = await fetchAll<{ subject_entity: string; predicate: string }>((f, t) => sb.from('facts')
       .select('subject_entity, predicate')
-      .in('subject_entity', entIds)
+      .eq('workspace_id', workspace_id)
       .is('supersedes', null)
       .order('id').range(f, t));
     const substantiveCount = new Map<string, number>();
