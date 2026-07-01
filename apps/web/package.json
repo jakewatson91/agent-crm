@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
-    "start": "next start",
+    "start": "node --max-old-space-size=400 node_modules/.bin/next start",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

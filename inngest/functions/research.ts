@@ -124,7 +124,7 @@ function buildAngleRequest(
 export const researchRunner = inngest.createFunction(
   {
     id: 'research-runner',
-    concurrency: { limit: 2, key: 'event.data.workspace_id' },
+    concurrency: { limit: 1, key: 'event.data.workspace_id' },
   },
   { event: 'research.requested' },
   async ({ event, step }) =>
