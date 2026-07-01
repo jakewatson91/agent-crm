@@ -316,6 +316,26 @@ export async function runAgent(
     }
   }
 
+  // Per-entity enrichment cooldown. When any enricher run on this entity
+  // succeeded (ok=true, facts asserted) within the cooldown window, skip —
+  // the entity is already up to date. Prevents a high-volume ATS source from
+  // re-enriching the same account on every new job posting.
+  const entityCooldownHours = policy.enrichment?.entity_enrich_cooldown_hours ?? 20;
+  if (behavior === 'enricher' && entityCooldownHours > 0) {
+    const cooldownSince = new Date(Date.now() - entityCooldownHours * 3600_000).toISOString();
+    const recentEnrich = await supabase.from('events')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', payload.workspace_id)
+      .eq('action', 'agent_dispatch_result')
+      .eq('target_kind', 'entity')
+      .eq('target_id', ent.data.id)
+      .eq('payload->>behavior', 'enricher')
+      .gte('created_at', cooldownSince);
+    if ((recentEnrich.count ?? 0) > 0) {
+      return { ok: true, action: 'skip', reason: 'entity_enrich_cooldown', behavior };
+    }
+  }
+
   if (behavior === 'drafter') {
     // Workspace policy: hard suppression-list match. Orthogonal to scoring, so
     // it still lives here, not in action_selector.

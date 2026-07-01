@@ -46,6 +46,14 @@ export interface EnrichmentPolicy {
    */
   coalesce_window_min?: number;
   /**
+   * Per-entity enrichment cooldown in hours. When an enricher run successfully
+   * asserted facts for an entity within this window, new signals for that same
+   * entity are skipped — the entity is already up to date. Prevents high-volume
+   * sources (e.g. ATS feeds) from re-enriching the same well-known account every
+   * time a new job posting lands. Default 20h. Set 0 to disable.
+   */
+  entity_enrich_cooldown_hours?: number;
+  /**
    * Hard cap on contact-provider lookups per calendar month for this workspace.
    * Counted via `contact_lookup_attempted` facts asserted this month. When
    * reached, drafter pre-flight skips the call and posts a system note. Unset
