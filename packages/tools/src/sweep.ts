@@ -456,7 +456,7 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
       .gte('created_at', since7d);
     const dispatchCount = dispatchProbe.count ?? 0;
     if (dispatchCount > 0) {
-      const metrics7d = await getSourceMetrics(sb, workspace_id, 24 * 7);
+      const metrics7d = await getSourceMetrics(sb, workspace_id, 24 * 7, { skipEntitySeeded: true });
       for (const m of metrics7d) {
         if (!m.active) continue;
         if (m.signals < T.dead_weight_min_signals) continue;

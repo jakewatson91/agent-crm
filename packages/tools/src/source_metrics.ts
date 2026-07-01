@@ -63,13 +63,26 @@ export async function getSourceMetrics(
   sb: SupabaseClient,
   workspace_id: string,
   window_hours: number,
+  opts: { skipEntitySeeded?: boolean } = {},
 ): Promise<SourceMetric[]> {
   const since = new Date(Date.now() - window_hours * 3600 * 1000).toISOString();
 
-  // All three windowed reads paginate via fetchAll — at high volume (tens of
-  // thousands of signals in 7d) a bare .limit() returns only the oldest 1000,
-  // which silently undercounted per-source signals/fact_yield and drove the
-  // source_curator + source_dead_weight check off stale data.
+  // All windowed reads paginate via fetchAll — at high volume (tens of thousands
+  // of signals in 7d) a bare .limit() returns only the oldest 1000, which
+  // silently undercounted per-source signals/fact_yield.
+  //
+  // entityFirstSignal orders ascending by created_at, which forces a full-table
+  // scan on large workspaces (no composite index on workspace_id + created_at).
+  // Skip it when the caller doesn't need entities_seeded (e.g. dead_weight check).
+  const entityFirstSignalPromise = opts.skipEntitySeeded
+    ? Promise.resolve([] as Array<{ entity_id: string; structured_tags: { source_id?: string } | null; created_at: string }>)
+    : fetchAll<{ entity_id: string; structured_tags: { source_id?: string } | null; created_at: string }>((f, t) => sb.from('signals')
+        .select('entity_id, structured_tags, created_at')
+        .eq('workspace_id', workspace_id)
+        .gte('created_at', since)
+        .not('entity_id', 'is', null)
+        .order('created_at', { ascending: true }).order('id').range(f, t));
+
   const [srcRes, signals, events, entityFirstSignal] = await Promise.all([
     sb.from('sources')
       .select('id, name, connector_type, active, schedule_cron')
@@ -85,15 +98,7 @@ export async function getSourceMetrics(
       .in('action', ['agent_run_metrics', 'agent_dispatch_result'])
       .gte('created_at', since)
       .order('id').range(f, t)),
-    // entities_seeded: every signal that attached to an entity, bucketed by
-    // source on the EARLIEST one per entity — so created_at ascending is load-
-    // bearing here, with id as a tiebreaker for stable pagination.
-    fetchAll<{ entity_id: string; structured_tags: { source_id?: string } | null; created_at: string }>((f, t) => sb.from('signals')
-      .select('entity_id, structured_tags, created_at')
-      .eq('workspace_id', workspace_id)
-      .gte('created_at', since)
-      .not('entity_id', 'is', null)
-      .order('created_at', { ascending: true }).order('id').range(f, t)),
+    entityFirstSignalPromise,
   ]);
 
   if (srcRes.error) throw new Error(`sources: ${srcRes.error.message}`);
