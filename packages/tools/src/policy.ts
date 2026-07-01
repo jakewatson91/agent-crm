@@ -381,6 +381,18 @@ export interface QualificationPolicy {
   max_empty_steps?: number;
 }
 
+export interface PipelineStatus {
+  /** ok = last run finished clean; running = a run is in progress; paused = halted on a credit/auth error and waiting for the operator. */
+  state: 'ok' | 'running' | 'paused';
+  /** One plain-language sentence the operator can act on (only set when paused). */
+  reason?: string;
+  /** Which provider tripped the pause (deepseek / hunter / explorium / llm). */
+  provider?: string;
+  paused_at?: string;
+  last_run_at?: string;
+  last_run?: Record<string, unknown>;
+}
+
 export interface WorkspacePolicy {
   // pre-existing fields
   suppression_list?: string[];
@@ -404,6 +416,13 @@ export interface WorkspacePolicy {
   display?: DisplayPolicy;
   research?: ResearchPolicy;
   qualification?: QualificationPolicy;
+
+  /**
+   * Live run state the UI shows as a status banner. Written by the advance pass:
+   * `ok` after a clean run, `paused` when a provider/LLM credit-or-auth error
+   * halted the run. `reason` is one plain sentence the operator can act on.
+   */
+  pipeline?: PipelineStatus;
 
   /**
    * Generic env-var bag for this workspace. Flat dict of NAME → value.
@@ -492,6 +511,30 @@ export async function getPolicy(supabase: SupabaseClient, workspace_id: string):
     research: { ...(raw.research ?? {}) },
     env: { ...(raw.env ?? {}) },
   };
+}
+
+/**
+ * Read the live pipeline status the UI banner shows. Returns null when the
+ * workspace has never run (no status written yet). Reads the raw policy so it
+ * doesn't pull the default-merge machinery in getPolicy.
+ */
+export async function getPipelineStatus(supabase: SupabaseClient, workspace_id: string): Promise<PipelineStatus | null> {
+  const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
+  const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
+  return raw.pipeline ?? null;
+}
+
+/**
+ * Replace the workspace's pipeline status (not a deep merge — the status object
+ * fully describes current state, so writing {state:'ok', ...} clears a prior
+ * pause's reason/provider). Read-modify-write on the raw policy so the rest of
+ * the policy is preserved untouched. Callers: the advance pass (ok/paused) and
+ * the Continue action (clears the pause).
+ */
+export async function setPipelineStatus(supabase: SupabaseClient, workspace_id: string, status: PipelineStatus): Promise<void> {
+  const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
+  const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
+  await supabase.from('workspaces').update({ policy: { ...raw, pipeline: status } }).eq('id', workspace_id);
 }
 
 /**

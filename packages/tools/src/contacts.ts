@@ -364,6 +364,7 @@ const MAX_CONTACTS_PER_ACCOUNT = 5;
 export interface PullContactsResult {
   ok: boolean;           // false only on a provider error (so health can flag it)
   reason?: string;
+  error_detail?: string; // raw provider error text(s), for credit/auth classification
   provider?: string;     // provider that produced contacts (or was attempted)
   found: number;
   created: number;
@@ -443,7 +444,9 @@ export async function pullContactsForAccount(
     await audit(msg);
     // ok:false only when a provider actually errored, so the health sweep can
     // tell a real failure (bad key, quota) from a clean "matched, found nobody".
-    return { ok: errors.length === 0, reason: errors.length ? 'provider error' : 'no contacts found', provider: usedProvider || order[0], found: 0, created: 0 };
+    // error_detail carries the raw text so the advance pass can tell a halting
+    // credit/auth failure from a benign "found nobody".
+    return { ok: errors.length === 0, reason: errors.length ? 'provider error' : 'no contacts found', error_detail: errors.length ? errors.join('; ') : undefined, provider: usedProvider || order[0], found: 0, created: 0 };
   }
 
   let created = 0;

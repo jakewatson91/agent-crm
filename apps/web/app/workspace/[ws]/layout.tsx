@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { EntitySearch } from '../../_components/EntitySearch';
 import { ChatBar } from '../../_components/ChatBar';
 import { StatusBar } from '../../_components/StatusBar';
+import { PipelineBanner } from '../../_components/PipelineBanner';
 import { WorkspaceShell } from '../../_components/WorkspaceShell';
 import { NavLinkPrefetch } from '../../_components/NavLinkPrefetch';
 import { PageContextProvider } from '../../_components/PageContext';
@@ -92,7 +93,10 @@ export default async function WorkspaceLayout({
     <>
       <PageContextProvider>
         <WorkspaceShell sidebar={sidebar}>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '1.75rem 2rem', minHeight: 0 }}>{children}</div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '1.75rem 2rem', minHeight: 0 }}>
+            <PipelineBanner />
+            {children}
+          </div>
           <ChatBar />
           <StatusBar />
         </WorkspaceShell>

@@ -102,7 +102,10 @@ function icpColor(v: number | null): string {
 }
 
 export function FeedStream({ items, ws }: { items: FeedItem[]; ws: string }) {
-  const [filter, setFilter] = useState<FilterKey>('default');
+  // Land on the approvals when any are waiting — "open the app, see the 5-10
+  // things to approve." Falls back to the full feed when the queue is empty.
+  const hasPendingApproval = items.some((i) => i.kind === 'touch_draft' && i.pending_approval);
+  const [filter, setFilter] = useState<FilterKey>(hasPendingApproval ? 'needs_approval' : 'default');
   const [query, setQuery] = useState('');
   const [band, setBand] = useState<Band>('all');
   const [since, setSince] = useState<SinceKey>('all');
@@ -168,17 +171,20 @@ export function FeedStream({ items, ws }: { items: FeedItem[]; ws: string }) {
         {FILTERS.map((f) => {
           const active = filter === f.key;
           const count = narrowed.filter((i) => matchesFilter(i, f.key)).length;
+          // Draw the eye to waiting approvals: when the needs-approval filter has
+          // items and isn't the active view, give the chip an amber highlight.
+          const alert = f.key === 'needs_approval' && count > 0 && !active;
           return (
             <button
               key={f.key}
               onClick={() => setFilter(f.key)}
               style={{
                 padding: '.3rem .7rem',
-                background: active ? 'var(--accent-blue-soft)' : 'var(--panel)',
-                color: active ? '#4f6da3' : 'var(--text-2)',
-                border: `1px solid ${active ? 'var(--accent-blue)' : 'var(--border)'}`,
+                background: active ? 'var(--accent-blue-soft)' : alert ? 'rgba(240, 170, 40, .14)' : 'var(--panel)',
+                color: active ? '#4f6da3' : alert ? '#a9761a' : 'var(--text-2)',
+                border: `1px solid ${active ? 'var(--accent-blue)' : alert ? 'rgba(240, 170, 40, .5)' : 'var(--border)'}`,
                 fontSize: '.78rem',
-                fontWeight: 500,
+                fontWeight: alert ? 600 : 500,
               }}
             >
               {f.label} <span style={{ opacity: 0.6 }}>{count}</span>

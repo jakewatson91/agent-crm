@@ -26,7 +26,8 @@ config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
 import { runAgent } from '../inngest/functions/agent_logic.js';
 import { getConnector } from '../inngest/functions/sources/registry.js';
-import { runRetention, drainPendingContactRequests } from '@agent-crm/tools';
+import { runRetention } from '@agent-crm/tools';
+import { advanceAccounts } from '../inngest/functions/advance_accounts.js';
 
 const INTERVAL_MIN = parseInt(process.env.INTERVAL_MIN ?? '60', 10);
 
@@ -137,20 +138,25 @@ async function tick() {
   }
   console.log(`  ${runs} agent runs, ${posted} posts created`);
 
-  // 2b. Drain enrich_contacts requests. agent_logic emits a `contacts.requested`
-  //     event for the Inngest contactsRunner; while Inngest is out those never
-  //     run, so pull contacts here instead. Capped per workspace (policy) so a
-  //     backlog can't drain the provider quota in one pass; best accounts first.
-  const drainWs = await sb.from('workspaces').select('id, policy');
-  for (const w of drainWs.data ?? []) {
+  // 2b. Account-driven advance pass — the spine. The signal loop above only
+  //     touches accounts with a fresh signal in the window; this walks the
+  //     best-scored accounts regardless, pulls contacts for strong fits that
+  //     lack one, then drafts (reusing the same selectAction + drafter + gate
+  //     path). Halts and records a plain paused status if a provider/LLM runs
+  //     out of credit, instead of burning the whole run against an empty balance.
+  const advWs = await sb.from('workspaces').select('id, policy');
+  for (const w of advWs.data ?? []) {
     try {
-      const cap = (w.policy as { enrichment?: { max_contact_pulls_per_run?: number } } | null)?.enrichment?.max_contact_pulls_per_run ?? 5;
-      const d = await drainPendingContactRequests(sb, w.id as string, cap);
-      if (d.pending > 0 || d.attempted > 0) {
-        console.log(`  [contacts ${w.id}] pending=${d.pending} pulled=${d.attempted} new_contacts=${d.contacts_created} provider_errors=${d.errors}`);
+      const enr = (w.policy as { enrichment?: { max_contact_pulls_per_run?: number } } | null)?.enrichment;
+      const contactCap = enr?.max_contact_pulls_per_run ?? 8;
+      const a = await advanceAccounts(sb, { workspace_id: w.id as string, contactCap });
+      if (a.paused) {
+        console.log(`  [advance ${w.id}] PAUSED: ${a.paused.reason}`);
+      } else if (a.scanned > 0) {
+        console.log(`  [advance ${w.id}] scanned=${a.scanned} contacts_pulled=${a.contacts_pulled} new_contacts=${a.contacts_created} drafts=${a.drafts_created} ${JSON.stringify(a.decisions)}`);
       }
     } catch (e) {
-      console.error(`  [contacts ${w.id}] error:`, e instanceof Error ? e.message : String(e));
+      console.error(`  [advance ${w.id}] error:`, e instanceof Error ? e.message : String(e));
     }
   }
 
