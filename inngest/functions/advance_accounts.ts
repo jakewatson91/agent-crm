@@ -314,7 +314,9 @@ export async function advanceAccounts(
  */
 export const advanceAccountsCron = inngest.createFunction(
   { id: 'advance-accounts-daily', concurrency: { limit: 1 } },
-  { cron: '30 14 * * *' },
+  // Cron for the daily tick + an event trigger so the pass can be kicked on
+  // demand (verification, a future "run now" button) without waiting for 14:30.
+  [{ cron: '30 14 * * *' }, { event: 'advance.requested' }],
   async ({ step }) =>
     step.run('advance-all-workspaces', async () => {
       const supabase = createServerClient();

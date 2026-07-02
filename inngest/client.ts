@@ -94,6 +94,14 @@ export type Events = {
       reason?: string;
     };
   };
+  // On-demand kick of the daily advance pass (same function the 14:30 UTC cron
+  // runs). Sent by verification scripts or a future "run now" control. The pass
+  // walks every workspace; data is informational only.
+  'advance.requested': {
+    data: {
+      reason?: string;
+    };
+  };
 };
 
 export const inngest = new Inngest({
