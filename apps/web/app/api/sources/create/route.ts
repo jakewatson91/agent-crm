@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { getConnector } from '@agent-crm/inngest/functions/sources/registry';
+// registry_meta, not registry: only existence + cron default are needed, and
+// the full registry's module graph (.js specifiers) breaks turbopack dev.
+import { listConnectors } from '@agent-crm/inngest/functions/sources/registry_meta';
 
 export const runtime = 'nodejs';
 
@@ -17,8 +19,8 @@ export async function POST(req: Request) {
   if (!body?.workspace_id || !body?.connector_type || !body?.name) {
     return NextResponse.json({ error: 'workspace_id, connector_type, name required' }, { status: 400 });
   }
-  const conn = getConnector(body.connector_type);
-  if (!conn) return NextResponse.json({ error: `unknown connector_type: ${body.connector_type}` }, { status: 400 });
+  const meta = listConnectors().find((m) => m.type === body.connector_type);
+  if (!meta) return NextResponse.json({ error: `unknown connector_type: ${body.connector_type}` }, { status: 400 });
 
   const supabase = createServerClient();
   const { data, error } = await supabase
@@ -28,7 +30,7 @@ export async function POST(req: Request) {
       connector_type: body.connector_type,
       name: body.name,
       config: body.config ?? {},
-      schedule_cron: body.schedule_cron ?? conn.meta.schedule_cron,
+      schedule_cron: body.schedule_cron ?? meta.schedule_cron,
     })
     .select('id')
     .single();

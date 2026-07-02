@@ -138,10 +138,16 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     });
   }
 
-  if (bySource.size > 1 && signals24.length >= T.diversity_min_signals) {
+  // Concentration asks "is one external source feeding everything?". The
+  // research loop's own output (signal_source='research', research.ts) is
+  // internal fan-out triggered per-entity, not a discovery source — with few
+  // active connectors it dominates the denominator and pins this check red.
+  const externalSources = [...bySource.entries()].filter(([src]) => src !== 'research');
+  const externalTotal = externalSources.reduce((n, [, rec]) => n + rec.total, 0);
+  if (externalSources.length > 1 && externalTotal >= T.diversity_min_signals) {
     let maxSrc = ''; let maxShare = 0;
-    for (const [src, rec] of bySource) {
-      const share = rec.total / signals24.length;
+    for (const [src, rec] of externalSources) {
+      const share = rec.total / externalTotal;
       if (share > maxShare) { maxShare = share; maxSrc = src; }
     }
     const sev: Severity = maxShare > T.source_share_red ? 'red'
@@ -149,7 +155,7 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     out.push({
       id: 'source_concentration',
       severity: sev,
-      metric: `${maxSrc}=${fmtPct(maxShare)} (of ${signals24.length})`,
+      metric: `${maxSrc}=${fmtPct(maxShare)} (of ${externalTotal} external)`,
       threshold: `< ${fmtPct(T.source_share_yellow)}`,
       action: sev !== 'green' ? `other sources silent? check sources table for last_run_status=error` : undefined,
     });

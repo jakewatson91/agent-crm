@@ -27,7 +27,7 @@ const SYSTEM_PROMPT = `You configure an agent-native CRM for a new customer. Rea
 - "knowledge_base": optional pain-to-angle mapping in the format described below; empty string if not applicable.
 - "example_facts": array of 5-8 {predicate, object_text} pairs the enricher should look for when reading signals about an entity. Choose predicates appropriate for the vertical (real-estate = list_price, days_on_market; B2B sales = hiring_for, raised_round). Don't reuse B2B examples on non-B2B workspaces.
 - "pain_points": array of 3-5 short strings describing the specific pains this customer's product addresses. The drafter uses these in cold outreach. Concrete, observable, prospect-recognizable language. Not "they want to grow" — "their sales team is one person and the founder is doing outbound at night."
-- "value_props": array of 3-5 short strings — concrete behaviors or numbers the drafter can cite in the one-liner. "We benchmarked HubSpot losing 96% of writes under concurrent edits." Not "we're agent-native."
+- "value_props": array of 3-5 short strings — concrete behaviors the drafter can cite in the one-liner. Use numbers ONLY if the customer's description states them. NEVER invent stats, client counts, deal counts, or track-record claims ("closed 50+ deals", "trusted by 200 teams") that aren't in the description — the drafter will repeat them as fact in real emails. If the description has no numbers, write number-free value props.
 - "tone_keywords": array of 3-6 short words describing the email tone. e.g. ["casual", "concrete", "no-jargon"].
 
 KNOWLEDGE_BASE FORMAT (only if it fits the use case):

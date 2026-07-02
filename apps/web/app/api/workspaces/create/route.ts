@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { callTool } from '@agent-crm/tools';
-import { getConnector } from '@agent-crm/inngest/functions/sources/registry';
+import { listConnectors } from '@agent-crm/inngest/functions/sources/registry_meta';
 import { deriveDefaults } from '../_derive_defaults';
 import { getUser } from '../../../_lib/auth';
 
@@ -89,14 +89,16 @@ export async function POST(req: Request) {
   // Optional starter source.
   let source_id: string | null = null;
   if (body.starter_source?.connector_type && body.starter_source?.name) {
-    const conn = getConnector(body.starter_source.connector_type);
-    if (conn) {
+    // registry_meta, not registry: only the cron default is needed here, and
+    // the full registry's module graph (.js specifiers) breaks turbopack dev.
+    const meta = listConnectors().find((m) => m.type === body.starter_source!.connector_type);
+    if (meta) {
       const sr = await supabase.from('sources').insert({
         workspace_id,
         connector_type: body.starter_source.connector_type,
         name: body.starter_source.name,
         config: body.starter_source.config ?? {},
-        schedule_cron: body.starter_source.schedule_cron ?? conn.meta.schedule_cron,
+        schedule_cron: body.starter_source.schedule_cron ?? meta.schedule_cron,
       }).select('id').single();
       if (!sr.error && sr.data) source_id = sr.data.id as string;
     }

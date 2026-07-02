@@ -310,7 +310,7 @@ async function queryGates(
   limit: number,
 ): Promise<unknown> {
   let q = ctx.supabase.from('gates')
-    .select('id, policy, condition, requested_at, decided_at, decision, requested_by_agent')
+    .select('id, policy, condition, requested_at, decided_at, decision, requested_by_agent', { count: 'exact' })
     .eq('workspace_id', ctx.workspace_id)
     .order('requested_at', { ascending: false })
     .limit(limit);
@@ -320,9 +320,15 @@ async function queryGates(
     const since = new Date(Date.now() - filter.since_hours * 3600 * 1000).toISOString();
     q = q.gte('requested_at', since);
   }
-  const { data, error } = await q;
+  const { data, error, count } = await q;
   if (error) return { scope: 'gates', error: error.message };
-  return { scope: 'gates', rows: data ?? [] };
+  const rows = data ?? [];
+  // total lets the model see truncation — without it, "X isn't in the rows"
+  // becomes a confident wrong negative when total > limit.
+  return {
+    scope: 'gates', total: count ?? rows.length, rows,
+    ...(count != null && count > rows.length ? { note: `showing ${rows.length} of ${count}; raise limit or filter to see the rest` } : {}),
+  };
 }
 
 async function queryDrafts(
@@ -330,42 +336,37 @@ async function queryDrafts(
   filter: NonNullable<QueryArgs['filter']>,
   limit: number,
 ): Promise<unknown> {
-  // Find channels in this workspace, then drafts in those channels.
-  const { data: channels, error: cErr } = await ctx.supabase.from('channels')
-    .select('id, account_entity_id').eq('workspace_id', ctx.workspace_id);
-  if (cErr) return { scope: 'drafts', error: cErr.message };
-  const channelIds = (channels ?? []).map((c) => c.id);
-  if (channelIds.length === 0) return { scope: 'drafts', rows: [] };
-  const channelToEntity = new Map<string, string | null>();
-  for (const c of channels ?? []) channelToEntity.set(c.id, c.account_entity_id ?? null);
-
+  // FK-join scoping instead of prefetching channel ids: workspaces past
+  // ~1000 channels made the .in(channelIds) URL exceed PostgREST's limit
+  // ("Bad Request") and the prefetch itself silently capped at 1000 rows.
   let q = ctx.supabase.from('channel_posts')
-    .select('id, channel_id, body, cites, created_at, author_id')
-    .in('channel_id', channelIds)
+    .select('id, channel_id, body, cites, created_at, author_id, channels!inner(workspace_id, account_entity_id)', { count: 'exact' })
+    .eq('channels.workspace_id', ctx.workspace_id)
     .eq('kind', 'touch_draft')
     .order('created_at', { ascending: false })
     .limit(limit);
   if (filter.subject_entity) {
-    const ents = (channels ?? []).filter((c) => c.account_entity_id === filter.subject_entity).map((c) => c.id);
-    if (ents.length === 0) return { scope: 'drafts', rows: [] };
-    q = q.in('channel_id', ents);
+    q = q.eq('channels.account_entity_id', filter.subject_entity);
   }
   if (filter.since_hours) {
     const since = new Date(Date.now() - filter.since_hours * 3600 * 1000).toISOString();
     q = q.gte('created_at', since);
   }
-  const { data, error } = await q;
+  const { data, error, count } = await q;
   if (error) return { scope: 'drafts', error: error.message };
 
   const rows = (data ?? []).map((p) => ({
     id: p.id,
-    entity_id: channelToEntity.get(p.channel_id as string) ?? null,
+    entity_id: (p.channels as unknown as { account_entity_id?: string | null })?.account_entity_id ?? null,
     body: p.body,
     cites: p.cites ?? [],
     created_at: p.created_at,
     author: p.author_id,
   }));
-  return { scope: 'drafts', rows };
+  return {
+    scope: 'drafts', total: count ?? rows.length, rows,
+    ...(count != null && count > rows.length ? { note: `showing ${rows.length} of ${count}; raise limit or filter to see the rest` } : {}),
+  };
 }
 
 function isPlaceholderDomain(d: string | undefined | null): boolean {
