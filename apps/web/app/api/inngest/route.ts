@@ -33,6 +33,7 @@ function getHandlers(): Promise<ServeReturn> {
         fns.qualificationRunner,
         fns.contactsRunner,
         fns.entityResearchDispatcher,
+        fns.advanceAccountsCron,
         fns.silenceSweep,
         fns.entityArchiveSweep,
         fns.retentionSweep,

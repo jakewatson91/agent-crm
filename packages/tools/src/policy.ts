@@ -35,6 +35,11 @@ export interface EnrichmentPolicy {
    */
   max_contact_pulls_per_run?: number;
   /**
+   * Max new outreach drafts the advance pass creates per daily run. Bounds
+   * both approval-queue size and drafter LLM spend. Default 12.
+   */
+  max_drafts_per_run?: number;
+  /**
    * Coalesce window in minutes for repeat enrichment of the SAME entity on the
    * SAME signal type. A company with N open job posts emits N hiring_post signals;
    * without this, each fires a full LLM enrich. When the enricher is triggered for
@@ -392,6 +397,13 @@ export interface QualificationPolicy {
 export interface PipelineStatus {
   /** ok = last run finished clean; running = a run is in progress; paused = halted on a credit/auth error and waiting for the operator. */
   state: 'ok' | 'running' | 'paused';
+  /**
+   * What the pause blocks. 'contacts' = only contact lookups are stopped (drafting
+   * of accounts that already have a reachable contact continues on schedule);
+   * 'all' = the whole advance pass is stopped (LLM provider is down/broke).
+   * Absent on old rows — treated as 'all'.
+   */
+  scope?: 'contacts' | 'all';
   /** One plain-language sentence the operator can act on (only set when paused). */
   reason?: string;
   /** Which provider tripped the pause (deepseek / hunter / explorium / llm). */

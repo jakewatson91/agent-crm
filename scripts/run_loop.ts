@@ -147,13 +147,26 @@ async function tick() {
   const advWs = await sb.from('workspaces').select('id, policy');
   for (const w of advWs.data ?? []) {
     try {
-      const enr = (w.policy as { enrichment?: { max_contact_pulls_per_run?: number } } | null)?.enrichment;
+      const pol = w.policy as { enrichment?: { max_contact_pulls_per_run?: number; max_drafts_per_run?: number }; pipeline?: { last_run_at?: string } } | null;
+      // Backstop, not a second daily run: the Inngest advance-accounts cron
+      // (14:30 UTC) is the primary. If it already ran in the last 12h, skip —
+      // otherwise a second pass would spend the contact-pull cap twice in one
+      // day. If Inngest missed (down / limits), last_run_at is stale and this
+      // run covers the day.
+      const lastAdvance = pol?.pipeline?.last_run_at ? Date.parse(pol.pipeline.last_run_at) : 0;
+      if (Date.now() - lastAdvance < 12 * 3600_000) {
+        console.log(`  [advance ${w.id}] skipped — cloud advance ran ${((Date.now() - lastAdvance) / 3600_000).toFixed(1)}h ago`);
+        continue;
+      }
+      const enr = pol?.enrichment;
       const contactCap = enr?.max_contact_pulls_per_run ?? 8;
-      const a = await advanceAccounts(sb, { workspace_id: w.id as string, contactCap });
-      if (a.paused) {
-        console.log(`  [advance ${w.id}] PAUSED: ${a.paused.reason}`);
-      } else if (a.scanned > 0) {
+      const draftCap = enr?.max_drafts_per_run ?? 12;
+      const a = await advanceAccounts(sb, { workspace_id: w.id as string, contactCap, draftCap });
+      if (a.scanned > 0 || !a.paused) {
         console.log(`  [advance ${w.id}] scanned=${a.scanned} contacts_pulled=${a.contacts_pulled} new_contacts=${a.contacts_created} drafts=${a.drafts_created} ${JSON.stringify(a.decisions)}`);
+      }
+      if (a.paused) {
+        console.log(`  [advance ${w.id}] PAUSED (${a.paused.scope ?? 'all'}): ${a.paused.reason}`);
       }
     } catch (e) {
       console.error(`  [advance ${w.id}] error:`, e instanceof Error ? e.message : String(e));

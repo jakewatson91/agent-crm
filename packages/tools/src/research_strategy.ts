@@ -257,16 +257,27 @@ export async function filterResultsByEntity(
   const auto = accepted.size;
   if (!toCheck.length) return { accepted, checked: 0, auto, dropped: 0 };
 
-  const sys = `You verify whether a web page is about a SPECIFIC target company, or about a different organization that merely shares the name.
+  // With real grounding (own-site snippets / descriptive facts) an unsure-but-fitting
+  // page is probably right, so lean toward matching. With nothing to test against,
+  // "fits the description" is untestable — a generic same-name landing page would pass
+  // by default — so the bias flips to rejecting anything unverifiable.
+  const hasContext = target.context.trim().length >= 40;
+  const unsureRule = hasContext
+    ? 'When genuinely unsure AND the page clearly fits the target\'s description, lean toward matching.'
+    : 'Almost nothing is known about the target, so identity cannot be confirmed from a description. Only match a page that explicitly references the target\'s website domain or is unmistakably the same organization. When unsure, do NOT match.';
+
+  const sys = `You verify whether a web page is (a) about a SPECIFIC target company and (b) substantive enough to be worth reading.
 
 TARGET COMPANY:
 - name: ${target.name}
 - website: ${target.domain || '(unknown)'}
-- about: ${target.context || '(little known — judge from the website domain and name)'}
+- about: ${target.context || '(nothing known)'}
 
-A page is a MATCH only if it is about THIS company (the one at that website / fitting that description). A company in a different industry, sector, or country that happens to share the name is NOT a match. When genuinely unsure AND the page fits the target's description, lean toward matching.
+A page is a MATCH only if BOTH hold:
+1. It is about THIS company (the one at that website / fitting that description). A company in a different industry, sector, or country that happens to share the name is NOT a match. ${unsureRule}
+2. It carries substantive content: news, a launch, a blog post, a case study, an interview, a partnership, a review with real detail. Directory listings, tool aggregators, company-profile pages, and databases that merely restate name + category + description are NOT a match even when they're about the right company — they contain nothing we don't already know.
 
-Return JSON only: {"matches":["<id>", ...]} — the ids of pages about the target company.`;
+Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass both tests.`;
 
   const payload = JSON.stringify(toCheck.map((r) => ({ id: r.id, title: r.title, url: r.url, text: (r.text ?? '').slice(0, 500) })));
   try {
@@ -282,10 +293,11 @@ Return JSON only: {"matches":["<id>", ...]} — the ids of pages about the targe
     for (const r of toCheck) if (matchSet.has(r.id)) { accepted.add(r.id); kept++; }
     return { accepted, checked: toCheck.length, auto, dropped: toCheck.length - kept };
   } catch {
-    // Fail-open: a transient LLM error shouldn't starve research. Rare; downstream
-    // scoring still dampens any collision that slips through on that run.
-    for (const r of toCheck) accepted.add(r.id);
-    return { accepted, checked: toCheck.length, auto, dropped: 0 };
+    // Fail-closed: if the gate can't run, unverified results are dropped rather than
+    // let through — polluting an entity with a same-name company's news is worse than
+    // one thin research pass (the dispatcher re-runs on cadence anyway). Own-domain
+    // results were already auto-accepted above and are unaffected.
+    return { accepted, checked: toCheck.length, auto, dropped: toCheck.length };
   }
 }
 

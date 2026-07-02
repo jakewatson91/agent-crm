@@ -29,7 +29,9 @@ import {
   latestMarkerByEntity, ACTIVITY_MARKERS,
   getPipelineStatus, setPipelineStatus, type PipelineStatus,
 } from '@agent-crm/tools';
+import { createServerClient } from '@agent-crm/db';
 import { runAgent } from './agent_logic.js';
+import { inngest } from '../client.js';
 
 export interface AdvanceOptions {
   workspace_id: string;
@@ -151,10 +153,15 @@ export async function advanceAccounts(
   const out: AdvanceResult = { scanned: 0, contacts_pulled: 0, contacts_created: 0, drafts_created: 0, decisions: {} };
 
   // Paused = a prior run hit a credit/auth wall and is waiting for the operator
-  // to top up and click Continue (which clears the flag). Don't spend against an
-  // empty balance in the meantime — just report the standing pause.
+  // to top up and click Continue (which clears the flag). A contacts-scoped pause
+  // (contact-lookup provider out of credit) only blocks phase 2 — drafting accounts
+  // that already have a reachable contact needs no lookups and keeps running. Only
+  // an LLM-scoped ('all') pause stops the whole pass: every step after it would
+  // fail the same way.
   const status = await getPipelineStatus(supabase, workspace_id);
-  if (status?.state === 'paused') { out.paused = status; return out; }
+  const contactsPaused = status?.state === 'paused' && status.scope === 'contacts';
+  if (status?.state === 'paused' && !contactsPaused) { out.paused = status; return out; }
+  if (contactsPaused) out.paused = status ?? undefined;
 
   const policy = await getPolicy(supabase, workspace_id);
   const T = buildThresholds(policy.routing);
@@ -198,10 +205,15 @@ export async function advanceAccounts(
   const clearsGates = (s: Scored) =>
     s.tot >= T.DRAFT_ICP_TOTAL && s.sig >= T.DRAFT_SIGNAL_STRENGTH && s.ev >= T.DRAFT_EVIDENCE_DEPTH;
 
+  // Set when the LLM itself hits a wall — every remaining step would fail the
+  // same way, so the whole pass unwinds. A contact-provider wall never sets this;
+  // it only ends phase 2 (see below).
+  let halted = false;
+
   // Draft one account. runAgent(behavior=drafter) is authoritative — it re-runs
   // selectAction and the drafter's own quality check; we only call it once the
   // account clears the gates and has a reachable contact, to avoid a wasted LLM
-  // call. Returns 'paused' to unwind the whole run on a credit/auth wall.
+  // call. Returns 'paused' to unwind the whole run on an LLM credit/auth wall.
   async function draftAccount(s: Scored, name: string): Promise<'drafted' | 'skip' | 'paused'> {
     if (out.drafts_created >= draftCap) { tally('draft_cap_reached'); return 'skip'; }
     const factId = await pickTriggerFactId(supabase, workspace_id, s.entity_id);
@@ -211,7 +223,8 @@ export async function advanceAccounts(
     });
     const reason = (r as { reason?: string }).reason;
     if (!r.ok && isHaltingError(reason)) {
-      out.paused = await pause(supabase, workspace_id, providerFromError(reason ?? ''), reason ?? 'llm error');
+      out.paused = await pause(supabase, workspace_id, providerFromError(reason ?? ''), reason ?? 'llm error', 'all');
+      halted = true;
       return 'paused';
     }
     if (r.ok && r.action === 'post_touch_draft') { out.drafts_created++; tally('drafted'); log(`  ✎ drafted → ${name}`); return 'drafted'; }
@@ -225,7 +238,7 @@ export async function advanceAccounts(
   // fits that clear the gates but lack a contact are queued for phase 2.
   const needy: Array<{ s: Scored; name: string }> = [];
   for (const s of scores) {
-    if (out.paused) break;
+    if (halted) break;
     out.scanned++;
     const name = nameById.get(s.entity_id) ?? s.entity_id.slice(0, 8);
     if (!clearsGates(s)) { tally('below_draft_gates'); continue; }
@@ -239,9 +252,11 @@ export async function advanceAccounts(
 
   // Phase 2 — spend the contact budget on the queued strong fits, best first,
   // then draft the ones a pull unlocked. Slower and costs credits, so it runs
-  // after the free wins and stops at the per-run cap (or a credit wall).
+  // after the free wins and stops at the per-run cap (or a credit wall). Skipped
+  // outright while a contacts-scoped pause is standing.
   for (const { s, name } of needy) {
-    if (out.paused || out.contacts_pulled >= contactCap || out.drafts_created >= draftCap) break;
+    if (halted || contactsPaused || out.paused?.scope === 'contacts') break;
+    if (out.contacts_pulled >= contactCap || out.drafts_created >= draftCap) break;
     const lastPull = completed.get(s.entity_id);
     if (lastPull !== undefined && Date.now() - lastPull < pullCooldownMs) { tally('pull_cooldown'); continue; }
     out.contacts_pulled++;
@@ -249,7 +264,14 @@ export async function advanceAccounts(
     const pull = await pullContactsForAccount(supabase, { workspace_id, entity_id: s.entity_id });
     out.contacts_created += pull.created;
     if (!pull.ok && isHaltingError(pull.error_detail ?? pull.reason)) {
-      out.paused = await pause(supabase, workspace_id, pull.provider, pull.error_detail ?? pull.reason ?? 'provider error');
+      // A pull can fail on the lookup provider (Hunter/Explorium — contacts-only
+      // problem) or on the LLM that scores the pulled contacts (everything after
+      // this would fail too). Scope the pause accordingly.
+      const errText = pull.error_detail ?? pull.reason ?? 'provider error';
+      const who = pull.provider ?? providerFromError(errText);
+      const llmWall = who === 'deepseek' || who === 'llm';
+      out.paused = await pause(supabase, workspace_id, who, errText, llmWall ? 'all' : 'contacts');
+      if (llmWall) halted = true;
       break;
     }
     if (pull.created > 0) {
@@ -259,24 +281,72 @@ export async function advanceAccounts(
     } else { tally('no_contact_found'); log(`  – ${name}: no contact found`); }
   }
 
-  if (out.paused) return out;
+  if (halted) return out;
 
+  const runStats = {
+    scanned: out.scanned, contacts_pulled: out.contacts_pulled,
+    contacts_created: out.contacts_created, drafts_created: out.drafts_created,
+  };
+  if (out.paused?.scope === 'contacts') {
+    // Keep the contacts pause standing (the operator still has to fix the
+    // provider and click Continue) but record that this run did its drafting.
+    await setPipelineStatus(supabase, workspace_id, {
+      ...out.paused, last_run_at: new Date().toISOString(), last_run: runStats,
+    });
+    return out;
+  }
   await setPipelineStatus(supabase, workspace_id, {
     state: 'ok',
     last_run_at: new Date().toISOString(),
-    last_run: {
-      scanned: out.scanned, contacts_pulled: out.contacts_pulled,
-      contacts_created: out.contacts_created, drafts_created: out.drafts_created,
-    },
+    last_run: runStats,
   });
   return out;
 }
 
-async function pause(supabase: SupabaseClient, workspace_id: string, provider: string | undefined, reason: string): Promise<PipelineStatus> {
+/**
+ * Daily cloud run of the advance pass, so drafting happens even when the
+ * operator's machine is off. 14:30 UTC sits after the 12:00 research tick and
+ * the ~13:00 source runs have landed fresh facts, and before the local launchd
+ * fallback (16:00 UTC) — which then mostly no-ops via DRAFT_SUPPRESSION_DAYS
+ * and the contact-pull cooldown, so running both is safe, not double spend.
+ * Caps come from workspaces.policy.enrichment (the Settings UI), same as the
+ * local loop.
+ */
+export const advanceAccountsCron = inngest.createFunction(
+  { id: 'advance-accounts-daily', concurrency: { limit: 1 } },
+  { cron: '30 14 * * *' },
+  async ({ step }) =>
+    step.run('advance-all-workspaces', async () => {
+      const supabase = createServerClient();
+      const wss = await supabase.from('workspaces').select('id, policy');
+      const results: Record<string, unknown> = {};
+      for (const w of (wss.data ?? []) as Array<{ id: string; policy: { enrichment?: { max_contact_pulls_per_run?: number; max_drafts_per_run?: number } } | null }>) {
+        try {
+          const enr = w.policy?.enrichment;
+          const a = await advanceAccounts(supabase, {
+            workspace_id: w.id,
+            contactCap: enr?.max_contact_pulls_per_run ?? 8,
+            draftCap: enr?.max_drafts_per_run ?? 12,
+          });
+          results[w.id] = {
+            scanned: a.scanned, contacts_pulled: a.contacts_pulled,
+            contacts_created: a.contacts_created, drafts_created: a.drafts_created,
+            paused: a.paused ? `${a.paused.scope ?? 'all'}: ${a.paused.reason}` : undefined,
+          };
+        } catch (e) {
+          results[w.id] = { error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+      return results;
+    }),
+);
+
+async function pause(supabase: SupabaseClient, workspace_id: string, provider: string | undefined, reason: string, scope: 'contacts' | 'all'): Promise<PipelineStatus> {
   const status: PipelineStatus = {
     state: 'paused',
+    scope,
     provider,
-    reason: humanizeReason(provider, reason),
+    reason: humanizeReason(provider, reason) + (scope === 'contacts' ? ' Drafting continues for accounts that already have a contact.' : ''),
     paused_at: new Date().toISOString(),
   };
   await setPipelineStatus(supabase, workspace_id, status);

@@ -81,6 +81,9 @@ export default function SettingsWorkspacePage() {
   const [wGraph, setWGraph] = useState(0.10);
   const [rrfGate, setRrfGate] = useState(0.30);
   const [budget, setBudget] = useState(0);
+  const [searchesPerRun, setSearchesPerRun] = useState(30);
+  const [contactPullsPerRun, setContactPullsPerRun] = useState(8);
+  const [draftsPerRun, setDraftsPerRun] = useState(12);
 
   const [hireIncludeFamilies, setHireIncludeFamilies] = useState<string[]>([]);
   const [hireIncludeSeniorities, setHireIncludeSeniorities] = useState<string[]>([]);
@@ -146,7 +149,11 @@ export default function SettingsWorkspacePage() {
     setHireIncludeSeniorities(Array.isArray(hf.include_seniorities) ? hf.include_seniorities : []);
     setHireExcludeFamilies(Array.isArray(hf.exclude_families) ? hf.exclude_families : []);
     setHireAlwaysExec(Boolean(hf.always_include_exec));
+    const enr = (policy.enrichment ?? {}) as Record<string, any>;
+    setContactPullsPerRun(num(enr.max_contact_pulls_per_run, 8));
+    setDraftsPerRun(num(enr.max_drafts_per_run, 12));
     const rs = (policy.research ?? {}) as Record<string, any>;
+    setSearchesPerRun(num(rs.searches_per_run, 30));
     setGuidance((rs.guidance ?? '') as string);
     setGuidanceAtLoad((rs.guidance ?? '') as string);
     setAlwaysInclude(Array.isArray(rs.always_include) ? rs.always_include : []);
@@ -175,6 +182,8 @@ export default function SettingsWorkspacePage() {
       // whatever's saved here so a Workspace save never clobbers it.
       enrichment: {
         ...(base.enrichment ?? {}),
+        max_contact_pulls_per_run: contactPullsPerRun,
+        max_drafts_per_run: draftsPerRun,
       },
       routing: {
         ...(base.routing ?? {}),
@@ -207,6 +216,7 @@ export default function SettingsWorkspacePage() {
       },
       research: {
         ...(base.research ?? {}),
+        searches_per_run: searchesPerRun,
         guidance: guidance.trim() || undefined,
         always_include: alwaysInclude,
         // Persist the angle list so per-angle on/off toggles survive a save. The
@@ -218,6 +228,7 @@ export default function SettingsWorkspacePage() {
   }, [
     ws,
     outreachChannel, overrideTo, fromEmail, bannedPhrases,
+    searchesPerRun, contactPullsPerRun, draftsPerRun,
     draftIcp, draftSignal, draftEvidence, draftSuppress,
     researchIcp, researchEvidenceMax, researchCooldown,
     dropIcp, dropEvidenceMin, dropSuppress, watchIcp,
@@ -388,6 +399,10 @@ export default function SettingsWorkspacePage() {
             <ChipList values={alwaysInclude} onChange={setAlwaysInclude} placeholder="e.g. SOC 2, Series B, new VP of Sales" />
           </HelpRow>
 
+          <HelpRow label="Web searches per research pass" help="How many web searches the agent may spend each research pass (runs every 4 hours, so daily spend is 6× this). Each search costs about $0.015. 30 ≈ $2.70/day max.">
+            <NumInput value={searchesPerRun} onChange={setSearchesPerRun} step={5} />
+          </HelpRow>
+
           <div style={{ marginTop: '.5rem', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
             <div style={{ fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Current search plan</div>
             {strategyAt && <span style={{ fontSize: '.68rem', color: 'var(--text-3)' }}>generated {new Date(strategyAt).toLocaleString()}</span>}
@@ -486,6 +501,12 @@ export default function SettingsWorkspacePage() {
           </div>
           <HelpRow label="Daily budget (cents)" help="Token-spend ceiling per day for this workspace.">
             <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value, 10) || 0)} style={{ ...textInput, width: 140 }} />
+          </HelpRow>
+          <HelpRow label="Contact lookups per daily run" help="How many accounts the daily pass may spend a contact-provider lookup on. Bounds Hunter/Explorium credit burn. 0 disables lookups.">
+            <NumInput value={contactPullsPerRun} onChange={setContactPullsPerRun} step={1} />
+          </HelpRow>
+          <HelpRow label="New drafts per daily run" help="Max outreach drafts the daily pass creates. Bounds both your approval queue and drafter LLM spend.">
+            <NumInput value={draftsPerRun} onChange={setDraftsPerRun} step={1} />
           </HelpRow>
 
           <div style={{ marginTop: '.75rem', fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Hiring filter</div>
