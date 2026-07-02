@@ -928,6 +928,14 @@ export async function runAgent(
         },
         parent_event_id: payload.parent_event_id ?? null,
       });
+      // Heal missed rescores. If a prior run asserted facts but died before its
+      // scoreAndAssert (deploy restart, crash), the retry dedupes every fact →
+      // asserted=0 → the score never catches up to the facts. scoreAndAssert's
+      // skip-when-stale guard exits before any LLM/embedding spend unless a
+      // substantive fact really is newer than the current score, so this is one
+      // cheap facts-read per zero-fact run — and a rescore exactly when one was
+      // lost.
+      try { await scoreAndAssertFn(supabase, actor, ent.data.id); } catch { /* non-fatal */ }
     }
     // Contact lookups moved from here to the drafter pre-flight — see the
     // `behavior === 'drafter'` block above. The enricher fires on every signal,

@@ -245,12 +245,15 @@ export async function scoreEntity(
   const graph = graphRes.score;
 
   // ---- RRF pre-filter via multi-perspective embeddings ----
+  // prefilterComputed distinguishes "we measured a low cosine" (a real verdict —
+  // the shortcut below may act on it) from "we couldn't measure" (icp vectors
+  // missing or an embed call failed). A failed measurement must NOT read as
+  // cosine 0.00 — that shortcut used to silently tank a 0.9 account to ~0.35
+  // with no LLM call whenever embeddings hiccuped.
   let rrf_prefilter = 0;
+  let prefilterComputed = false;
   if (icpVecs) {
     const perspectiveText = buildEntityPerspectiveText(entity.name, entity.attributes ?? {}, facts);
-    // Embed all 4 perspectives for the entity. If this fails for any reason
-    // (network, model), we fall through to the LLM rubric — no graceful
-    // degradation needed beyond logging.
     let entityVecs: Record<Perspective, number[]> | null = null;
     try {
       const [defV, painV, stackV, vertV] = await Promise.all([
@@ -260,7 +263,7 @@ export async function scoreEntity(
         embed(perspectiveText.vertical),
       ]);
       entityVecs = { default: defV, pain: painV, stack: stackV, vertical: vertV };
-    } catch { /* leave entityVecs null; pre-filter contributes 0 */ }
+    } catch { /* leave entityVecs null; fall through to the LLM rubric */ }
 
     if (entityVecs) {
       const sims = [
@@ -269,13 +272,16 @@ export async function scoreEntity(
         cosine(entityVecs.vertical, icpVecs.vectors.vertical),
       ];
       rrf_prefilter = rrfFuse(sims);
+      prefilterComputed = true;
     }
   }
 
   // ---- Pre-filter shortcut: when 3 embedding perspectives unanimously
   //      disagree with the ICP, more facts won't flip the answer. Skip the
-  //      LLM call regardless of evidence depth.
-  if (rrf_prefilter < rrfGate) {
+  //      LLM call regardless of evidence depth. Only valid when the cosines
+  //      were actually computed — on embedding failure we pay for the LLM
+  //      rubric instead of writing a bogus low score.
+  if (prefilterComputed && rrf_prefilter < rrfGate) {
     const breakdown: ScoreBreakdown = {
       industry_match: clamp01(rrf_prefilter),
       stage_match: 0,
@@ -363,7 +369,7 @@ PRE-COMPUTED SIGNALS (for context, not to copy):
   evidence_depth=${evidence_depth.toFixed(2)} (deterministic — count of substantive facts)
   recency=${recency.toFixed(2)} (deterministic — exponential decay on most recent fact)
   graph_proximity=${graph.toFixed(2)} (deterministic — mean icp_fit of linked entities)
-  rrf_prefilter=${rrf_prefilter.toFixed(2)} (deterministic — multi-perspective cosine vs ICP)
+  rrf_prefilter=${prefilterComputed ? rrf_prefilter.toFixed(2) : 'n/a (embeddings unavailable this run)'} (deterministic — multi-perspective cosine vs ICP)
 
 Score this account on the three rubric dimensions.`;
 
