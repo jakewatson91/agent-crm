@@ -54,6 +54,11 @@ export { setOutreachStage, DEFAULT_STAGE_FACT_NAME } from './lifecycle.ts';
 export type { LifecyclePolicy, OutreachTransition } from './policy.ts';
 export { factFamilyOf, type FactGroup, type DisplayPolicy } from './fact_groups.ts';
 export { ACTIVITY_MARKERS, recordActivityMarker, latestMarkerAt, latestMarkerByEntity, type ActivityMarker } from './activity_markers.ts';
+export {
+  CONNECTORS, CONNECTOR_CATEGORIES, getConnector, resolveConnectorState,
+  type ConnectorDef, type ConnectorField, type ConnectorCategory,
+  type ConnectorState, type ConnectorHealth, type ResolveStateInput,
+} from './connectors.ts';
 export type { EntityStatus };
 
 export interface ToolResult {

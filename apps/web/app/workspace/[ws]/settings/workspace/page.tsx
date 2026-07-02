@@ -80,8 +80,6 @@ export default function SettingsWorkspacePage() {
   const [wRecency, setWRecency] = useState(0.10);
   const [wGraph, setWGraph] = useState(0.10);
   const [rrfGate, setRrfGate] = useState(0.30);
-  const [contactProvider, setContactProvider] = useState<'none' | 'hunter'>('none');
-  const [hunterCap, setHunterCap] = useState<number>(0);
   const [budget, setBudget] = useState(0);
 
   const [hireIncludeFamilies, setHireIncludeFamilies] = useState<string[]>([]);
@@ -122,9 +120,6 @@ export default function SettingsWorkspacePage() {
     setBannedPhrases(((out.banned_phrases ?? []) as string[]));
     const dr = (policy.drafter ?? {}) as Record<string, any>;
     setOutreachChannel((dr.outreach_channel === 'linkedin' ? 'linkedin' : 'email'));
-    const enr = (policy.enrichment ?? {}) as Record<string, any>;
-    setContactProvider(((enr.contact_provider as 'none' | 'hunter') ?? 'none'));
-    setHunterCap(typeof enr.hunter_monthly_cap === 'number' ? enr.hunter_monthly_cap : 0);
     const rt = (policy.routing ?? {}) as Record<string, any>;
     setDraftIcp(num(rt.draft_icp_total, 0.65));
     setDraftSignal(num(rt.draft_signal_strength, 0.7));
@@ -176,10 +171,10 @@ export default function SettingsWorkspacePage() {
         ...(base.drafter ?? {}),
         outreach_channel: outreachChannel,
       },
+      // Contact provider + Hunter cap now live on the Connectors page. Preserve
+      // whatever's saved here so a Workspace save never clobbers it.
       enrichment: {
         ...(base.enrichment ?? {}),
-        contact_provider: contactProvider,
-        hunter_monthly_cap: hunterCap > 0 ? hunterCap : undefined,
       },
       routing: {
         ...(base.routing ?? {}),
@@ -223,7 +218,6 @@ export default function SettingsWorkspacePage() {
   }, [
     ws,
     outreachChannel, overrideTo, fromEmail, bannedPhrases,
-    contactProvider, hunterCap,
     draftIcp, draftSignal, draftEvidence, draftSuppress,
     researchIcp, researchEvidenceMax, researchCooldown,
     dropIcp, dropEvidenceMin, dropSuppress, watchIcp,
@@ -486,16 +480,10 @@ export default function SettingsWorkspacePage() {
           <HelpRow label="Graph proximity" help="How much closeness to existing customers counts."><NumInput value={wGraph} onChange={setWGraph} step={0.05} /></HelpRow>
           <HelpRow label="Minimum ICP-match strength to count as evidence" help="Facts below this cosine similarity to your ICP description are ignored for scoring."><NumInput value={rrfGate} onChange={setRrfGate} step={0.05} /></HelpRow>
 
-          <div style={{ marginTop: '.75rem', fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Enrichment</div>
-          <HelpRow label="Contact provider" help="Where to look up email addresses. 'none' disables contact lookups entirely.">
-            <select value={contactProvider} onChange={(e) => setContactProvider(e.target.value as 'none' | 'hunter')} style={textInput}>
-              <option value="none">none</option>
-              <option value="hunter">Hunter.io</option>
-            </select>
-          </HelpRow>
-          <HelpRow label="Hunter monthly cap" help="Hard cap on Hunter lookups per calendar month. 0 means no cap.">
-            <NumInput value={hunterCap} onChange={setHunterCap} step={1} />
-          </HelpRow>
+          <div style={{ marginTop: '.75rem', fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Budget</div>
+          <div style={{ fontSize: '.72rem', color: 'var(--text-3)' }}>
+            Contact sources (Hunter, Explorium) and their monthly caps now live on the <strong>Connectors</strong> page.
+          </div>
           <HelpRow label="Daily budget (cents)" help="Token-spend ceiling per day for this workspace.">
             <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value, 10) || 0)} style={{ ...textInput, width: 140 }} />
           </HelpRow>

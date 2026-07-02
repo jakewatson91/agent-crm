@@ -1,16 +1,8 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { useParams } from 'next/navigation';
-import { ConnectedServices } from '../_components/ConnectedServices';
-
-export default function SettingsIntegrationsPage() {
-  const params = useParams<{ ws: string }>();
-  return (
-    <div>
-      <h2 style={{ marginTop: 0 }}>Integrations</h2>
-      <div style={{ marginTop: '1rem' }}>
-        <ConnectedServices workspace_id={params.ws} />
-      </div>
-    </div>
-  );
+// Integrations folded into the unified Connectors hub. Keep the route as a
+// redirect so old links (and the OAuth callback's return path) still land.
+export default async function IntegrationsRedirect({ params }: { params: Promise<{ ws: string }> }) {
+  const { ws } = await params;
+  redirect(`/workspace/${ws}/settings/connectors`);
 }

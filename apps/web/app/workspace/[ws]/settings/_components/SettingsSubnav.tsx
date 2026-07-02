@@ -4,11 +4,11 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const SECTIONS: Array<{ slug: string; label: string; hint: string }> = [
+  { slug: 'connectors',   label: 'Connectors',   hint: 'Models, contacts, email, apps' },
   { slug: 'workspace',    label: 'Workspace',    hint: 'About, writing, thresholds' },
   { slug: 'members',      label: 'Members',      hint: 'Invites and roles' },
   { slug: 'api-keys',     label: 'API keys',     hint: 'Tokens for external agents' },
   { slug: 'import',       label: 'Import',       hint: 'Bring data in from a CSV' },
-  { slug: 'integrations', label: 'Integrations', hint: 'Connected services' },
   { slug: 'developer',    label: 'Developer',    hint: 'Env vars, raw policy' },
 ];
 
