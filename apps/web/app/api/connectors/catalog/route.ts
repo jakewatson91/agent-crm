@@ -93,6 +93,7 @@ export async function GET(req: Request) {
     contact: {
       primary: enrichment.contact_provider ?? 'none',
       fallback: enrichment.contact_provider_fallback ?? 'none',
+      daily_cap: (enrichment.max_contact_pulls_per_run as number | undefined) ?? 8,
     },
     // Which model id runs each job. Stored as env vars (read first by the loop);
     // fall back to the legacy policy.llm.* fields for display.

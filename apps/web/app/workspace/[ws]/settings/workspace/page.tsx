@@ -82,7 +82,6 @@ export default function SettingsWorkspacePage() {
   const [rrfGate, setRrfGate] = useState(0.30);
   const [budget, setBudget] = useState(0);
   const [searchesPerRun, setSearchesPerRun] = useState(30);
-  const [contactPullsPerRun, setContactPullsPerRun] = useState(8);
   const [draftsPerRun, setDraftsPerRun] = useState(12);
 
   const [hireIncludeFamilies, setHireIncludeFamilies] = useState<string[]>([]);
@@ -150,7 +149,6 @@ export default function SettingsWorkspacePage() {
     setHireExcludeFamilies(Array.isArray(hf.exclude_families) ? hf.exclude_families : []);
     setHireAlwaysExec(Boolean(hf.always_include_exec));
     const enr = (policy.enrichment ?? {}) as Record<string, any>;
-    setContactPullsPerRun(num(enr.max_contact_pulls_per_run, 8));
     setDraftsPerRun(num(enr.max_drafts_per_run, 12));
     const rs = (policy.research ?? {}) as Record<string, any>;
     setSearchesPerRun(num(rs.searches_per_run, 30));
@@ -178,11 +176,11 @@ export default function SettingsWorkspacePage() {
         ...(base.drafter ?? {}),
         outreach_channel: outreachChannel,
       },
-      // Contact provider + Hunter cap now live on the Connectors page. Preserve
-      // whatever's saved here so a Workspace save never clobbers it.
+      // Contact provider, its caps, and the daily contact-pull budget now all
+      // live on the Connectors page. Preserve whatever's saved there so a
+      // Workspace save never clobbers it.
       enrichment: {
         ...(base.enrichment ?? {}),
-        max_contact_pulls_per_run: contactPullsPerRun,
         max_drafts_per_run: draftsPerRun,
       },
       routing: {
@@ -228,7 +226,7 @@ export default function SettingsWorkspacePage() {
   }, [
     ws,
     outreachChannel, overrideTo, fromEmail, bannedPhrases,
-    searchesPerRun, contactPullsPerRun, draftsPerRun,
+    searchesPerRun, draftsPerRun,
     draftIcp, draftSignal, draftEvidence, draftSuppress,
     researchIcp, researchEvidenceMax, researchCooldown,
     dropIcp, dropEvidenceMin, dropSuppress, watchIcp,
@@ -497,13 +495,10 @@ export default function SettingsWorkspacePage() {
 
           <div style={{ marginTop: '.75rem', fontSize: '.78rem', fontWeight: 500, color: 'var(--text-2)' }}>Budget</div>
           <div style={{ fontSize: '.72rem', color: 'var(--text-3)' }}>
-            Contact sources (Hunter, Explorium) and their monthly caps now live on the <strong>Connectors</strong> page.
+            Contact sources (Hunter, Explorium), their monthly caps, and the daily lookup budget now all live on the <strong>Connectors</strong> page.
           </div>
           <HelpRow label="Daily budget (cents)" help="Token-spend ceiling per day for this workspace.">
             <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value, 10) || 0)} style={{ ...textInput, width: 140 }} />
-          </HelpRow>
-          <HelpRow label="Contact lookups per daily run" help="How many accounts the daily pass may spend a contact-provider lookup on. Bounds Hunter/Explorium credit burn. 0 disables lookups.">
-            <NumInput value={contactPullsPerRun} onChange={setContactPullsPerRun} step={1} />
           </HelpRow>
           <HelpRow label="New drafts per daily run" help="Max outreach drafts the daily pass creates. Bounds both your approval queue and drafter LLM spend.">
             <NumInput value={draftsPerRun} onChange={setDraftsPerRun} step={1} />

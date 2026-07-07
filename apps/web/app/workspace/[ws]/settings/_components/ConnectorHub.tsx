@@ -23,6 +23,7 @@ interface Catalog {
   categories: Category[];
   connectors: ConnectorEntry[];
   models: { default_chat_model: string; drafter_model: string };
+  contact: { primary: string; fallback: string; daily_cap: number };
 }
 
 export function ConnectorHub({ workspace_id }: { workspace_id: string }) {
@@ -74,6 +75,9 @@ export function ConnectorHub({ workspace_id }: { workspace_id: string }) {
             </div>
             {category.id === 'model' && (
               <DefaultModels workspace_id={workspace_id} models={cat.models} connectors={modelConnectors} onSaved={load} />
+            )}
+            {category.id === 'contact' && (
+              <ContactBudget workspace_id={workspace_id} dailyCap={cat.contact.daily_cap} onSaved={load} />
             )}
           </section>
         );
@@ -156,6 +160,55 @@ function DefaultModels({
       <div style={{ marginTop: '.85rem', display: 'flex', alignItems: 'center', gap: '.6rem' }}>
         <button onClick={save} disabled={saving} style={{ padding: '.45rem 1rem', background: 'var(--accent-green)', color: '#fff', border: 'none', borderRadius: 7, cursor: 'pointer', opacity: saving ? 0.5 : 1 }}>
           {saving ? 'saving…' : 'Save models'}
+        </button>
+        {msg && <span style={{ fontSize: '.78rem', color: msg === 'saved' ? '#5a7e5f' : '#a14d44' }}>{msg === 'saved' ? '✓ saved' : msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** Daily cap on Hunter/Explorium lookups the advance pass may spend — shared across whichever provider is active, so it lives here rather than on one connector's card. */
+function ContactBudget({
+  workspace_id, dailyCap, onSaved,
+}: {
+  workspace_id: string;
+  dailyCap: number;
+  onSaved: () => void;
+}) {
+  const [cap, setCap] = useState(dailyCap);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true); setMsg(null);
+    try {
+      const r = await fetch('/api/connectors/contact-budget', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id, max_contact_pulls_per_run: cap }),
+      });
+      const j = await r.json();
+      setMsg(r.ok ? 'saved' : (j.error ?? 'save failed'));
+      if (r.ok) onSaved();
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ marginTop: '1rem', padding: '.9rem 1rem', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)' }}>
+      <div style={{ fontSize: '.85rem', fontWeight: 600 }}>Daily contact budget</div>
+      <div style={{ fontSize: '.74rem', color: 'var(--text-3)', margin: '.15rem 0 .75rem' }}>
+        How many accounts the daily pass may spend a contact-provider lookup on, whichever source above is active. 0 disables lookups. Separate from each provider's own monthly cap.
+      </div>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: '.2rem', maxWidth: 160 }}>
+        <span style={{ fontSize: '.78rem', fontWeight: 500 }}>Lookups per daily run</span>
+        <input
+          type="number" min={0} value={cap}
+          onChange={(e) => setCap(parseInt(e.target.value, 10) || 0)}
+          style={modelInput}
+        />
+      </label>
+      <div style={{ marginTop: '.85rem', display: 'flex', alignItems: 'center', gap: '.6rem' }}>
+        <button onClick={save} disabled={saving} style={{ padding: '.45rem 1rem', background: 'var(--accent-green)', color: '#fff', border: 'none', borderRadius: 7, cursor: 'pointer', opacity: saving ? 0.5 : 1 }}>
+          {saving ? 'saving…' : 'Save'}
         </button>
         {msg && <span style={{ fontSize: '.78rem', color: msg === 'saved' ? '#5a7e5f' : '#a14d44' }}>{msg === 'saved' ? '✓ saved' : msg}</span>}
       </div>
