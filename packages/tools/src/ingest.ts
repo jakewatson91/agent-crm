@@ -93,11 +93,23 @@ export function getPath(obj: unknown, path: string | undefined): unknown {
   return cur;
 }
 
+// A social-platform or profile-link URL (e.g. a contact's own LinkedIn page)
+// is never a company's own domain. A source row that puts one of these in the
+// "website" field is a data-entry mistake, not a real identity — treating it
+// as one collapses every row that has it into a single fake account. Confirmed
+// live on a real import: ~100 unrelated companies merged into one account
+// because their Website column held a personal linkedin.com/in/... URL.
+const NON_COMPANY_HOSTS = new Set([
+  'linkedin.com', 'facebook.com', 'twitter.com', 'x.com', 'instagram.com',
+]);
+
 export function normalizeDomain(url: string | undefined | null): string | null {
   if (!url) return null;
   try {
     const u = new URL(url.startsWith('http') ? url : `https://${url}`);
-    return u.hostname.replace(/^www\./, '').toLowerCase();
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    if (NON_COMPANY_HOSTS.has(host)) return null;
+    return host;
   } catch {
     return null;
   }
@@ -162,12 +174,17 @@ export async function ingestRows(
     if (id) seenIds.add(id);
   }
 
-  // ── Preload account entities for resolve-or-create (one round trip).
+  // ── Preload account entities for resolve-or-create (one round trip per chunk).
+  // PostgREST caps a response at 1000 rows and a long `.in()` id list can also
+  // blow the URL length limit, so page acctIds through in batches of 200 —
+  // same chunk size entity_research_dispatcher.ts uses for the same reason.
   const entitiesByDomain = new Map<string, string>();
   const entitiesByName = new Map<string, string>();
   const acctIds = await entityIdsOfType(supabase, workspace_id, 'account');
-  if (acctIds.length) {
-    const ents = await supabase.from('entities').select('id, name, attributes').in('id', acctIds);
+  const ACCT_CHUNK = 200;
+  for (let i = 0; i < acctIds.length; i += ACCT_CHUNK) {
+    const chunk = acctIds.slice(i, i + ACCT_CHUNK);
+    const ents = await supabase.from('entities').select('id, name, attributes').in('id', chunk);
     for (const e of ents.data ?? []) {
       const d = (e.attributes as { domain?: string } | null)?.domain;
       if (d) entitiesByDomain.set(d.toLowerCase(), e.id as string);
