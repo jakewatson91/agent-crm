@@ -5,7 +5,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { scoreAndAssert } from '@agent-crm/tools';
+import { scoreAndAssert, entityIdsOfType } from '@agent-crm/tools';
 
 async function main() {
   const sb = createClient(
@@ -26,14 +26,16 @@ async function main() {
   console.log(`workspace: ${wsName}`);
 
   // Only accounts are scoreable (icp_fit is account-level; the scorer gate
-  // returns null for other kinds). Restrict here so we don't burn loop cycles —
-  // and on free-tier LLMs, rate-limit budget — attempting contacts/products.
-  const accts = await sb.from('entities').select('id')
-    .eq('workspace_id', WS).eq('kind', 'account').is('archived_at', null);
-  const acctIds = new Set(((accts.data ?? []) as Array<{ id: string }>).map((r) => r.id));
-  const facts = await sb.from('facts').select('subject_entity').eq('workspace_id', WS).is('supersedes', null);
-  const entityIds = [...new Set(((facts.data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity))]
-    .filter((id) => acctIds.has(id));
+  // returns null for other kinds). entities.kind was dropped in migration
+  // 0032 — account-ness now lives only in the (is_a, account) fact, which is
+  // what entityIdsOfType reads (paginated, so it's correct past 1000 rows).
+  const acctIds = await entityIdsOfType(sb, WS, 'account');
+  const entityIds: string[] = [];
+  for (let i = 0; i < acctIds.length; i += 200) {
+    const chunk = acctIds.slice(i, i + 200);
+    const r = await sb.from('entities').select('id').in('id', chunk).is('archived_at', null);
+    for (const row of (r.data ?? []) as Array<{ id: string }>) entityIds.push(row.id);
+  }
 
   // Throttle between calls so a burst doesn't trip free-tier per-minute limits.
   // Override with THROTTLE_MS=0 for a paid model with no rate concerns.
