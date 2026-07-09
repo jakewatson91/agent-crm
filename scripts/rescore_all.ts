@@ -13,12 +13,17 @@ async function main() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false } },
   );
-  const ws = await sb.from('workspaces').select('id, name')
-    .like('name', 'demo · agent-crm%').order('created_at', { ascending: false }).limit(1).single();
-  if (!ws.data) throw new Error('no workspace');
-  const WS = ws.data.id as string;
+  let WS = process.env.WORKSPACE_ID;
+  let wsName = WS;
+  if (!WS) {
+    const ws = await sb.from('workspaces').select('id, name')
+      .like('name', 'demo · agent-crm%').order('created_at', { ascending: false }).limit(1).single();
+    if (!ws.data) throw new Error('no workspace');
+    WS = ws.data.id as string;
+    wsName = ws.data.name;
+  }
   const actor = { workspace_id: WS, actor_kind: 'system' as const, actor_id: 'rescore_all_script' };
-  console.log(`workspace: ${ws.data.name}`);
+  console.log(`workspace: ${wsName}`);
 
   // Only accounts are scoreable (icp_fit is account-level; the scorer gate
   // returns null for other kinds). Restrict here so we don't burn loop cycles —
@@ -31,8 +36,8 @@ async function main() {
     .filter((id) => acctIds.has(id));
 
   // Throttle between calls so a burst doesn't trip free-tier per-minute limits.
-  // Override with THROTTLE_MS=0 when on a paid model.
-  const THROTTLE_MS = process.env.THROTTLE_MS ? Number(process.env.THROTTLE_MS) : 3500;
+  // Override with THROTTLE_MS=0 for a paid model with no rate concerns.
+  const THROTTLE_MS = process.env.THROTTLE_MS ? Number(process.env.THROTTLE_MS) : 500;
   console.log(`scoring ${entityIds.length} accounts (throttle ${THROTTLE_MS}ms)…`);
 
   let done = 0, scored = 0;

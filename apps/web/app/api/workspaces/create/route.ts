@@ -126,6 +126,30 @@ export async function POST(req: Request) {
         }
         emit({ step: 'drafter_created' });
 
+        // Universal enricher subscription — same gap as the drafter one above,
+        // one level earlier in the chain: without an enricher, no signal ever
+        // calls scoreAndAssert, so no account ever gets a score_total fact, so
+        // advanceAccounts has nothing to select (scanned:0 forever). CSV import
+        // and webhook ingestion assert facts directly but never score; this is
+        // what turns "facts exist" into "the account is scored and selectable."
+        // Catchall structured_filter matches every signal (CSV import, research
+        // dispatcher output, future connector signals) — same generic, vertical-
+        // neutral shape as the drafter subscription above.
+        emit({ step: 'enricher' });
+        const enricherSub = await callTool(supabase, wsActor, 'create_subscription', {
+          owner_kind: 'agent',
+          owner_id: 'default_enricher',
+          name: 'default_enricher',
+          semantic_query: 'new information about a prospective account worth recording as facts — news, product changes, funding, hiring, technology, or anything relevant to fit',
+          structured_filter: {},
+          threshold: 0.30,
+          action_on_match: 'agent.run',
+        });
+        if (enricherSub.ok) {
+          await supabase.from('subscriptions').update({ agent_behavior: 'enricher' }).eq('id', enricherSub.target_id);
+        }
+        emit({ step: 'enricher_created' });
+
         // Optional starter source.
         let source_id: string | null = null;
         if (body.starter_source?.connector_type && body.starter_source?.name) {

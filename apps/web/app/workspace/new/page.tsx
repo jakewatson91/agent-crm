@@ -33,12 +33,14 @@ const STEP_LABEL: Record<string, string> = {
   deriving: 'Reading your description, deriving ICP, tone, and writing rules',
   workspace: 'Creating the workspace',
   drafter: 'Setting up your outbound drafter',
+  enricher: 'Setting up automatic enrichment and scoring',
   source: 'Setting up your data source',
 };
 const STEP_DONE_BY: Record<string, string> = {
   deriving: 'derived',
   workspace: 'workspace_created',
   drafter: 'drafter_created',
+  enricher: 'enricher_created',
 };
 
 interface ProgressStep { key: string; label: string; done: boolean }
