@@ -1662,3 +1662,23 @@ Goal: Sudden running on the cloud schedule with no laptop, demoable this week. F
 ### Session ops
 - events table column is `action` (not `type`) — a diag script queried the wrong column and briefly looked like "no events at all."
 - Diag scripts kept: `_backfill_sudden_domains.ts`, `_verify_rescore_fix.ts`; the other `_chk_*`/`_repro_*` from this session are deletable.
+
+## 2026-07-14 — Exa topped up; research→enricher link found broken + fixed; ATS re-activated; Sudden send routing set
+
+Continuation of the 07-13 session after Jake topped up Exa and said "run the process as normal, send to my email."
+
+### Shipped
+- **Sudden `outreach.override_to` = agentcrm91@gmail.com** (Jake corrected from jakeawatson91 mid-session). Test sender stays; approving any pending draft now delivers there. No Resend domain needed for the demo.
+- **Deploy verified live** (rescore tick returned the new `{candidates, rescored, noop}` shape). The research credit-wall fail-loud then proved itself in production by accident: the first manual research kick hit a not-yet-propagated 402, paused scope='research', and the sibling runs refused with the plain reason. Cleared, re-kicked, clean.
+- **Manual research on top 3 domained accounts** (research.requested, tier hot): CBC/Radio-Canada 14 results, Videotron/Quebecor 9, ClipFix 5 → 28 research_result signals.
+- **Found the research→facts link broken (0 enrichment from 28 signals), fixed both halves** (commit after 2c91047, pushed): (1) only 3/28 signals cleared default_enricher's similarity threshold; (2) the burst coalescer skipped the matched ones because unmatched sibling signals merely existed in the 60-min window. Now: coalesce requires a prior signal to have an actual `agent_dispatch_result` before skipping, and researchRunner dispatches the enricher directly on the first created signal per batch — explicitly-requested research skips the similarity lottery.
+- **Enrichment verified with real facts**: CBC/Radio-Canada +6 (platform_ownership=Yes, content_library_hours=4000+, subscription_tiers, partner=Wattpad/Telefilm/NFB — matches the workspace's configured example_facts); ClipFix + Videotron correctly refused (0 new facts); scores refreshed through the chain (CBC 0.75→0.72 with signal honesty-downgrade; Videotron untouched — skip-when-stale guard works).
+- **ATS re-activated for Sudden** + manual `source.run` kicked (was correctly inactive since 07-10 when zero accounts had domains; 34 do now). Daily 13:00 UTC cron resumes ownership.
+- **Advance kicked manually**: scanned 400, 0 new drafts — correct (the 3 gate-clearing accounts have open drafts; dogfood skipped on its manual pause; drafter chose watch_only on weak triggers pre-research-facts).
+
+### Corrections / gotchas (in-session honesty log)
+- "Enricher landed 23 facts" was briefly reported off a watcher grep that matched the dotenv banner ("injected env (23)"), not the fact count. Real count at that moment: 0 — which led to finding the broken link above. Anchor greps; never count from decorated CLI output.
+- gates table has `decided_at` but NO `created_at`/`decision` columns — a bad column in a select silently returns empty rows alongside a valid head-count (briefly looked like the 3 approvals vanished).
+
+### Watch
+- See project_state "read first" 2026-07-14 block: first unattended cycle (04:00 research → facts → 14:30 drafts), ATS run outcome, dogfood noop-backlog drain, approve→send first data point for Sudden.
