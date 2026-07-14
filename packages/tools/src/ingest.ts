@@ -109,6 +109,12 @@ export function normalizeDomain(url: string | undefined | null): string | null {
     const u = new URL(url.startsWith('http') ? url : `https://${url}`);
     const host = u.hostname.replace(/^www\./, '').toLowerCase();
     if (NON_COMPANY_HOSTS.has(host)) return null;
+    // A registrable domain has at least one dot. Bare words ("education",
+    // "media") parse as valid URL hostnames but are CSV column noise, and
+    // downstream identity checks (ATS board verification) can't tell a common
+    // word appearing on a job page apart from a real domain match. Confirmed
+    // live: a sector string in a domain column produced false hiring signals.
+    if (!host.includes('.')) return null;
     return host;
   } catch {
     return null;

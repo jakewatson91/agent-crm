@@ -1,5 +1,5 @@
 import { createServerClient } from '@agent-crm/db';
-import { cronToMinIntervalMinutes } from '@agent-crm/tools';
+import { cronToMinIntervalMinutes, getPipelineStatus } from '@agent-crm/tools';
 import { inngest } from '../../client.js';
 import { getConnector } from './registry.js';
 
@@ -24,7 +24,21 @@ export const sourceDispatcher = inngest.createFunction(
       const now = Date.now();
       const out: Array<{ id: string; workspace_id: string }> = [];
       let skipped = 0;
-      for (const s of (data ?? []) as Array<{ id: string; workspace_id: string; connector_type: string; last_run_at: string | null }>) {
+
+      // A workspace paused with scope 'all' means "spend nothing": sources
+      // feed signals that fan out to enrichers (LLM tokens) and can hit
+      // metered connector APIs themselves. Narrower scopes (research,
+      // contacts) don't block ingestion. A manual `source.run` event still
+      // bypasses this — an explicit operator kick is deliberate.
+      const rows = (data ?? []) as Array<{ id: string; workspace_id: string; connector_type: string; last_run_at: string | null }>;
+      const pausedAll = new Set<string>();
+      for (const wsId of new Set(rows.map((r) => r.workspace_id))) {
+        const status = await getPipelineStatus(supabase, wsId);
+        if (status?.state === 'paused' && (status.scope ?? 'all') === 'all') pausedAll.add(wsId);
+      }
+
+      for (const s of rows) {
+        if (pausedAll.has(s.workspace_id)) { skipped++; continue; }
         const conn = getConnector(s.connector_type);
         if (!conn) continue;
         const intervalMin = cronToMinIntervalMinutes(conn.meta.schedule_cron);
