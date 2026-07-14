@@ -277,14 +277,22 @@ export async function runAgent(
   // posts emits N distinct hiring_post signals (distinct bodies, so the dedup
   // above doesn't catch them); each would otherwise fire a full 13.5k-token LLM
   // enrich. When an earlier signal of the SAME type for this entity landed within
-  // the coalesce window, the first run already captured the trend — skip the LLM
-  // and record the skip as an events row (feed stays clean). Keyed on (entity,
-  // signal type), so different signal types and different entities always run.
+  // the coalesce window AND actually produced an enricher run, that run already
+  // captured the trend — skip the LLM and record the skip as an events row.
+  //
+  // The "actually produced a run" half is load-bearing: a research pull creates
+  // ~10 same-type signals in one minute, most of which never clear a
+  // subscription's similarity threshold. The one that DID match used to get
+  // skipped here because an unmatched sibling merely EXISTED in the window —
+  // 28 research signals, 0 enrichment runs, silently. Skipping is only valid
+  // when some prior signal in the window was dispatched to an enricher.
+  // Keyed on (entity, signal type), so different signal types and different
+  // entities always run.
   // Config: policy.enrichment.coalesce_window_min (default 60, 0 disables).
   const coalesceMin = policy.enrichment?.coalesce_window_min ?? 60;
   if (behavior === 'enricher' && coalesceMin > 0 && sigData?.type && payload.signal_id && sigData.observed_at) {
     const windowStart = new Date(Date.parse(sigData.observed_at) - coalesceMin * 60_000).toISOString();
-    const prior = await supabase.from('signals')
+    const priors = await supabase.from('signals')
       .select('id')
       .eq('entity_id', ent.data.id)
       .eq('type', sigData.type)
@@ -292,8 +300,22 @@ export async function runAgent(
       .lt('observed_at', sigData.observed_at)
       .gte('observed_at', windowStart)
       .order('observed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(50);
+    const priorIds = ((priors.data ?? []) as Array<{ id: string }>).map((p) => p.id);
+    let prior: { data: { id: string } | null } = { data: null };
+    if (priorIds.length) {
+      const ran = await supabase.from('events')
+        .select('id, payload')
+        .eq('workspace_id', payload.workspace_id)
+        .eq('action', 'agent_dispatch_result')
+        .in('payload->>signal_id', priorIds)
+        .limit(1)
+        .maybeSingle();
+      if (ran.data) {
+        const ranSignal = (ran.data.payload as { signal_id?: string } | null)?.signal_id;
+        prior = { data: { id: ranSignal ?? priorIds[0]! } };
+      }
+    }
     if (prior.data?.id) {
       await supabase.from('events').insert({
         workspace_id: payload.workspace_id,

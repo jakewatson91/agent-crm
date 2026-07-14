@@ -244,6 +244,7 @@ export async function runEntityResearch(
 
       // --- Create phase: only accepted results become signals. ---
       let created = 0;
+      let firstSignalId: string | null = null;
       const perAngle: Record<string, number> = {};
       for (const c of candidates) {
         if (!acceptedIds.has(c.er.id)) continue;
@@ -264,9 +265,43 @@ export async function runEntityResearch(
               triggered_by: reason,
             },
           });
-          if (sig.ok) { created++; perAngle[c.angleId] = (perAngle[c.angleId] ?? 0) + 1; }
+          if (sig.ok) {
+            created++;
+            perAngle[c.angleId] = (perAngle[c.angleId] ?? 0) + 1;
+            if (!firstSignalId && sig.target_id) firstSignalId = sig.target_id;
+          }
         } catch {
           // partial failure is acceptable for a research pull
+        }
+      }
+
+      // The dispatcher already decided this entity deserves research, so the
+      // results must reach the enricher — they must not sit in a similarity
+      // lottery against the subscription embedding (measured: 25 of 28 research
+      // signals fell below the threshold and the batch produced zero facts).
+      // Dispatch the enricher directly on the first created signal; the burst
+      // coalescer turns the rest of the batch into cheap skips.
+      if (created > 0 && firstSignalId) {
+        const enricherSub = (await supabase
+          .from('subscriptions')
+          .select('id, owner_id')
+          .eq('workspace_id', workspace_id)
+          .eq('agent_behavior', 'enricher')
+          .eq('active', true)
+          .order('created_at', { ascending: true })
+          .limit(1)
+          .maybeSingle()).data as { id: string; owner_id: string } | null;
+        if (enricherSub) {
+          await inngest.send({
+            name: 'agent.run',
+            data: {
+              workspace_id,
+              agent: enricherSub.owner_id,
+              trigger_event: 'manual',
+              subscription_id: enricherSub.id,
+              signal_id: firstSignalId,
+            },
+          });
         }
       }
 
