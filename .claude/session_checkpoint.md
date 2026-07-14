@@ -37,8 +37,14 @@
   - `sweep.ts`: new checks — `pipeline_paused` (RED if provider-tripped, YELLOW if manual — dogfood's intentional pause reads yellow now) + `research_yield` (RED when ≥5 runs/48h, 0 results, ≥half errored; surfaces first error text). VERIFIED live: Sudden shows research_yield RED with the Exa 402; dogfood shows yellow manual pause.
   - /api/pipeline/continue already clears any scope — no change needed.
 - [x] **Task 4 — scorable_types at creation (DONE, needs commit):** `apps/web/app/api/workspaces/create/route.ts` policy now includes scorable_types: ['account','contact'].
-- [ ] **Commit + push** (push = Render deploy; auto-mode may block push → then it's a Jake step). NOTE: one commit bundles this session's fixes + the leftover uncommitted 07-10 work (CsvImportPanel column-mapping helper, suggest_mapping.ts + API route, rescore_all.ts concurrency) — they share packages/tools/src/index.ts and can't be split into building commits.
-- [ ] **Task 5 — Jake-only list (report at end):** (a) top up Exa at dashboard.exa.ai — THE unlock for new drafts this week; consider setting Sudden policy.research.searches_per_run (default 30/4h-tick = 180 searches/day ≈ $0.90/day at $5/1k) if spend is a concern; (b) verified Resend domain + outreach.from_email for real approve→send delivery (currently onboarding@resend.dev, override_to null); (c) `git push origin main` if I couldn't.
+- [x] **Commit + push DONE:** commit `2c91047` pushed to origin/main (also carried previously-unpushed 945e8a3 + 9264026) → Render auto-deploys. `pnpm --filter web build` validated locally, exit 0. Memory files updated (project_scoring_config_state_rescore.md new; project_automation_dies_on_render.md updated; MEMORY.md index refreshed).
+- [ ] **Task 5 — Jake-only list (the only remaining items):** (a) top up Exa at dashboard.exa.ai — THE unlock for new drafts this week (default budget 30 searches/4h-tick ≈ 180/day ≈ ~$0.90/day; tune via Sudden policy.research.searches_per_run); after top-up, click Continue on the Sudden banner if the research pause has tripped by then; (b) verified Resend domain + outreach.from_email for real approve→send delivery (currently onboarding@resend.dev, override_to null); (c) nothing else — push is done, schedule is cloud-only, no laptop needed.
+
+## Expected behavior after Render deploy (watch, don't fix)
+- First research tick post-deploy: one more burst of Exa 402s → Sudden pipeline pauses scope='research' with the plain banner + Continue. Dispatcher then skips it (no more error spam).
+- After Jake tops up Exa + clicks Continue: research resumes; the 34 newly-domained accounts unlock own-site angles; new facts → enricher chain rescores → scores spread past the 0.65 draft gate → advance pass (14:30 UTC) starts producing drafts.
+- Rescore cron output shape is now {candidates, rescored, noop}; dogfood will chew through ~1850 never-scored candidate-flagged entities as no-LLM noops over ~2 days, then go quiet. Not a problem.
+- Sweep at session start: Sudden shows research_yield RED (or pipeline_paused RED) until Exa is topped up — that's the system working.
 
 ## Env notes
 - Local dev has all keys in .env.local; Inngest API reachable with INNGEST_SIGNING_KEY (query `https://api.inngest.com/v1/events?name=inngest/function.finished&received_after=...` for cron run results).
