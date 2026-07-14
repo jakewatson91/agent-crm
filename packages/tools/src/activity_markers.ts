@@ -23,6 +23,12 @@ export const ACTIVITY_MARKERS = {
   RESEARCH_ERROR: 'research_error',
   CONTACTS_REQUESTED: 'contacts_requested',
   CONTACTS_COMPLETED: 'contacts_completed',
+  // The rescore cron attempted this entity and scoreAndAssert returned null
+  // (candidate-flagged, dropped, or nothing changed). Since a null writes no
+  // fact, the entity would otherwise look stale forever and hog the cron's
+  // per-tick budget — the scan skips entities whose marker postdates the last
+  // scoring-config change.
+  RESCORE_NOOP: 'rescore_noop',
 } as const;
 
 export type ActivityMarker = (typeof ACTIVITY_MARKERS)[keyof typeof ACTIVITY_MARKERS];

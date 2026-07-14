@@ -30,12 +30,13 @@ export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type 
 export { runRetention, type RetentionResult } from './retention.ts';
 export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
 export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, TIER_ANGLE_COUNT, DEFAULT_QUALIFICATION, resolveQualification } from './policy.ts';
-export { getPipelineStatus, setPipelineStatus } from './policy.ts';
+export { getPipelineStatus, setPipelineStatus, ensureScoringConfigState } from './policy.ts';
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy, ResearchPolicy, ResearchAngle, QualificationPolicy, PipelineStatus } from './policy.ts';
 export { cronToMinIntervalMinutes } from './cron.ts';
 export { compress, estimateTokens, type CompressOptions, type CompressResult, type UrlRef } from './compress.ts';
 export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, resolveChatModel, type ChatForWorkspaceArgs } from './chat_workspace.ts';
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
+export { suggestColumnMapping, type SuggestedMapping, type SuggestedFact } from './suggest_mapping.ts';
 export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts } from './prompt_builders.ts';
 export { diffDraftBody, type ParagraphDiff } from './diff_draft.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
@@ -54,6 +55,8 @@ export { setOutreachStage, DEFAULT_STAGE_FACT_NAME } from './lifecycle.ts';
 export type { LifecyclePolicy, OutreachTransition } from './policy.ts';
 export { factFamilyOf, type FactGroup, type DisplayPolicy } from './fact_groups.ts';
 export { ACTIVITY_MARKERS, recordActivityMarker, latestMarkerAt, latestMarkerByEntity, type ActivityMarker } from './activity_markers.ts';
+export { fetchAll } from './paginate.ts';
+export { backfillAccountDomainsFromContactEmails, domainFromEmail, type DomainBackfillResult } from './domains.ts';
 export {
   CONNECTORS, CONNECTOR_CATEGORIES, getConnector, resolveConnectorState,
   type ConnectorDef, type ConnectorField, type ConnectorCategory,

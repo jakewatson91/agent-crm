@@ -1,5 +1,9 @@
 import { createServerClient } from '@agent-crm/db';
-import { scoreAndAssert, callTool, entityIdsOfType, runRetention } from '@agent-crm/tools';
+import {
+  scoreAndAssert, callTool, entityIdsOfType, runRetention,
+  ensureScoringConfigState, fetchAll, latestMarkerByEntity,
+  recordActivityMarker, ACTIVITY_MARKERS,
+} from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
 const RECOVERY_LOOKBACK_MIN = 30;
@@ -78,13 +82,26 @@ export const recoverUnmatchedSignals = inngest.createFunction(
 const RESCORE_LIMIT_PER_RUN = 50;
 
 /**
- * rescore-on-icp-change: every 30 min, find entities whose icp_fit fact is older
- * than the workspace's last icp/about/constitution update, and re-run scoreAndAssert.
- * Caps at 50 entities/run to bound LLM cost. Uses supersede chain so unchanged scores
- * are no-ops.
+ * rescore-on-icp-change: every 30 min, find entities whose current icp_fit fact
+ * predates the workspace's last scoring-config change, and re-run scoreAndAssert.
+ * Caps at 50 entities/run to bound LLM cost.
  *
  * Why: when you tune ICP/about, every entity's score should refresh. Without this,
  * scores only update on the next enricher run for that entity (could be never).
+ *
+ * Two failure modes this scan must avoid (both shipped, both found 2026-07-12):
+ * 1. `.is('supersedes', null)` on icp_fit returns the ORIGINAL fact in a
+ *    supersede chain — its observed_at never moves, so every account ever
+ *    scored looked stale forever. Read the CURRENT fact (the one no other row
+ *    points at) instead.
+ * 2. Comparing against workspaces.updated_at — which bumps on EVERY policy
+ *    write, including the advance pass's daily pipeline-status write — made
+ *    the whole book "stale" daily. Compare against scoring_config_state
+ *    .changed_at, which only moves on real icp/about/persona/scoring edits.
+ * On top of that, entities where scoreAndAssert legitimately returns null
+ * (candidate-flagged, dropped, nothing changed) write no fact, so they'd be
+ * re-picked every tick and starve everyone else — those get a rescore_noop
+ * marker and are skipped until the config changes again.
  */
 export const rescoreOnIcpChange = inngest.createFunction(
   { id: 'rescore-on-icp-change' },
@@ -92,37 +109,34 @@ export const rescoreOnIcpChange = inngest.createFunction(
   async ({ step }) => {
     const candidates = await step.run('scan-stale-scores', async () => {
       const supabase = createServerClient();
-      const { data: workspaces } = await supabase.from('workspaces').select('id, updated_at');
-      const wsRows = (workspaces ?? []) as Array<{ id: string; updated_at: string }>;
+      const { data: workspaces } = await supabase.from('workspaces').select('id');
+      const wsRows = (workspaces ?? []) as Array<{ id: string }>;
       const out: Array<{ workspace_id: string; entity_id: string }> = [];
 
       for (const ws of wsRows) {
-        // Case A: entities whose most-recent icp_fit fact is older than the
-        // workspace update. (User re-tuned ICP — refresh all scores.)
-        const stale = await supabase.from('facts')
-          .select('subject_entity, observed_at')
-          .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
-          .is('supersedes', null)
-          .lt('observed_at', ws.updated_at)
-          .order('observed_at', { ascending: true })
-          .limit(RESCORE_LIMIT_PER_RUN);
-        for (const r of (stale.data ?? []) as Array<{ subject_entity: string }>) {
-          out.push({ workspace_id: ws.id, entity_id: r.subject_entity });
-        }
-        if (out.length >= RESCORE_LIMIT_PER_RUN) break;
+        const cfgChangedAt = await ensureScoringConfigState(supabase, ws.id);
+
+        // Case A: entities whose CURRENT icp_fit fact predates the last
+        // scoring-config change. (User re-tuned ICP — refresh all scores.)
+        const rows = await fetchAll<{ id: string; subject_entity: string; observed_at: string; supersedes: string | null }>(
+          (from, to) => supabase.from('facts')
+            .select('id, subject_entity, observed_at, supersedes')
+            .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
+            .order('id', { ascending: true })
+            .range(from, to),
+        );
+        const cfgMs = Date.parse(cfgChangedAt);
+        const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+        const stale = rows
+          .filter((r) => !pointedTo.has(r.id) && Date.parse(r.observed_at) < cfgMs)
+          .sort((a, b) => a.observed_at.localeCompare(b.observed_at));
 
         // Case B: accounts that have NEVER been scored. Pre-existing accounts
         // from before scoring shipped, or accounts whose enricher run failed
         // to call scoreAndAssert for some reason. Without this branch, an
         // account can sit unscored forever and the drafter treats it as low
-        // fit by default.
-        const scoredRes = await supabase.from('facts')
-          .select('subject_entity')
-          .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
-          .is('supersedes', null)
-          .limit(10000);
-        const scoredSet = new Set<string>(((scoredRes.data ?? []) as Array<{ subject_entity: string }>).map((f) => f.subject_entity));
-
+        // fit by default. (Ever-scored = any icp_fit row, original included.)
+        const scoredSet = new Set(rows.map((r) => r.subject_entity));
         const acctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 10000);
         const allAccts = acctIds.length === 0
           ? { data: [] as Array<{ id: string; created_at: string }> }
@@ -131,32 +145,54 @@ export const rescoreOnIcpChange = inngest.createFunction(
               .in('id', acctIds)
               .order('created_at', { ascending: true });
         const unscored = ((allAccts.data ?? []) as Array<{ id: string; created_at: string }>)
-          .filter((a) => !scoredSet.has(a.id))
-          .slice(0, RESCORE_LIMIT_PER_RUN - out.length);
-        for (const a of unscored) out.push({ workspace_id: ws.id, entity_id: a.id });
+          .filter((a) => !scoredSet.has(a.id));
+
+        // Skip entities we already attempted since the last config change and
+        // that returned null — retrying them is a guaranteed no-op until the
+        // config moves again.
+        const pool = [...stale.map((r) => r.subject_entity), ...unscored.map((a) => a.id)].slice(0, 2000);
+        if (!pool.length) continue;
+        const attempted = await latestMarkerByEntity(
+          supabase, ws.id, pool, [ACTIVITY_MARKERS.RESCORE_NOOP],
+        );
+        for (const id of pool) {
+          if (out.length >= RESCORE_LIMIT_PER_RUN) break;
+          const marker = attempted.get(id);
+          if (marker !== undefined && marker > cfgMs) continue;
+          out.push({ workspace_id: ws.id, entity_id: id });
+        }
         if (out.length >= RESCORE_LIMIT_PER_RUN) break;
       }
       return out;
     });
 
-    if (!candidates.length) return { rescored: 0 };
+    if (!candidates.length) return { candidates: 0, rescored: 0, noop: 0 };
 
-    await step.run('rescore-batch', async () => {
+    const result = await step.run('rescore-batch', async () => {
       const supabase = createServerClient();
       const actor = (workspace_id: string) => ({ workspace_id, actor_kind: 'system' as const, actor_id: 'icp_rescorer' });
       let rescored = 0;
+      let noop = 0;
       for (const c of candidates) {
         try {
-          await scoreAndAssert(supabase, actor(c.workspace_id), c.entity_id);
-          rescored++;
+          const score = await scoreAndAssert(supabase, actor(c.workspace_id), c.entity_id);
+          if (score === null) {
+            // Deterministic refusal — mark it so the scan stops re-picking this
+            // entity every tick. A thrown error (transient LLM/provider issue)
+            // deliberately writes NO marker, so the next tick retries.
+            await recordActivityMarker(supabase, actor(c.workspace_id), ACTIVITY_MARKERS.RESCORE_NOOP, c.entity_id);
+            noop++;
+          } else {
+            rescored++;
+          }
         } catch {
           // skip; next cron tick retries
         }
       }
-      return rescored;
+      return { rescored, noop };
     });
 
-    return { rescored: candidates.length };
+    return { candidates: candidates.length, ...result };
   },
 );
 

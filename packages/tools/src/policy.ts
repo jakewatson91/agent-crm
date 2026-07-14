@@ -6,6 +6,7 @@
  * policy fields set. The backfill script preserves the existing dog-food values
  * for the original workspace.
  */
+import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { DisplayPolicy } from './fact_groups.ts';
 
@@ -400,10 +401,12 @@ export interface PipelineStatus {
   /**
    * What the pause blocks. 'contacts' = only contact lookups are stopped (drafting
    * of accounts that already have a reachable contact continues on schedule);
+   * 'research' = only the Exa research loop is stopped (search provider out of
+   * credit — scoring, contact pulls, and drafting all continue on schedule);
    * 'all' = the whole advance pass is stopped (LLM provider is down/broke).
    * Absent on old rows — treated as 'all'.
    */
-  scope?: 'contacts' | 'all';
+  scope?: 'contacts' | 'research' | 'all';
   /** One plain-language sentence the operator can act on (only set when paused). */
   reason?: string;
   /** Which provider tripped the pause (deepseek / hunter / explorium / llm). */
@@ -443,6 +446,16 @@ export interface WorkspacePolicy {
    * halted the run. `reason` is one plain sentence the operator can act on.
    */
   pipeline?: PipelineStatus;
+
+  /**
+   * Fingerprint of the fields scoring reads (icp/about/persona + scoring policy
+   * sections), maintained by ensureScoringConfigState. `changed_at` moves ONLY
+   * when one of those fields actually changes — unlike workspaces.updated_at,
+   * which bumps on every policy write (e.g. the daily pipeline-status write).
+   * The rescore cron and skip-when-stale guards compare score timestamps
+   * against this, so routine policy writes can't trigger full-book rescores.
+   */
+  scoring_config_state?: { hash: string; changed_at: string };
 
   /**
    * Generic env-var bag for this workspace. Flat dict of NAME → value.
@@ -555,6 +568,45 @@ export async function setPipelineStatus(supabase: SupabaseClient, workspace_id: 
   const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
   const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
   await supabase.from('workspaces').update({ policy: { ...raw, pipeline: status } }).eq('id', workspace_id);
+}
+
+/**
+ * Refresh the workspace's scoring-config fingerprint and return the timestamp
+ * of the last REAL scoring-config change (ISO string).
+ *
+ * Hashes exactly the fields entity/contact scoring reads: icp, about, persona,
+ * policy.scoring, policy.contact_scoring, policy.personas, policy.scorable_types.
+ * When none of these changed, re-scoring an entity with no new facts is a
+ * guaranteed no-op, so staleness checks must key off this — not
+ * workspaces.updated_at, which bumps on every policy write.
+ *
+ * First sighting (no stored state) stamps changed_at at epoch so deploying this
+ * never triggers a full-book rescore; a later hash change stamps now.
+ */
+export async function ensureScoringConfigState(
+  supabase: SupabaseClient,
+  workspace_id: string,
+): Promise<string> {
+  const r = await supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle();
+  if (!r.data) return new Date(0).toISOString();
+  const row = r.data as { icp?: unknown; about?: string; persona?: unknown; policy?: WorkspacePolicy | null };
+  const pol = (row.policy ?? {}) as WorkspacePolicy;
+  const hash = createHash('sha256').update(JSON.stringify({
+    icp: row.icp ?? null,
+    about: row.about ?? null,
+    persona: row.persona ?? null,
+    scoring: pol.scoring ?? null,
+    contact_scoring: pol.contact_scoring ?? null,
+    personas: pol.personas ?? null,
+    scorable_types: pol.scorable_types ?? null,
+  })).digest('hex').slice(0, 24);
+  const stored = pol.scoring_config_state;
+  if (stored?.hash === hash) return stored.changed_at;
+  const changed_at = stored ? new Date().toISOString() : new Date(0).toISOString();
+  await supabase.from('workspaces').update({
+    policy: { ...pol, scoring_config_state: { hash, changed_at } },
+  }).eq('id', workspace_id);
+  return changed_at;
 }
 
 /**

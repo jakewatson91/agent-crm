@@ -190,7 +190,7 @@ export async function scoreEntity(
     supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .order('observed_at', { ascending: false }),
-    supabase.from('workspaces').select('icp, about, persona, policy, updated_at').eq('id', workspace_id).maybeSingle(),
+    supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle(),
     graphProximity(supabase, workspace_id, entity_id),
     getIcpPerspectiveVectors(supabase, workspace_id),
   ]);
@@ -212,7 +212,7 @@ export async function scoreEntity(
   const entityTypes = facts
     .filter((f) => f.predicate === 'is_a' && f.object_text)
     .map((f) => f.object_text as string);
-  const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown>; policy?: Record<string, any>; updated_at?: string };
+  const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown>; policy?: Record<string, any> };
 
   // Policy-driven scoring overrides (Phase 4). Both fall back to code defaults.
   const scoringPol = (ws.policy?.scoring ?? {}) as { weights?: Partial<ScoreWeights>; rrf_gate?: number };
@@ -230,12 +230,16 @@ export async function scoreEntity(
       !ADMIN_PREDICATES.has(f.predicate) &&
       Date.parse(f.observed_at ?? f.created_at ?? '') > scoreTs,
     );
-    // Also re-score when the workspace ICP/about/policy changed after the last
-    // score — the scoring INPUTS changed even though no new fact landed. Without
-    // this, an ICP edit (and the rescore-on-icp-change cron that relies on it)
-    // can't move a score that already exists.
-    const wsUpdatedAt = Date.parse(ws.updated_at ?? '');
-    const icpChangedSinceScore = Number.isFinite(wsUpdatedAt) && wsUpdatedAt > scoreTs;
+    // Also re-score when the scoring config (icp/about/persona/scoring policy)
+    // changed after the last score — the scoring INPUTS changed even though no
+    // new fact landed. Keyed to scoring_config_state.changed_at, NOT
+    // workspaces.updated_at: updated_at bumps on every policy write (the daily
+    // pipeline-status write included), which made every existing score look
+    // re-scorable every day and churned full-book LLM rescores.
+    const cfgChangedAt = Date.parse(
+      (ws.policy?.scoring_config_state as { changed_at?: string } | undefined)?.changed_at ?? '',
+    );
+    const icpChangedSinceScore = Number.isFinite(cfgChangedAt) && cfgChangedAt > scoreTs;
     if (!hasNewerSubstantive && !icpChangedSinceScore) return null;
   }
 
@@ -529,7 +533,7 @@ export async function scoreContact(
     supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .order('observed_at', { ascending: false }),
-    supabase.from('workspaces').select('policy, about, updated_at').eq('id', workspace_id).maybeSingle(),
+    supabase.from('workspaces').select('policy, about').eq('id', workspace_id).maybeSingle(),
     graphProximity(supabase, workspace_id, entity_id),
   ]);
   if (!entRes.data) return null;
@@ -544,9 +548,14 @@ export async function scoreContact(
   if (prior) {
     const ts = Date.parse(prior.observed_at ?? prior.created_at ?? '');
     const newer = facts.some((f) => !ADMIN_PREDICATES.has(f.predicate) && Date.parse(f.observed_at ?? f.created_at ?? '') > ts);
-    // Re-score too when persona/policy config changed after the last score.
-    const wsUpd = Date.parse(((wsRes.data as { updated_at?: string } | null)?.updated_at) ?? '');
-    const cfgChanged = Number.isFinite(wsUpd) && wsUpd > ts;
+    // Re-score too when the scoring config changed after the last score (same
+    // scoring_config_state key as scoreEntity — see comment there for why this
+    // is not workspaces.updated_at).
+    const cfgAt = Date.parse(
+      ((wsRes.data as { policy?: { scoring_config_state?: { changed_at?: string } } } | null)
+        ?.policy?.scoring_config_state?.changed_at) ?? '',
+    );
+    const cfgChanged = Number.isFinite(cfgAt) && cfgAt > ts;
     if (!newer && !cfgChanged) return null;
   }
 

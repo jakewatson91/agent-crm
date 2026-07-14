@@ -17,8 +17,10 @@ import { createServerClient } from '@agent-crm/db';
 import {
   callTool, recordActivityMarker, ACTIVITY_MARKERS,
   getPolicy, resolveEnvVar, resolveStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
+  getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
+import { isHaltingError } from './advance_accounts.js';
 import { inngest } from '../client.js';
 
 const SEEN_WINDOW_DAYS = 30;
@@ -152,6 +154,14 @@ export async function runEntityResearch(
     {
       const actor = { workspace_id, actor_kind: 'agent' as const, actor_id: 'research_runner' };
 
+      // A standing research pause (Exa credit/auth wall) means every search this
+      // run makes would fail identically — don't burn the tick or spam error
+      // markers. The operator clears it with Continue after fixing the provider.
+      const pipeStatus = await getPipelineStatus(supabase, workspace_id);
+      if (pipeStatus?.state === 'paused' && (pipeStatus.scope ?? 'all') !== 'contacts') {
+        return { ok: false, reason: `research paused: ${pipeStatus.reason ?? 'pipeline paused'}` };
+      }
+
       const policy = await getPolicy(supabase, workspace_id);
       const apiKey = resolveEnvVar(policy, 'EXA_API_KEY');
       if (!apiKey) return { ok: false, reason: 'EXA_API_KEY not set' };
@@ -272,6 +282,23 @@ export async function runEntityResearch(
           message: errors.slice(0, 3).join('; '),
           summary: `research errored on ${errors.length}/${searches} angles`,
         });
+        // Every search failed on a credit/auth wall → every later run will fail
+        // the same way. Pause the research loop loudly (banner + Continue) so
+        // the operator sees it instead of the loop silently burning ticks for
+        // days. Scope 'research' — scoring, contact pulls, and drafting keep
+        // running. This ran unnoticed for 7 days when Exa first ran dry.
+        if (errors.length === searches && errors.some((e) => isHaltingError(e))) {
+          const credit = errors.some((e) => /credit|402|payment/i.test(e));
+          await setPipelineStatus(supabase, workspace_id, {
+            state: 'paused',
+            scope: 'research',
+            provider: 'exa',
+            reason: credit
+              ? 'Exa (web research) is out of credit. Research is paused; scoring, contact pulls, and drafting continue. Add credits at dashboard.exa.ai, then click Continue.'
+              : `Exa (web research) returned an error and research is paused: ${errors[0]?.slice(0, 140)}. Fix it, then click Continue.`,
+            paused_at: new Date().toISOString(),
+          });
+        }
       }
 
       // Event-log marker the dispatcher / action_selector read to time the next pass.

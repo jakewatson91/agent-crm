@@ -13,7 +13,7 @@
  */
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { ingestRows, type IngestSpec } from '@agent-crm/tools';
+import { ingestRows, backfillAccountDomainsFromContactEmails, type IngestSpec } from '@agent-crm/tools';
 import { getUser, getWorkspaceRole, hasRole } from '../../../_lib/auth';
 import { createServiceClient } from '../../../_lib/supabase-server';
 
@@ -51,5 +51,16 @@ export async function POST(req: Request) {
     { source_kind: 'import_csv', source_ref: randomUUID(), source_label: 'CSV import' },
   );
 
-  return NextResponse.json({ ok: true, result });
+  // CSVs often have contact emails but no website column. Domains unblock the
+  // own-site research angles, Hunter pulls, and the ATS identity check, so
+  // derive them from the just-imported work emails (conservative: single
+  // corporate host + account name must match it). Best-effort — a derivation
+  // failure must not fail the import itself.
+  let domains_derived = 0;
+  try {
+    const d = await backfillAccountDomainsFromContactEmails(sb, { workspace_id: body.workspace_id });
+    domains_derived = d.domains_set;
+  } catch { /* non-fatal */ }
+
+  return NextResponse.json({ ok: true, result: { ...result, domains_derived } });
 }

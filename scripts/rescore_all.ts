@@ -37,24 +37,36 @@ async function main() {
     for (const row of (r.data ?? []) as Array<{ id: string }>) entityIds.push(row.id);
   }
 
-  // Throttle between calls so a burst doesn't trip free-tier per-minute limits.
-  // Override with THROTTLE_MS=0 for a paid model with no rate concerns.
+  // Throttle between calls (per worker) so a burst doesn't trip free-tier
+  // per-minute limits. Override with THROTTLE_MS=0 for a paid model with no
+  // rate concerns. CONCURRENCY runs multiple accounts in flight at once —
+  // scoreAndAssert per account is a single LLM + embedding round trip
+  // (~15s observed), so a sequential loop over hundreds of accounts is
+  // wall-clock-bound by that, not by THROTTLE_MS. Default 1 preserves the
+  // old sequential behavior; bump it for a real backfill on a paid model.
   const THROTTLE_MS = process.env.THROTTLE_MS ? Number(process.env.THROTTLE_MS) : 500;
-  console.log(`scoring ${entityIds.length} accounts (throttle ${THROTTLE_MS}ms)…`);
+  const CONCURRENCY = process.env.CONCURRENCY ? Number(process.env.CONCURRENCY) : 1;
+  console.log(`scoring ${entityIds.length} accounts (throttle ${THROTTLE_MS}ms, concurrency ${CONCURRENCY})…`);
 
-  let done = 0, scored = 0;
-  for (const id of entityIds) {
-    try {
-      const r = await scoreAndAssert(sb, actor, id);
-      done++;
-      if (r) { scored++; process.stdout.write('.'); }
-      else process.stdout.write('-');
-    } catch {
-      process.stdout.write('x');
+  let done = 0, scored = 0, cursor = 0;
+  async function worker() {
+    for (;;) {
+      const i = cursor++;
+      if (i >= entityIds.length) return;
+      try {
+        const r = await scoreAndAssert(sb, actor, entityIds[i]);
+        done++;
+        if (r) { scored++; process.stdout.write('.'); }
+        else process.stdout.write('-');
+      } catch {
+        done++;
+        process.stdout.write('x');
+      }
+      if (done % 50 === 0) process.stdout.write(` ${done}\n`);
+      if (THROTTLE_MS) await new Promise((res) => setTimeout(res, THROTTLE_MS));
     }
-    if (done % 50 === 0) process.stdout.write(` ${done}\n`);
-    if (THROTTLE_MS) await new Promise((res) => setTimeout(res, THROTTLE_MS));
   }
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
   console.log(`\n✓ ${scored}/${done} accounts scored (rest skipped: already-fresh or rate-limited)`);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

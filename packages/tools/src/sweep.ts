@@ -548,5 +548,51 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     console.error('contact_pull check failed:', (e as Error)?.message ?? e);
   }
 
+  // Research-loop health. The runner writes research_triggered / research_completed
+  // (with results_created) / research_error markers. Exa ran out of credits once
+  // and every search 402'd for 7 days with zero visibility — the runs "completed"
+  // with 0 results, nothing paused, nothing alarmed. RED when the pipeline is
+  // paused for research, or when the loop is dispatching but yielding nothing
+  // and mostly erroring.
+  try {
+    const pipeRes = await sb.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
+    const pipe = (pipeRes.data?.policy as { pipeline?: { state?: string; scope?: string; reason?: string; provider?: string } } | null)?.pipeline;
+    if (pipe?.state === 'paused' && (pipe.scope ?? 'all') !== 'contacts') {
+      // provider set = a credit/auth wall tripped it (incident, act now);
+      // no provider = a deliberate operator pause (reminder, not an alarm).
+      out.push({
+        id: 'pipeline_paused',
+        severity: pipe.provider ? 'red' : 'yellow',
+        metric: `pipeline paused (scope=${pipe.scope ?? 'all'}${pipe.provider ? `, provider=${pipe.provider}` : ', manual'})`,
+        threshold: 'not paused',
+        action: pipe.reason ?? 'pipeline paused — fix the provider, then click Continue',
+      });
+    } else {
+      const rRows = await fetchAll<{ action: string; payload: { results_created?: number; message?: string } | null }>((f, t) => sb.from('events')
+        .select('action, payload')
+        .eq('workspace_id', workspace_id)
+        .in('action', [ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ACTIVITY_MARKERS.RESEARCH_COMPLETED, ACTIVITY_MARKERS.RESEARCH_ERROR])
+        .gte('created_at', since48)
+        .order('created_at', { ascending: true }).range(f, t));
+      const triggered = rRows.filter((r) => r.action === ACTIVITY_MARKERS.RESEARCH_TRIGGERED).length;
+      const errors = rRows.filter((r) => r.action === ACTIVITY_MARKERS.RESEARCH_ERROR);
+      const results = rRows
+        .filter((r) => r.action === ACTIVITY_MARKERS.RESEARCH_COMPLETED)
+        .reduce((n, r) => n + (r.payload?.results_created ?? 0), 0);
+      if (triggered >= 5 && results === 0 && errors.length >= triggered / 2) {
+        const firstErr = errors[0]?.payload?.message?.slice(0, 100) ?? 'unknown';
+        out.push({
+          id: 'research_yield',
+          severity: 'red',
+          metric: `${triggered} research runs in 48h, 0 results, ${errors.length} errors`,
+          threshold: 'results > 0 when the dispatcher is firing',
+          action: `research is running but producing nothing — first error: ${firstErr}`,
+        });
+      }
+    }
+  } catch (e) {
+    console.error('research health check failed:', (e as Error)?.message ?? e);
+  }
+
   return out;
 }

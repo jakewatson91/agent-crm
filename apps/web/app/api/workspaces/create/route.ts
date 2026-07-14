@@ -72,6 +72,11 @@ export async function POST(req: Request) {
             value_props: derived.value_props,
             tone_keywords: derived.tone_keywords,
           },
+          // Without 'contact' here, scoreAndAssert silently returns null for
+          // every contact, so contact scoring never runs and the advance pass
+          // can't find a reachable contact to draft to. scoreAndAssert's own
+          // default stays ['account'] for back-compat; new workspaces get both.
+          scorable_types: ['account', 'contact'],
         };
 
         emit({ step: 'workspace' });

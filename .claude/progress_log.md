@@ -1540,3 +1540,125 @@ Workspace was at 16.18 GB egress against a 5 GB free-tier cap (251%), with 2 GB 
 **Expected impact:** 2GB/day → ~200MB/day from entities route (10x TTL increase); health route ~0 egress (count queries). Total should drop from ~16GB/month to well under 5GB free tier assuming normal browse patterns.
 
 **Watch:** Supabase egress dashboard should show a material drop within 24-48h of the deploy. If not, check for other short-TTL routes via a grep for `revalidate:` values under 60 in `apps/web/app/api/`.
+
+## 2026-07-02 — Enrichment chain audited end-to-end; 4 structural fixes; live-proven within UI caps
+
+### Diagnosis (why "every day a new issue" kept happening)
+- The chain itself was NOT broken — the 23 quality drafts on 07-01 proved research → facts → rescore → draft works. The recurring failures were four structural gaps, each of which killed a different link on a different day:
+  1. Research identity gate (`filterResultsByEntity`) passed same-name junk for thin entities ("lean toward matching" with no context to test against), failed OPEN on LLM error, and let directory/aggregator pages through — 19 of 62 enricher runs/day burned tokens on zero-fact junk.
+  2. A Hunter credit wall paused the ENTIRE advance pass — including phase-1 drafting that needs no contact lookups. That was the 07-01 "nothing happened today" (drafts that evening were a manual run).
+  3. Drafting only ran from the laptop launchd job — no cloud owner while Inngest was out; when Inngest came back nobody moved drafting there.
+  4. Scoring pre-filter treated a failed embedding as "cosine 0.00" and wrote a bogus ~0.35 score with no LLM call — silently demoting 0.9 accounts below every threshold (caught live: StarSling 0.92 → 0.35; repaired to 0.89).
+
+### Shipped (commits 8a40246, 7cbd5e2 — pushed, Render deploys)
+- Identity gate: context-aware bias (no context → reject unverifiable), fail-CLOSED on LLM error, directory/aggregator pages rejected even when about the right company. Live-tested both ways (thin PathPilot: CNC collision + listing rejected, real article kept; grounded: only the substantive case study kept).
+- `PipelineStatus.scope` ('contacts' | 'all'): contact-provider walls stop only phase 2 (pulls); LLM walls stop everything. Pause message says drafting continues.
+- `advance-accounts-daily` Inngest cron 14:30 UTC (registered in route.ts). launchd 16:00 UTC is now a backstop that SKIPS advance when the cloud run happened <12h ago (no double cap spend).
+- Scoring: pre-filter shortcut only fires when cosines were actually computed; zero-fact enricher runs call scoreAndAssert (skip-when-stale guard makes it one cheap read) so a run killed between assert and rescore (e.g. deploy restart — happened today) heals on retry.
+- UI caps (criterion "limits set in the config UI"): Settings → Workspace → Research gets "Web searches per research pass" (policy.research.searches_per_run); Thresholds → Budget gets "Contact lookups per daily run" + "New drafts per daily run" (policy.enrichment.max_contact_pulls_per_run / max_drafts_per_run). All read by both the cron and the local loop.
+
+### Live proof (dogfood workspace, today)
+- Research on StarSling: 5 angles → 10 candidates → 6 accepted, 4 junk dropped → Inngest enricher extracted 7 real facts within ~4 min (customers Better Auth/Partcl, "2× faster E2E CI 2m22s→1m04s", "13× cheaper than self-hosted runners") → rescore 0.89 (LLM rubric).
+- Advance pass: scanned 189, pulled exactly 5 contacts (policy cap 5), 2 created, 3 new drafts (Plexe, QualGent, careCycle — all personalized with real hooks), 37 pull-cooldown skips (yesterday's pulls respected), no pause. 26 approvals pending.
+
+### Watch
+- Tomorrow ~14:30 UTC: `advance-accounts-daily` first cloud tick (confirm in Inngest dashboard it synced; `pnpm status` should show fresh drafts w/o any local run). launchd 16:00 tick should log "skipped — cloud advance ran 1.5h ago".
+- Enricher junk burn should drop: agent_dispatch_result facts=0 share (was 19/62) — check in 2-3 days.
+- Hunter has ~2 useful pulls/day at current hit rate; when it walls again, expect a contacts-scoped pause + drafting continuing. Explorium REST client is still the real fix (unbuilt).
+- POST-SCRIPT: app-side Inngest registration was silently broken — `INNGEST_BASE_URL=https://inn.gs` (event-ingest host) makes every register call 404, so new functions never land without a dashboard Resync. Registered `advance-accounts-daily` via `inngest/_sync_inngest.ts` (in-process env override, serveHost=Render URL): "Successfully registered", modified:true. TODO for Jake: remove INNGEST_BASE_URL from Render env (+ .env.local) so normal `curl -X PUT <app>/api/inngest` syncs work again.
+
+## 2026-07-02 (evening) — Full-platform review (agent path + supervisor path + deploy readiness); 5 fixes
+
+### Verified live (dogfood workspace)
+- **Cloud advance tick CONFIRMED**: the 14:30 UTC `advance-accounts-daily` cron fired on schedule (events 14:49–14:59 UTC — 5 Hunter pulls, 2 contacts, 3 drafts + 3 approval requests). The second advance at 16:03 UTC was the earlier session's on-demand `advance.requested` verification, not a retry. Both runs pulled DIFFERENT accounts — the per-account cooldown held, no double billing.
+- Score heal worked at scale: 72 accounts × 9 score facts superseded at 15h (the missed-rescore healer chewing backlog). 418 entities carry current scores, all <7d, zero stuck at ~0 (cosine-0.00 fix holding).
+- Draft quality crossed the contact threshold: latest 3 drafts all have REAL founder to_emails (evan@carecycle.ai, shivam@qualgent.ai, vdubey@plexe.ai), 1-3 cites, no em dashes, benchmark stat woven in.
+- 26 pending approvals, all outreach_send, all <3d old — queue used only for irreversible sends, as designed.
+- Chat Q&A verified end-to-end via authenticated /api/agent/intake (top-3 accounts + pending-draft cross-reference, grounded, streams).
+
+### Fixed this session (committed)
+1. **sweep.ts source_concentration excluded internal research signals** — research=93% RED was the enrichment loop's own output counted as a discovery source; would have cried wolf every morning forever. Sweep now all-green with meaningful greens (100% coupling, 0 novelty overlap).
+2. **Chat `drafts` scope was hard-broken** (`.in()` with 1000+ channel ids → PostgREST Bad Request — the documented 1000-row class). Rewrote with channels!inner FK join. Also added `total` + truncation note to gates/drafts scopes — model was concluding "no draft for Mastra" from a silently truncated 10-of-26 list; now hedges honestly and finds it.
+3. **/api/workspaces/create 500'd in turbopack dev** (top-level registry import, .js specifiers). Switched to registry_meta (only needed schedule_cron). Same fix applied to /api/sources/create. run-now still needs the real registry (runs connectors inline) — dev-only limitation, works in prod.
+4. **Wizard proven end-to-end for a non-SaaS vertical** (commercial real estate): sensible ICP, liquor_license_filed example facts, real CRE pain points. BUT the derive INVENTED "closed 50+ leases in 12 months" — added a hard no-invented-claims rule to the derive prompt. Also: the create call took 270s (deepseek-v4-flash, one call) — flag for async onboarding if it recurs. Test workspace b4c5fc97 "ONBOARDING-TEST (safe to delete)" left in DB (events append-only, can't fully delete).
+
+### Found, needs Jake (couldn't do autonomously — classifier)
+- **launchd backstop is NOT loaded** (`launchctl print gui/501/sh.jakewatson.agentcrm.enrich` → not found) and its plist still says Hour 9 local (13:00 UTC — BEFORE the cloud tick). Fix:
+  `plutil -replace StartCalendarInterval.Hour -integer 12 ~/Library/LaunchAgents/sh.jakewatson.agentcrm.enrich.plist`
+  `launchctl bootstrap gui/501 ~/Library/LaunchAgents/sh.jakewatson.agentcrm.enrich.plist`
+- **Approve→send has ONE data point ever (May 30)**, before the rich-editor/send-path rewrites. Click Approve on one pending draft (goes to agentcrm91@gmail.com override) before any client deploy.
+
+## 2026-07-03 — Sudden (real client) onboarding: CSV import corruption found + fixed, wizard self-serve gaps closed, workspace-lifecycle tooling built
+
+### Context
+Sudden (video-streaming CDN-cost-reduction company) is a real client with a real prospect CSV (2,560 rows, 2,158 unique companies) — a live test of whether agent-crm works end-to-end for a brand-new tenant, not a demo. Plan file: `review-this-plan-claude-plans-jaunty-gro-goofy-lynx.md`.
+
+### Shipped
+1. **`packages/tools/src/ingest.ts` — two real bugs fixed.** `normalizeDomain()` now rejects known social/profile-link hostnames (linkedin.com, facebook.com, x.com, twitter.com, instagram.com) as company identity. Root cause of a real corruption: ~101 CSV rows had a LinkedIn personal-profile URL in their "Website" column (a data-entry mistake in the source export); every one normalized to the same fake domain, merging ~100 unrelated companies (a Finnish public broadcaster, Tennis TV, Televisa Univision, CBC/Radio-Canada, and more) into one "Stingray Group" account carrying 144 misattributed facts and 21 misattributed contacts. Confirmed live before the fix, clean after. Also: the existing-account preload (`ingest.ts:170`) now chunks its `.in()` lookup in batches of 200 — same 1000-row/URL-length class of bug already fixed elsewhere in the codebase.
+2. **Wizard now auto-creates a universal drafter subscription** (`apps/web/app/api/workspaces/create/route.ts`) at creation time. Previously ONLY the dogfood workspace had one, hand-bootstrapped via `scripts/setup_universal_drafter.ts` months ago — every other new workspace could score accounts and pull contacts but never draft a single email (`advanceAccounts` silently treated the missing subscription as a setup gap, not an error). Closes a real "every tenant needs Jake to run a one-off script" gap.
+3. **CSV import UI now exposes arbitrary column→fact mapping** (`settings/import/page.tsx`): an "Other columns" section lists every unmapped column with its sample value, a predicate-name field, and an account/contact toggle. The backend (`/api/ingest/import` → `ingestRows`) already accepted `fact_map` — only the UI never built one, which is exactly why a hand-written script was needed for this import in the first place.
+4. **Workspace-creation wizard now streams live progress** instead of one opaque request: `/api/workspaces/create` rewritten to a `ReadableStream` emitting one JSON line per step (deriving → workspace → drafter → optional source → done); the client renders a growing checklist (✓ per completed step). Real per-step progress, not a simulated timer.
+5. **Migration 0045**: `create index events_parent_event_idx on events(parent_event_id) where parent_event_id is not null`. `events.parent_event_id` is a self-referential FK with no index — deleting rows from `events` (the only sanctioned path is the `prune_events()` RPC, since DELETE is revoked on that table even for service_role) forced a full-table scan per row to verify the FK, timing out even in small time-windowed batches on a workspace with ~24k events. **Updates a 2026-07-02 note that assumed a workspace "can't be fully deleted"** (events append-only) — it can now; see next item.
+6. **New reusable script `scripts/_delete_workspace.ts`**: batch-deletes facts/signals/entities/channels/subscriptions/sources/conversations in chunks of 500, then prunes all events via the sanctioned `prune_events` RPC (walking forward in 2-minute time windows so each call stays small), then deletes the workspace row. Used twice this session to clean up two bad Sudden workspace attempts (one corrupted, one created during a DeepSeek outage with empty derived fields).
+7. **New quota-isolation script `scripts/_quiet_dogfood_for_sudden_burst.ts`** (pause/continue modes): pauses af602fa1's `policy.pipeline` (stops the daily contacts+drafts pass) and zeroes `policy.research.searches_per_run` (stops the 4-hourly research dispatcher, confirmed to NOT check `policy.pipeline` at all — pausing the pipeline alone does not stop it). **af602fa1 is still paused as of session end** — see project_state.md.
+8. Onboarding wizard copy fixed: the "what should the agent help with" field's placeholder examples were all task-command phrasing ("Find X," "Track Y"); added one plain product-pitch-style example and clarified the help text that a business description works equally well.
+
+### Found, not yet fixed
+- Contact-provider config (Hunter/Explorium) is scattered across 3+ settings pages — Settings→Workspace "Contact lookups per daily run" (`max_contact_pulls_per_run`, daily), Settings→Connectors Hunter card "Monthly lookup cap" (`hunter_monthly_cap`, calendar-month), plus the primary/fallback provider selector also on Connectors. Jake asked to consolidate; investigation was in progress when the session ended for /wrap, nothing built yet.
+- `hunter_monthly_cap` is unset/unlimited on both workspaces. It's the ONLY limit on the real-time drafter's own Hunter pre-flight lookup (`agent_logic.ts:1345`, `maybeLinkContactsForEntity`) — fires on every qualifying signal via the universal drafter subscription, completely separate from and not bounded by the daily cap the scheduled advance pass uses. Sudden's CSV import created ~2,536 signals all matching the drafter's empty-filter subscription; this cap was not set during that import.
+- No generic default enricher subscription — dogfood's enrichers are a hand-tuned constellation per signal-source type (hiring-post-specific, research-result-specific), not a single generic pattern like the drafter. Out of scope this session (CSV-imported facts are asserted directly, no enricher needed for that path specifically).
+
+### Also
+DeepSeek ran out of balance mid-session (confirmed via a direct API test — "Insufficient Balance"); Jake topped it up and it was confirmed working again before the session ended.
+
+## 2026-07-10 — Sudden pipeline verified live end-to-end; contact-scoring gap found + fixed
+
+Plan: `~/.claude/plans/squishy-imagining-harp.md` (items 1/2/4/5/6 landed 07-09; this session finished 3 + verification).
+
+### Backfill
+- `rescore_all.ts` (started 07-09 09:10, crawled overnight while the Mac slept) finished 13:06 UTC: **1813/1961 accounts with current score_total** (148 = thin-evidence prefilter skips, by design).
+- Sweep RED "77% of scores in decile 6/10" is the CSV-import profile: same fact shape (same columns, same recency, graph 0) leaves the LLM industry/stage/signal judgments as the only spread. 349 of 400 scanned sit just under the 0.65 draft gate. Watch, don't fix: fresh signals (research, future ATS) will spread it.
+
+### The real reason advance runs produced 0 drafts: contacts were unscoreable
+- `scoreAndAssert` gates on `policy.scorable_types`, **default `['account']`** — every contact score request silently returned null. Dogfood had `['account','contact']` from the two-tier work; Sudden (and any new workspace) doesn't. Set it on Sudden; all 98 CSV contacts scored (44 ≥ 0.5 bar, top 0.80 — CTOs/VPs; ICs below, by design).
+- **New-workspace gap worth closing:** workspace creation should set `scorable_types: ['account','contact']` alongside the auto-created drafter + enricher subscriptions (same class of fix as commit 9264026).
+
+### Verification (advance pass, run locally with logging)
+- 400 scanned → **2 drafts created**: CBC/Radio-Canada (3 cites incl. SMPTE Montreal Paris-Olympics talk from CSV prospect_notes, to francois.legrand@cbc.ca) and SOOP (2 cites); 1 correct weak-trigger refusal (ClipFix); 349 below draft gates; 3 contact pulls found nobody (expected, see domain gap); 3 pull-cooldowns.
+- Drafts are pending approvals in the Feed. Today's 14:30 UTC cloud tick will mostly no-op via suppression — correct.
+
+### Domain gap (open, Jake's decision)
+- The Sudden CSV had **no website column** — all 2059 entities lack `attributes.domain`. The 10 `domain` facts are business sectors (mis-mapped column). Consequences: Hunter pulls can't work, ATS identity check fails closed (its one run: 500 probes, 0 signals) — **ATS source inactive is the correct state**. Unlock: re-import CSV with a website column, or research-based domain resolution for top accounts.
+
+### Flags, cosmetic
+- Approve→send not real for Sudden: `outreach.from_email` = onboarding@resend.dev (test sender, can't deliver externally), `override_to` null. Needs a verified Resend domain.
+- Draft sanitizer turns "60–80%" into "60, 80%" (en-dash excision); SOOP draft body lacks a To: line (recipient in payload only).
+
+### Session ops
+- Handed live context to a remote cloud session (claude.ai) so Jake can steer from his phone; CRM approvals themselves are phone-friendly at the Render URL.
+- Temp `_chk_*` scripts from this session deleted; kept: `_score_sudden_contacts.ts`, `_advance_sudden_local.ts`, `_diag_backfill_progress.ts`.
+
+## 2026-07-13 — Sudden "standard schedule" audit: research was dead on a silent Exa credit wall; rescore cron double-broken; domains derived from contact emails
+
+Goal: Sudden running on the cloud schedule with no laptop, demoable this week. Full working notes in `.claude/session_checkpoint.md` (kept as the seamless-resume file).
+
+### What was actually happening (all verified live)
+- **Cloud schedule itself is fine.** advance-accounts-daily runs 14:30 UTC for all workspaces (Sudden last_run present); research dispatcher fires 0 */4 and dispatches ~10 Sudden accounts/tick; Render + Inngest healthy.
+- **Exa has been out of credits for 7+ days** — every research search 402s, so research completed with 0 results, no new facts, scores frozen, no new drafts. Nothing anywhere surfaced it: pipeline showed `ok`, sweep had no check for it. THE gap between "runs on schedule" and "produces anything."
+- **rescore-on-icp-change was double-broken:** (1) its stale scan read icp_fit with `.is('supersedes',null)` → the ORIGINAL chain fact whose observed_at never moves → 480 dogfood accounts permanently "stale," hogging all 50 slots every tick (scoreAndAssert no-ops them: score current, no new facts) → Sudden never got a slot; (2) staleness compared vs workspaces.updated_at, which the advance pass bumps DAILY via its pipeline-status policy write → fixing (1) alone would have unleashed a full-book (1813-account) LLM rescore of Sudden every day. The two bugs were mutually masking.
+- Sudden CSV contacts (98, with real work emails + works_at links) were an untapped domain source.
+
+### Shipped
+- **Rescore fix:** `scoring_config_state` on policy (`ensureScoringConfigState` in policy.ts — sha256 over icp/about/persona/scoring/contact_scoring/personas/scorable_types; changed_at moves only on real change, epoch-init on first sighting so deploy is churn-free). Cron scan reads CURRENT icp_fit, compares vs changed_at, and `rescore_noop` markers stop null-returning entities (candidates/dropped) from hogging slots. Both skip-when-stale guards in scoring.ts now use changed_at instead of updated_at. Verified: staleA=0 on all 4 workspaces post-init.
+- **Research fail-loud:** new pipeline pause scope 'research' (policy.ts). researchRunner pauses the workspace (provider='exa', plain reason) when every search dies on a credit/auth wall, and early-exits while paused; dispatcher skips paused workspaces; advance pass ignores research-scoped pauses and preserves standing ones. Sweep: `pipeline_paused` (RED provider-tripped / YELLOW manual) + `research_yield` (RED on runs-but-zero-results). Sudden now screams the Exa 402 at every session start until topped up.
+- **Domain derivation from contact emails:** `packages/tools/src/domains.ts` — freemail filter + name-must-match-host guard (kills agency/consultant contamination: IMAX→amazon.com, Dell EMC→bissada.net correctly rejected). Applied to Sudden: **34 domains set** (coverage 10→44; the 34 are exactly the accounts WITH contacts = the draftable set). Wired into `/api/ingest/import` so every future CSV import derives domains automatically.
+- **Workspace creation now sets `scorable_types: ['account','contact']`** (closes the 07-10 new-workspace gap).
+
+### Jake-only (blocking the demo)
+1. **Top up Exa** (dashboard.exa.ai) — research is the only lever for new facts→drafts this week. Budget note: default 30 searches/4h-tick ≈ 180/day ≈ ~$0.90/day; set `policy.research.searches_per_run` on Sudden to tune. After top-up click **Continue** on the Sudden banner if the pause has already tripped.
+2. **git push origin main** (deploys all of the above to Render; without it the cloud still runs the OLD code).
+3. **Verified Resend domain** + real from_email for Sudden approve→send (still onboarding@resend.dev/test).
+
+### Session ops
+- events table column is `action` (not `type`) — a diag script queried the wrong column and briefly looked like "no events at all."
+- Diag scripts kept: `_backfill_sudden_domains.ts`, `_verify_rescore_fix.ts`; the other `_chk_*`/`_repro_*` from this session are deletable.

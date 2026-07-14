@@ -27,7 +27,7 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   entityIdsOfType, recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS,
-  getPolicy, ensureResearchStrategy, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
+  getPolicy, getPipelineStatus, ensureResearchStrategy, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
 } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
@@ -160,6 +160,12 @@ export const entityResearchDispatcher = inngest.createFunction(
       let skipped_capped = 0;
 
       for (const ws of workspaces) {
+        // A standing pause that covers research (scope 'research' or 'all')
+        // means the runner would refuse every dispatch — skip the workspace
+        // instead of queueing runs that no-op.
+        const pipeStatus = await getPipelineStatus(supabase, ws.id);
+        if (pipeStatus?.state === 'paused' && (pipeStatus.scope ?? 'all') !== 'contacts') continue;
+
         const allAcctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 5000);
         const accounts = await chunkedIn<{ id: string; name: string }>(allAcctIds, (chunk) =>
           supabase.from('entities').select('id, name').in('id', chunk));

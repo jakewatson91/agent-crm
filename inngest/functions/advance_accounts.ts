@@ -155,13 +155,15 @@ export async function advanceAccounts(
   // Paused = a prior run hit a credit/auth wall and is waiting for the operator
   // to top up and click Continue (which clears the flag). A contacts-scoped pause
   // (contact-lookup provider out of credit) only blocks phase 2 — drafting accounts
-  // that already have a reachable contact needs no lookups and keeps running. Only
-  // an LLM-scoped ('all') pause stops the whole pass: every step after it would
-  // fail the same way.
+  // that already have a reachable contact needs no lookups and keeps running. A
+  // research-scoped pause (Exa out of credit) doesn't block this pass at all —
+  // it only stops the research loop. Only an LLM-scoped ('all') pause stops the
+  // whole pass: every step after it would fail the same way.
   const status = await getPipelineStatus(supabase, workspace_id);
-  const contactsPaused = status?.state === 'paused' && status.scope === 'contacts';
-  if (status?.state === 'paused' && !contactsPaused) { out.paused = status; return out; }
-  if (contactsPaused) out.paused = status ?? undefined;
+  const pausedScope = status?.state === 'paused' ? (status.scope ?? 'all') : null;
+  const contactsPaused = pausedScope === 'contacts';
+  if (pausedScope === 'all') { out.paused = status ?? undefined; return out; }
+  if (contactsPaused || pausedScope === 'research') out.paused = status ?? undefined;
 
   const policy = await getPolicy(supabase, workspace_id);
   const T = buildThresholds(policy.routing);
@@ -287,9 +289,9 @@ export async function advanceAccounts(
     scanned: out.scanned, contacts_pulled: out.contacts_pulled,
     contacts_created: out.contacts_created, drafts_created: out.drafts_created,
   };
-  if (out.paused?.scope === 'contacts') {
-    // Keep the contacts pause standing (the operator still has to fix the
-    // provider and click Continue) but record that this run did its drafting.
+  if (out.paused && out.paused.scope !== 'all') {
+    // Keep the contacts/research pause standing (the operator still has to fix
+    // the provider and click Continue) but record that this run did its drafting.
     await setPipelineStatus(supabase, workspace_id, {
       ...out.paused, last_run_at: new Date().toISOString(), last_run: runStats,
     });

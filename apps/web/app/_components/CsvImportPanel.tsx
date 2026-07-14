@@ -106,6 +106,7 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
   const [raw, setRaw] = useState('');
   const [dealsOn, setDealsOn] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -117,6 +118,14 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
     contact_role: NONE, item_id: NONE, deal_external_id: NONE, deal_name: NONE,
     deal_stage: NONE, deal_value: NONE, deal_close_date: NONE,
   });
+  // Regex header-matching is the instant baseline (renders before any network
+  // round trip); the AI suggestion below overwrites it once it lands. The
+  // model sees real sample values, not just header text, so it catches things
+  // regex can't (a "Website" column that's actually full of company domains
+  // in this file, even though "website" is regex-skipped by default).
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const latestColumnsKeyRef = useRef('');
 
   // Any column not already used by a fixed field above can still carry
   // signal (industry, size, notes, ...) — save it as a fact instead of
@@ -131,6 +140,9 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
   const columnsKey = columns.join('|');
   useEffect(() => {
     if (columns.length === 0) return;
+    const myKey = columnsKey;
+    latestColumnsKeyRef.current = myKey;
+
     const guessed: Mapping = {
       account_name: guess(columns, [/^company( name)?$/i, /^account( name)?$/i, /^organization$/i, /company/i]),
       account_domain: guess(columns, [/domain/i, /website/i, /^url$/i, /web ?site/i]),
@@ -159,6 +171,45 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
       seeded[col] = { predicate: skip ? '' : slugify(col), on: onContact ? 'contact' : 'account' };
     }
     setFactMap(seeded);
+
+    // Ask the model to do better than regex, using real sample values it
+    // can't see from header text alone. Never blocks the baseline above —
+    // if it fails or the file changes again before it returns, this is a
+    // no-op and the regex guess stands.
+    setSuggesting(true);
+    setSuggestError(null);
+    (async () => {
+      try {
+        const res = await fetch('/api/ingest/suggest-mapping', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspace_id: workspaceId, columns, sample_rows: rows.slice(0, 20) }),
+        });
+        const j = await res.json();
+        if (latestColumnsKeyRef.current !== myKey) return; // superseded by a newer file
+        if (!res.ok || !j.suggestion) { setSuggestError(j.error ?? 'AI mapping suggestion failed'); return; }
+
+        const s = j.suggestion as Record<string, unknown>;
+        const aiMapping: Mapping = { ...guessed };
+        (Object.keys(guessed) as (keyof Mapping)[]).forEach((k) => {
+          const v = s[k];
+          if (typeof v === 'string' && columns.includes(v)) aiMapping[k] = v;
+        });
+        setMapping((m) => ({ ...m, ...aiMapping }));
+
+        const aiFactMap: Record<string, FactMapping> = { ...seeded };
+        const facts = Array.isArray(s.facts) ? s.facts as Array<{ column?: unknown; predicate?: unknown; on?: unknown }> : [];
+        for (const f of facts) {
+          if (typeof f.column !== 'string' || !columns.includes(f.column)) continue;
+          if (typeof f.predicate !== 'string' || !f.predicate.trim()) continue;
+          aiFactMap[f.column] = { predicate: f.predicate, on: f.on === 'contact' ? 'contact' : 'account' };
+        }
+        setFactMap(aiFactMap);
+      } catch (e) {
+        if (latestColumnsKeyRef.current === myKey) setSuggestError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (latestColumnsKeyRef.current === myKey) setSuggesting(false);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columnsKey]);
 
@@ -196,21 +247,46 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
 
   const canImport = rows.length > 0 && (mapping.account_name !== NONE || mapping.account_domain !== NONE || mapping.contact_email !== NONE) && !importing;
 
+  // Send rows in batches instead of one request for the whole file: gives a
+  // real progress readout (not just a spinner), and keeps every request well
+  // under the API route's 300s ceiling regardless of how large the CSV is.
+  const IMPORT_BATCH_SIZE = 150;
+  const EMPTY_RESULT: ImportResult = {
+    accounts_created: 0, accounts_reused: 0, contacts_created: 0, contacts_reused: 0,
+    opportunities_created: 0, opportunities_updated: 0, facts_asserted: 0, signals_created: 0,
+    skipped: 0, errors: [],
+  };
+
   async function runImport() {
     setImporting(true); setResult(null); setError(null);
+    setProgress({ done: 0, total: rows.length });
+    const spec = buildSpec();
+    const acc: ImportResult = { ...EMPTY_RESULT, errors: [] };
     try {
-      const res = await fetch('/api/ingest/import', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: workspaceId, rows, spec: buildSpec() }),
-      });
-      const j = await res.json();
-      if (!res.ok) { setError(j.error ?? 'import failed'); return; }
-      setResult(j.result as ImportResult);
-      onImported?.(j.result as ImportResult);
+      for (let i = 0; i < rows.length; i += IMPORT_BATCH_SIZE) {
+        const batch = rows.slice(i, i + IMPORT_BATCH_SIZE);
+        const res = await fetch('/api/ingest/import', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspace_id: workspaceId, rows: batch, spec }),
+        });
+        const j = await res.json();
+        if (!res.ok) { setError(j.error ?? 'import failed'); return; }
+        const r = j.result as ImportResult;
+        acc.accounts_created += r.accounts_created; acc.accounts_reused += r.accounts_reused;
+        acc.contacts_created += r.contacts_created; acc.contacts_reused += r.contacts_reused;
+        acc.opportunities_created += r.opportunities_created; acc.opportunities_updated += r.opportunities_updated;
+        acc.facts_asserted += r.facts_asserted; acc.signals_created += r.signals_created;
+        acc.skipped += r.skipped; acc.errors.push(...r.errors);
+        const done = Math.min(i + IMPORT_BATCH_SIZE, rows.length);
+        setProgress({ done, total: rows.length });
+        setResult({ ...acc });
+      }
+      onImported?.(acc);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setImporting(false);
+      setProgress(null);
     }
   }
 
@@ -252,7 +328,13 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
 
           <h3 style={{ marginTop: '1.5rem', marginBottom: '.5rem' }}>Map columns</h3>
           <p style={{ color: 'var(--text-3)', fontSize: '.78rem', marginTop: 0 }}>
-            We guessed these from your headers. Adjust if needed. Need at least a company name, a domain, or an email.
+            {suggesting
+              ? 'Suggesting a mapping from your column headers and sample values…'
+              : 'AI-suggested from your headers and sample values. Adjust if needed.'}
+            {' '}Need at least a company name, a domain, or an email.
+            {suggestError && !suggesting && (
+              <span style={{ color: 'var(--text-3)' }}> · AI suggestion unavailable ({suggestError}), using basic header matching.</span>
+            )}
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 1.25rem' }}>
             {fieldRow('account_name', 'Account name')}
@@ -328,6 +410,21 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
               {importing ? 'Importing…' : `Import ${rows.length} row${rows.length === 1 ? '' : 's'}`}
             </button>
           </div>
+
+          {progress && (
+            <div style={{ marginTop: '.75rem' }}>
+              <div style={{ height: 8, borderRadius: 4, background: 'var(--panel-2)', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', borderRadius: 4, background: 'var(--accent, #2563eb)',
+                  width: `${Math.min(100, (progress.done / Math.max(1, progress.total)) * 100)}%`,
+                  transition: 'width .2s ease',
+                }} />
+              </div>
+              <div style={{ marginTop: '.35rem', fontSize: '.78rem', color: 'var(--text-3)' }}>
+                {progress.done.toLocaleString()} / {progress.total.toLocaleString()} rows
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -335,7 +432,7 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
 
       {result && (
         <div style={{ marginTop: '1.25rem', padding: '.9rem 1.1rem', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--panel-2)' }}>
-          <div style={{ fontWeight: 600, marginBottom: '.5rem' }}>Import complete</div>
+          <div style={{ fontWeight: 600, marginBottom: '.5rem' }}>{importing ? 'Importing…' : 'Import complete'}</div>
           <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', fontSize: '.85rem', color: 'var(--text-2)' }}>
             <span>Accounts: <strong>{result.accounts_created}</strong> new, {result.accounts_reused} reused</span>
             <span>Contacts: <strong>{result.contacts_created}</strong> new, {result.contacts_reused} reused</span>
