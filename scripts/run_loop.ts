@@ -37,6 +37,19 @@ async function tick() {
   const ts = new Date().toISOString();
   console.log(`\n[${ts}] tick`);
 
+  // A workspace paused with scope 'all' spends nothing: skip its sources and
+  // its signal->agent dispatch, same rule as the cloud source dispatcher.
+  // (Narrower scopes — research, contacts — are enforced inside those paths.)
+  // Without this, the launchd backstop ran paused workspaces' sources daily
+  // and the enricher fan-out burned LLM tokens the pause was reserving.
+  const wsPol = await sb.from('workspaces').select('id, policy');
+  const pausedAll = new Set<string>();
+  for (const w of wsPol.data ?? []) {
+    const pipe = (w.policy as { pipeline?: { state?: string; scope?: string } } | null)?.pipeline;
+    if (pipe?.state === 'paused' && (pipe.scope ?? 'all') === 'all') pausedAll.add(w.id as string);
+  }
+  if (pausedAll.size) console.log(`  ${pausedAll.size} workspace(s) paused scope=all — sources + agent dispatch skipped`);
+
   // 1. Find all active sources across all workspaces.
   const sources = await sb
     .from('sources')
@@ -49,6 +62,10 @@ async function tick() {
   // /api/sources/run-now: execute conn.run then write last_run_* back so
   // watermarked connectors don't re-fetch from scratch on the next tick.
   for (const s of sources.data ?? []) {
+    if (pausedAll.has(s.workspace_id as string)) {
+      console.log(`  [${s.connector_type}/${s.name}] skipped — workspace paused`);
+      continue;
+    }
     try {
       const conn = getConnector(s.connector_type as string);
       if (!conn) { console.error(`  [${s.connector_type}/${s.name}] unknown connector_type`); continue; }
@@ -94,6 +111,7 @@ async function tick() {
   let runs = 0;
   let posted = 0;
   for (const sig of sigs.data ?? []) {
+    if (pausedAll.has(sig.workspace_id as string)) continue;
     const m = await sb.rpc('match_signal_to_subscriptions', { p_signal_id: sig.id });
     if (m.error) continue;
     const matches = (m.data ?? []) as Array<{ subscription_id: string; owner_kind: 'agent' | 'user'; owner_id: string }>;
