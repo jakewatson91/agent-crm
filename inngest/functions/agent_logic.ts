@@ -1301,6 +1301,9 @@ function sanitizeText(s: string, extraBanned: string[] = []): string {
     .replace(/\$\{[^}]*\}/g, '')
     .replace(/\{\{[^}]*\}\}/g, '')
     .replace(/<[^>\n]{1,40}>/g, '')
+    // Numeric ranges first: "60–80%" must read "60 to 80%", not "60, 80%"
+    // (the comma splice garbled every draft quoting a savings range).
+    .replace(/(\d)\s*[—–]\s*(?=\d)/g, '$1 to ')
     .replace(/\s*—\s*/g, ', ')
     .replace(/\s*–\s*/g, ', ');
   for (const { re, replace } of BANNED_PHRASES) {
