@@ -25,6 +25,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeDomain } from './ingest.ts';
 import { fetchAll } from './paginate.ts';
+import { runExaSearch } from './exa_search.ts';
+import { recordActivityMarker, ACTIVITY_MARKERS } from './activity_markers.ts';
 
 // Consumer mail providers. Universal across verticals/customers, so a code
 // constant is right — same reasoning as NON_COMPANY_HOSTS in ingest.ts.
@@ -145,4 +147,119 @@ export async function backfillAccountDomainsFromContactEmails(
     out.set.push({ entity_id: ent.id, name: ent.name, domain });
   }
   return out;
+}
+
+// ─── Search-based resolution ─────────────────────────────────────────────────
+
+export interface DomainResolveRejection {
+  url: string;
+  host: string | null;
+  /**
+   * not_a_company_domain: normalizeDomain rejected it (social host, no dot, unparseable).
+   * name_mismatch: nameMatchesHost said the entity does not plausibly own it.
+   * weak_evidence: name matched, but the host appeared only once and was not an
+   *   exact rank-1 brand match (see the corroboration rule below).
+   */
+  reason: 'not_a_company_domain' | 'name_mismatch' | 'weak_evidence';
+}
+
+export interface DomainResolveOutcome {
+  status: 'resolved' | 'no_match' | 'already_has_domain' | 'search_error';
+  domain: string | null;
+  evidence_urls: string[];
+  rejections: DomainResolveRejection[];
+  error?: string;
+}
+
+/**
+ * Resolve attributes.domain for one account with a single Exa search
+ * ("<name>" official website, 5 results), gated by the same precision rules as
+ * the contact-email backfill above: a wrong domain poisons the research
+ * identity gate, the ATS check, and contact pulls, so nothing is written unless
+ * a candidate host passes nameMatchesHost AND has corroboration:
+ *   - the host appears in at least 2 of the 5 results, OR
+ *   - it is the top-ranked hit and its host label exactly equals the entity
+ *     name (alphanumerics only). A loose token match on a single rank-1 result
+ *     is not enough: on the live book it wrote "Stage" (Indian OTT) to
+ *     stage-entertainment.com (theater company) and "OVI Technologies" to
+ *     ovistechnologies.com (unrelated web-dev shop). Exact-label singletons
+ *     like dashverse.ai and mansa.com stay in.
+ *
+ * Never overwrites an existing attributes.domain. With `apply: false` it only
+ * reports: no attribute write, no markers (a dry run must not start cooldowns).
+ * On apply it records DOMAIN_RESOLVED / DOMAIN_RESOLVE_FAILED activity markers
+ * so the research runner and the bulk backfill don't re-spend a search on the
+ * same account. A transport/credit failure writes NO marker: it says nothing
+ * about the account, and a 30-day cooldown would outlive a credit top-up.
+ */
+export async function resolveDomainViaSearch(
+  supabase: SupabaseClient,
+  opts: {
+    workspace_id: string;
+    entity_id: string;
+    entity_name: string;
+    exa_api_key: string;
+    apply?: boolean;
+    actor_id?: string;
+  },
+): Promise<DomainResolveOutcome> {
+  const { workspace_id, entity_id, entity_name, exa_api_key } = opts;
+  const apply = opts.apply ?? true;
+  const actor = { workspace_id, actor_kind: 'agent' as const, actor_id: opts.actor_id ?? 'domain_resolver' };
+
+  const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
+  if (ent.error) return { status: 'search_error', domain: null, evidence_urls: [], rejections: [], error: ent.error.message };
+  const attributes = (ent.data?.attributes ?? {}) as Record<string, unknown>;
+  const existing = attributes.domain;
+  if (typeof existing === 'string' && existing.length > 0) {
+    return { status: 'already_has_domain', domain: existing, evidence_urls: [], rejections: [] };
+  }
+
+  const query = `"${entity_name}" official website`;
+  const res = await runExaSearch(exa_api_key, { query, num_results: 5, text_chars: 300 });
+  if (!res.ok) {
+    const error = `Exa ${res.status ?? ''} ${res.error ?? ''}`.trim();
+    return { status: 'search_error', domain: null, evidence_urls: [], rejections: [], error };
+  }
+
+  const hosts = res.results.map((r) => normalizeDomain(r.url));
+  const countByHost = new Map<string, number>();
+  for (const h of hosts) if (h) countByHost.set(h, (countByHost.get(h) ?? 0) + 1);
+
+  const rejections: DomainResolveRejection[] = [];
+  const joinedName = entity_name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  let domain: string | null = null;
+  for (let rank = 0; rank < res.results.length; rank++) {
+    const url = res.results[rank]!.url;
+    const host = hosts[rank] ?? null;
+    if (!host) { rejections.push({ url, host, reason: 'not_a_company_domain' }); continue; }
+    if (!nameMatchesHost(entity_name, host)) { rejections.push({ url, host, reason: 'name_mismatch' }); continue; }
+    if ((countByHost.get(host) ?? 0) < 2) {
+      const label = (host.split('.')[0] ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (rank !== 0 || label !== joinedName) { rejections.push({ url, host, reason: 'weak_evidence' }); continue; }
+    }
+    domain = host;
+    break;
+  }
+
+  if (!domain) {
+    if (apply) {
+      await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.DOMAIN_RESOLVE_FAILED, entity_id, {
+        query,
+        rejections: rejections.slice(0, 5),
+        summary: `no result passed the domain guard (${rejections.length} rejected)`,
+      });
+    }
+    return { status: 'no_match', domain: null, evidence_urls: [], rejections };
+  }
+
+  const evidence_urls = res.results.filter((r, i) => hosts[i] === domain).map((r) => r.url).slice(0, 5);
+  if (apply) {
+    const { error } = await supabase.from('entities')
+      .update({ attributes: { ...attributes, domain } })
+      .eq('id', entity_id);
+    if (error) return { status: 'search_error', domain: null, evidence_urls, rejections, error: error.message };
+    await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.DOMAIN_RESOLVED, entity_id, { domain, evidence_urls });
+  }
+  return { status: 'resolved', domain, evidence_urls, rejections };
 }

@@ -1682,3 +1682,19 @@ Continuation of the 07-13 session after Jake topped up Exa and said "run the pro
 
 ### Watch
 - See project_state "read first" 2026-07-14 block: first unattended cycle (04:00 research → facts → 14:30 drafts), ATS run outcome, dogfood noop-backlog drain, approve→send first data point for Sudden.
+
+## 2026-07-16 - search-based domain resolution shipped (resolver + runner hook + bulk backfill on Sudden)
+
+### Shipped
+- **`resolveDomainViaSearch()`** (packages/tools/src/domains.ts): one Exa "official website" search per account, precision-gated (normalizeDomain + nameMatchesHost + corroboration: host in 2+ of 5 results or exact-label rank 1). Never overwrites. New activity markers `domain_resolved` / `domain_resolve_failed` (failed = 30d cooldown).
+- **Runner integration** (inngest/functions/research.ts): domainless entities spend their first budgeted search on resolution (knob `policy.research.resolve_domains`, default true); on success own-site angles run in the same tick. Verified locally on Genflix: resolution + 2 own-site angles + 7 signals in one run.
+- **Bulk backfill** (scripts/_resolve_domains_bulk.ts, kept): dry-run/apply, icp_fit-ordered, refuses paused-scope-all workspaces, drops stale ats provider=none hints after apply.
+- **Sudden top 200 applied**: 162 domains written (81%), then a manual audit reverted 15 same-name different-company hits (generic names: Aha, Scene, RTS, Volta, KLIP, 1001, ...). Net: **147 verified-correct domains, 0 known wrong**, 38 no-match correctly refused.
+
+### Corrections / gotchas
+- The dry-run bar caught 2 wrong candidates (Stage, OVI Technologies) and forced the singleton tightening BEFORE apply; the apply audit still found 15 more wrong in the 142 non-eyeballed tail. Generic one-word brand names are the failure class name-matching cannot separate (an unrelated company legitimately owns the exact-name domain). Future fix: content check of result text vs the entity's description facts.
+- Reverted-wrong accounts carry domain_resolve_failed markers so neither the runner nor a bulk re-run re-spends on them for 30 days.
+
+### Watch
+- Next 4h research tick: "no runnable angles" errors should drop sharply on Sudden cold picks.
+- Next 13:00 UTC ATS run: newly domained accounts get probed (stale hints dropped); check sources.last_run_summary + hiring signals.

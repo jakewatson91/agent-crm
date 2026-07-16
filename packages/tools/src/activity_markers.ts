@@ -29,6 +29,12 @@ export const ACTIVITY_MARKERS = {
   // per-tick budget — the scan skips entities whose marker postdates the last
   // scoring-config change.
   RESCORE_NOOP: 'rescore_noop',
+  // Search-based domain resolution (resolveDomainViaSearch) set attributes.domain
+  // on this entity / tried and found nothing that passed the name-match guard.
+  // The research runner and the bulk backfill read the FAILED marker as a
+  // cooldown so they don't re-spend a search on the same account every tick.
+  DOMAIN_RESOLVED: 'domain_resolved',
+  DOMAIN_RESOLVE_FAILED: 'domain_resolve_failed',
 } as const;
 
 export type ActivityMarker = (typeof ACTIVITY_MARKERS)[keyof typeof ACTIVITY_MARKERS];

@@ -355,6 +355,11 @@ export interface ResearchAngle {
  *   selection_mix    : share of the per-run budget each bucket gets. Defaults sum to 1.
  *   strategy         : the AI-generated angles, cached. Regenerated on About/guidance
  *                      change or when stale. Empty/unset = generate lazily.
+ *   resolve_domains  : when an entity has no attributes.domain, spend the first
+ *                      budgeted search on resolving it (one "official website"
+ *                      lookup gated by the name-match guard) before running
+ *                      angles. Default true; it spends from the existing
+ *                      research budget, no new spend class.
  */
 export interface ResearchPolicy {
   guidance?: string;
@@ -363,6 +368,7 @@ export interface ResearchPolicy {
   selection_mix?: { high_value?: number; active_comms?: number; exploration?: number };
   strategy?: ResearchAngle[];
   strategy_generated_at?: string;
+  resolve_domains?: boolean;
 }
 
 /**

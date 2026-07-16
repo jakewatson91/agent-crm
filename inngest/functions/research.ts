@@ -15,15 +15,18 @@
  */
 import { createServerClient } from '@agent-crm/db';
 import {
-  callTool, recordActivityMarker, ACTIVITY_MARKERS,
+  callTool, recordActivityMarker, latestMarkerAt, ACTIVITY_MARKERS,
   getPolicy, resolveEnvVar, resolveStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
-  getPipelineStatus, setPipelineStatus,
+  resolveDomainViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
 import { isHaltingError } from './advance_accounts.js';
 import { inngest } from '../client.js';
 
 const SEEN_WINDOW_DAYS = 30;
+// A failed domain resolution cools the entity down this long before another
+// search is spent on it (the name simply may not resolve to a safe host).
+const RESOLVE_RETRY_DAYS = 30;
 
 /**
  * Pull a few descriptive keywords from the entity's facts — only used by angles whose
@@ -168,21 +171,52 @@ export async function runEntityResearch(
 
       // Entity domain drives the own_site angle + collision guards.
       const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
-      const domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+      let domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+
+      let searches = 0;
+      const errors: string[] = [];
+
+      // No domain blocks the own_site angle (the highest-trust one), the ATS
+      // hiring probe, and contact pulls. Spend the first budgeted search on
+      // resolving it: one "official website" lookup behind the name-match +
+      // corroboration guard in resolveDomainViaSearch. Policy knob
+      // research.resolve_domains, default on. A failed attempt writes a marker
+      // that cools this entity down so cold ticks don't re-burn their single
+      // search on the same unresolvable name; a transport/credit error writes
+      // no marker and is counted with the angle errors below so the existing
+      // pause-on-credit-wall logic still sees a fully-failed run.
+      let resolver_spent = 0;
+      if (!domain && policy.research?.resolve_domains !== false) {
+        const failedAt = await latestMarkerAt(supabase, workspace_id, entity_id, [ACTIVITY_MARKERS.DOMAIN_RESOLVE_FAILED]);
+        const coolingDown = !!failedAt && Date.now() - Date.parse(failedAt) < RESOLVE_RETRY_DAYS * 86400 * 1000;
+        if (!coolingDown) {
+          resolver_spent = 1;
+          searches++;
+          const resolved = await resolveDomainViaSearch(supabase, { workspace_id, entity_id, entity_name, exa_api_key: apiKey });
+          if (resolved.status === 'resolved' && resolved.domain) domain = resolved.domain;
+          else if (resolved.status === 'search_error') errors.push(`domain_resolve: ${resolved.error ?? 'Exa error'}`);
+        }
+      }
 
       // The strategy is generated + cached by the dispatcher; the runner only
       // reads it. Slice the per-account angle budget from the angles that can
-      // actually run for THIS entity: own_site needs a domain, and a positional
-      // slice handed domainless accounts (most of a fresh CSV import) an
-      // own_site-only list, so they burned a dispatch slot on zero searches.
+      // actually run for THIS entity: own_site needs a domain (one resolved
+      // just above counts, so hot accounts get own-site results in the same
+      // tick), and a positional slice handed domainless accounts (most of a
+      // fresh CSV import) an own_site-only list, so they burned a dispatch
+      // slot on zero searches. The resolver's search spends from the same
+      // budget: a cold pick with angle_count=1 uses its tick on resolution
+      // and researches on the next pick, which is fine and self-healing.
       const allAngles = resolveStrategy(policy);
       const runnable = allAngles.filter((a) => a.domain_scope !== 'own_site' || !!domain);
       const toRun = typeof angle_count === 'number' && angle_count > 0
-        ? runnable.slice(0, angle_count)
+        ? runnable.slice(0, Math.max(angle_count - resolver_spent, 0))
         : runnable;
-      if (!toRun.length) {
+      if (!toRun.length && !resolver_spent) {
         // Same marker the zero-search path writes: without it the dispatcher
-        // sees an unresearched account and re-picks it every tick.
+        // sees an unresearched account and re-picks it every tick. When the
+        // resolver spent the budget this is skipped: the run did real work and
+        // the RESEARCH_COMPLETED marker below records it.
         await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_ERROR, entity_id, {
           message: 'no runnable angles (missing domain / empty templates)',
           summary: 'research produced no searches',
@@ -206,9 +240,6 @@ export async function runEntityResearch(
         const id = s.structured_tags?.exa_id;
         if (id) seenIds.add(id);
       }
-
-      let searches = 0;
-      const errors: string[] = [];
 
       // --- Fetch phase: collect candidates, separating own-site (collision-proof,
       // domain-scoped) from news/open_web (searched by name -> must be disambiguated). ---
@@ -363,10 +394,11 @@ export async function runEntityResearch(
         searches,
         collisions_dropped,
         per_angle: perAngle,
-        summary: `${created} results from ${searches} angle(s)${collisions_dropped ? `, ${collisions_dropped} same-name dropped` : ''}`,
+        ...(resolver_spent ? { domain_resolved: domain || null } : {}),
+        summary: `${created} results from ${searches} search(es)${collisions_dropped ? `, ${collisions_dropped} same-name dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
       });
 
-      return { ok: true, searches, signals_created: created, collisions_dropped, per_angle: perAngle, errors: errors.slice(0, 3) };
+      return { ok: true, searches, signals_created: created, collisions_dropped, per_angle: perAngle, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
     }
   }
 }
