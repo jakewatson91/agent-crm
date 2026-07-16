@@ -166,16 +166,29 @@ export async function runEntityResearch(
       const apiKey = resolveEnvVar(policy, 'EXA_API_KEY');
       if (!apiKey) return { ok: false, reason: 'EXA_API_KEY not set' };
 
-      // The strategy is generated + cached by the dispatcher; the runner only reads it.
-      const allAngles = resolveStrategy(policy);
-      const toRun = typeof angle_count === 'number' && angle_count > 0
-        ? allAngles.slice(0, angle_count)
-        : allAngles;
-      if (!toRun.length) return { ok: true, reason: 'no angles', signals_created: 0 };
-
       // Entity domain drives the own_site angle + collision guards.
       const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
       const domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+
+      // The strategy is generated + cached by the dispatcher; the runner only
+      // reads it. Slice the per-account angle budget from the angles that can
+      // actually run for THIS entity: own_site needs a domain, and a positional
+      // slice handed domainless accounts (most of a fresh CSV import) an
+      // own_site-only list, so they burned a dispatch slot on zero searches.
+      const allAngles = resolveStrategy(policy);
+      const runnable = allAngles.filter((a) => a.domain_scope !== 'own_site' || !!domain);
+      const toRun = typeof angle_count === 'number' && angle_count > 0
+        ? runnable.slice(0, angle_count)
+        : runnable;
+      if (!toRun.length) {
+        // Same marker the zero-search path writes: without it the dispatcher
+        // sees an unresearched account and re-picks it every tick.
+        await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_ERROR, entity_id, {
+          message: 'no runnable angles (missing domain / empty templates)',
+          summary: 'research produced no searches',
+        });
+        return { ok: false, reason: 'no runnable angles' };
+      }
       const keywords = toRun.some((a) => a.query_template.includes('{keywords}'))
         ? await entityKeywords(supabase, workspace_id, entity_id)
         : '';
@@ -292,16 +305,24 @@ export async function runEntityResearch(
           .limit(1)
           .maybeSingle()).data as { id: string; owner_id: string } | null;
         if (enricherSub) {
-          await inngest.send({
-            name: 'agent.run',
-            data: {
-              workspace_id,
-              agent: enricherSub.owner_id,
-              trigger_event: 'manual',
-              subscription_id: enricherSub.id,
-              signal_id: firstSignalId,
-            },
-          });
+          try {
+            await inngest.send({
+              name: 'agent.run',
+              data: {
+                workspace_id,
+                agent: enricherSub.owner_id,
+                trigger_event: 'manual',
+                subscription_id: enricherSub.id,
+                signal_id: firstSignalId,
+              },
+            });
+          } catch (e) {
+            // The searches are already paid for and the signals exist; a
+            // failed dispatch (Inngest outage, no event key in a local run)
+            // must not throw the whole run away. The organic subscription
+            // path can still pick the signals up.
+            errors.push(`enricher dispatch failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       }
 
