@@ -31,7 +31,7 @@ interface FeedItem {
 }
 
 export function FeedClient({ ws, initialItems }: { ws: string; initialItems: FeedItem[] }) {
-  const { data } = useSWR<{ items: FeedItem[] }>(
+  const { data, mutate } = useSWR<{ items: FeedItem[] }>(
     `/api/feed/list?workspace_id=${ws}`,
     { ...DEFAULT_SWR, fallbackData: { items: initialItems } },
   );
@@ -42,7 +42,7 @@ export function FeedClient({ ws, initialItems }: { ws: string; initialItems: Fee
   return (
     <>
       <FeedHealth ws={ws} />
-      <FeedStream items={items} ws={ws} />
+      <FeedStream items={items} ws={ws} onDecided={() => mutate()} />
     </>
   );
 }

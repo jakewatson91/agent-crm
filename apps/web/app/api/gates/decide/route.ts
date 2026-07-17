@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { revalidateTag } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
 import { callTool, getPolicy, setOutreachStage, diffDraftBody } from '@agent-crm/tools';
 import { sendEmail } from '../../_lib/send_email';
@@ -99,6 +100,11 @@ export async function POST(req: Request) {
   // Update the gate row.
   const r = await callTool(supabase, actor, 'decide_gate', { gate_id: body.gate_id, decision: body.decision, resolution });
   if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
+
+  // The feed API caches per-workspace lists for 60s under this tag; without
+  // invalidation a decided draft keeps showing as needs-approval until the
+  // window expires, even across a full page reload.
+  revalidateTag('feed');
 
   // Audit + state-change side effects per decision.
   try {

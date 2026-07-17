@@ -101,7 +101,7 @@ function icpColor(v: number | null): string {
   return 'var(--accent-coral)';
 }
 
-export function FeedStream({ items, ws }: { items: FeedItem[]; ws: string }) {
+export function FeedStream({ items, ws, onDecided }: { items: FeedItem[]; ws: string; onDecided?: () => void }) {
   // Land on the approvals when any are waiting — "open the app, see the 5-10
   // things to approve." Falls back to the full feed when the queue is empty.
   const hasPendingApproval = items.some((i) => i.kind === 'touch_draft' && i.pending_approval);
@@ -221,6 +221,7 @@ export function FeedStream({ items, ws }: { items: FeedItem[]; ws: string }) {
               ws={ws}
               expanded={expanded.has(it.id)}
               onToggle={() => toggle(it.id)}
+              onDecided={onDecided}
             />
           ))}
         </div>
@@ -234,11 +235,13 @@ function FeedRow({
   ws,
   expanded,
   onToggle,
+  onDecided,
 }: {
   item: FeedItem;
   ws: string;
   expanded: boolean;
   onToggle: () => void;
+  onDecided?: () => void;
 }) {
   const meta = KIND_META[item.kind];
   // Strip the leading machine action tag (e.g. "[deep_research] …") and show it
@@ -329,7 +332,7 @@ function FeedRow({
           : display}
       </div>
 
-      {isDraft && <DraftActions postId={item.id} workspaceId={ws} initialGate={item.gate} />}
+      {isDraft && <DraftActions postId={item.id} workspaceId={ws} initialGate={item.gate} onDecided={onDecided} />}
 
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.55rem', flexWrap: 'wrap' }}>
         {truncated && (
