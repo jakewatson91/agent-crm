@@ -556,7 +556,7 @@ export async function runAgent(
   // Drafters get past gate decisions + linked contacts in their context. Other
   // behaviors (claim_poster, enricher) don't need either — they're not making
   // judgment calls about who to send to.
-  let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown> }> = [];
+  let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown>; draft_excerpt: string | null }> = [];
   let contacts: Array<{ name: string; email: string; role: string }> = [];
   if (behavior === 'drafter') {
     // Hunter pre-flight: fetch contacts here, not during enrichment. The
@@ -581,12 +581,15 @@ export async function runAgent(
       }
     }
     try {
+      // 90d, not 30: decisions are rare (a handful a month), so a 30-day window
+      // forgot nearly every human call. limit 5 still caps the token cost.
       const outs = await pastOutcomesFn(supabase, payload.workspace_id, {
-        entity_id: ent.data.id, semantic_neighbors: true, limit: 5, since_days: 30,
+        entity_id: ent.data.id, semantic_neighbors: true, limit: 5, since_days: 90,
       });
       pastOutcomesList = outs.map((o) => ({
         entity_name: o.entity_name, gate_policy: o.gate_policy, decision: o.decision,
         decided_at: o.decided_at, similarity: o.similarity, resolution: o.resolution ?? {},
+        draft_excerpt: o.draft_excerpt,
       }));
     } catch { /* non-fatal */ }
 
@@ -1196,7 +1199,7 @@ function buildUserPrompt(
   signal: any,
   entity: { id: string; name: string; attributes: unknown },
   activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number }>,
-  pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown> }> = [],
+  pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown>; draft_excerpt?: string | null }> = [],
   contacts: Array<{ name: string; email: string; role: string }> = [],
   recommended: FactScore[] = [],
   // Drafters get attributes as readable prose so the email never echoes internal
@@ -1208,7 +1211,7 @@ function buildUserPrompt(
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
 
   const pastOutcomesBlock = pastOutcomesList.length
-    ? `\nPAST OUTCOMES (recent gate decisions on this entity or semantically similar ones — pay attention to repeated patterns):\n${pastOutcomesList.map((o) => {
+    ? `\nPAST OUTCOMES (how the human decided recent drafts for this account or similar ones. Edits are corrections: the "→" side is the wording the human wanted, so write your draft as if it had already been edited that way. A rejection means do not repeat that draft's approach. An approval with no edits is the standard to match):\n${pastOutcomesList.map((o) => {
         const sim = o.similarity != null ? ` sim=${o.similarity.toFixed(2)}` : '';
         const res = o.resolution ?? {};
         const parts: string[] = [];
@@ -1218,6 +1221,9 @@ function buildUserPrompt(
           const bd = res.body_diff as Array<{ from: string; to: string }> | undefined;
           if (sd) parts.push(`subject: "${sd.from}" → "${sd.to}"`);
           if (bd?.length) parts.push(`body: ${bd.map((d) => `"${d.from}" → "${d.to}"`).join('; ')}`);
+        } else if (o.decision === 'approve' && o.draft_excerpt) {
+          // Sent exactly as drafted: the excerpt is a positive example worth ~30 tokens.
+          parts.push(`sent as written: "${o.draft_excerpt}"`);
         }
         const detail = parts.length ? ` — ${parts.join('; ')}` : '';
         return `  ${o.decided_at.slice(0, 10)} ${o.entity_name}${sim}: ${o.decision} (policy=${o.gate_policy})${detail}`;
