@@ -71,10 +71,55 @@ export interface DrafterDecisionOpts {
    * Contents live in config (policy.drafter.market_brief), never in shared code.
    */
   market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };
+  /**
+   * Workspace message templates (policy.drafter.templates). When non-empty on
+   * the linkedin channel, the DM prompt below replaces the generic
+   * connection-request formula. Contents are config, never code.
+   */
+  templates?: Array<{ id: string; label: string; audience: string; body: string; anatomy?: string; enabled?: boolean }>;
+  /** Drafting rules rendered verbatim above the templates. */
+  message_rules?: string[];
+  /** Character target for the DM body. Default 400. */
+  char_budget?: number;
 }
 
 export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
   if ((opts.outreach_channel ?? 'email') === 'linkedin') {
+    const templates = (opts.templates ?? []).filter((t) => t && t.enabled !== false && t.body?.trim() && t.audience?.trim());
+    if (templates.length) {
+      const rules = (opts.message_rules ?? []).filter((s) => s.trim().length > 0);
+      const budget = opts.char_budget ?? 400;
+      const tones = (opts.tone_keywords ?? []).filter((s) => s.trim().length > 0);
+      const toneBlock = tones.length ? `\nTONE — ${tones.join(', ')}.\n` : '';
+      const rulesBlock = rules.length
+        ? rules.map((r) => `- ${r}`).join('\n')
+        : `- Aim for under ${budget} characters.`;
+      const templatesBlock = templates
+        .map((t, i) => `[${i + 1}] ${t.label}\n    AUDIENCE: ${t.audience}\n    EXEMPLAR: "${t.body}"${t.anatomy ? `\n    ANATOMY: ${t.anatomy}` : ''}`)
+        .join('\n\n');
+      return `A new high-fit signal matched your saved filter rule. Write the LinkedIn DM for this account, following the workspace templates below.
+
+RULES:
+${rulesBlock}
+- No greeting-and-sign-off padding. LinkedIn shows the sender's name.
+- No subject line — set "subject" to null in your output.
+- Do NOT mention "our system", "your profile", "according to our data", or any internal field name.
+${toneBlock}
+TEMPLATES — pick exactly ONE by matching the recipient (role, seniority, relationship to the buying decision) to each template's AUDIENCE line. Write a NEW message in the chosen template's structure and voice, anchored to THIS account's real trigger facts. Never reuse an exemplar's names, numbers, or trigger — the exemplar shows the shape, not the content.
+
+${templatesBlock}
+
+NO TRIGGER, NO DM — the trigger must be a real, recent, specific event or statement from the SIGNAL or active facts (a post, a talk, a launch, a hire, a stated number). A topic they cover or a generic description of their business is NOT a trigger. If the facts contain no genuine trigger, output {"action":"request_gate","body":"<one sentence: what trigger you'd need>","policy":"facts_insufficient_for_draft"} instead of forcing one.
+
+LEAD-FACT SELECTION — same as always: prefer the RECOMMENDED FACTS shortlist when present. Anchor on evidence they have a problem you solve, not just any fact about them.
+
+DON'T BEND THE SIGNAL — if the signal suggests they've already solved the problem (hired the team, built in-house), that's a disqualifier, not an angle.
+
+REASONING — include a "reasoning" field: 1-2 sentences naming which template you chose, why it fits this recipient, and which facts you anchored to. Shown in the audit channel, not sent to the recipient.
+
+Output strictly valid JSON:
+{"action":"post_touch_draft","subject":null,"body":"<linkedin DM, aim under ${budget} chars>","cites":["<fact_id_uuid>",...],"reasoning":"<template chosen + facts anchored>","to_email":null}`;
+    }
     const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);
     const values = (opts.value_props ?? []).filter((s) => s.trim().length > 0);
     const tones = (opts.tone_keywords ?? []).filter((s) => s.trim().length > 0);

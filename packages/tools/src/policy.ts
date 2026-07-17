@@ -93,9 +93,38 @@ export interface DrafterPolicy {
   /**
    * Which channel to draft for. Defaults to 'email' when unset.
    * 'linkedin' produces a short connection-request message (≤250 chars, no subject)
-   * instead of a full cold email.
+   * instead of a full cold email — or, when `templates` below is non-empty, a
+   * template-driven DM.
    */
   outreach_channel?: 'email' | 'linkedin';
+
+  /**
+   * Message templates for the LinkedIn DM drafter. Contents are workspace
+   * config: real names, stats, and links live HERE, never in shared code.
+   * Empty = the generic connection-request formula.
+   */
+  templates?: Array<{
+    id: string;
+    label: string;
+    /** Who this template targets. The drafter matches the recipient's role to this. */
+    audience: string;
+    /** Exemplar message, rendered verbatim as a style anchor. */
+    body: string;
+    /** Structure breakdown (Trigger/Think/Cred/Talk) shown to the model. */
+    anatomy?: string;
+    /** Bump message for a future follow-up touch. Stored, not drafted yet. */
+    follow_up?: string;
+    /** Process notes for the human at send time. Never rendered to the LLM. */
+    notes?: string;
+    /** Default true. */
+    enabled?: boolean;
+  }>;
+  /** Drafting rules rendered verbatim into the template-driven DM prompt. */
+  message_rules?: string[];
+  /** Character target for the DM body. Default 400 when templates are present. */
+  char_budget?: number;
+  /** Connection-request note template. For manual use at CR time; not rendered. */
+  cr_note?: string;
 
   // ---- email formula (new in Phase 3) ----
   /** How the subject line looks. Default 'one_word'. */

@@ -1053,6 +1053,9 @@ function buildSystemPrompt(
     forbidden_phrases?: string[];
     forbidden_field_terms?: string[];
     market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };
+    templates?: Array<{ id: string; label: string; audience: string; body: string; anatomy?: string; enabled?: boolean }>;
+    message_rules?: string[];
+    char_budget?: number;
   },
 ): string {
   const identity = behavior === 'drafter'
@@ -1079,6 +1082,12 @@ function buildSystemPrompt(
     nodeTypes: enricherPolicy?.nodeTypes,
   });
   const drafterDecision = buildDrafterDecision({
+    // outreach_channel was previously not passed, so a linkedin workspace got
+    // the email formula under a "LinkedIn drafter" identity line.
+    outreach_channel: drafterPolicy?.outreach_channel,
+    templates: drafterPolicy?.templates,
+    message_rules: drafterPolicy?.message_rules,
+    char_budget: drafterPolicy?.char_budget,
     subject_style: drafterPolicy?.subject_style,
     paragraph_count: drafterPolicy?.paragraph_count,
     pain_points: drafterPolicy?.pain_points,
