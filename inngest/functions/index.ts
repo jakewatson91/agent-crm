@@ -11,3 +11,4 @@ export { entityResearchDispatcher } from './entity_research_dispatcher.js';
 export { advanceAccountsCron } from './advance_accounts.js';
 export { sourceCurator } from './source_curator.js';
 export { subscriptionDriftLearner } from './subscription_drift.js';
+export { healthSweepCron } from './health_sweep.js';

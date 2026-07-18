@@ -501,6 +501,15 @@ export interface WorkspacePolicy {
   pipeline?: PipelineStatus;
 
   /**
+   * Operator alerts (pause emails, RED health sweeps — see notify.ts).
+   * `email` overrides the default recipient (the workspace owner's login
+   * email). Needed when the login address differs from the inbox the operator
+   * reads, or while Resend runs in testing mode and can only deliver to the
+   * Resend account's own address.
+   */
+  alerts?: { email?: string };
+
+  /**
    * Fingerprint of the fields scoring reads (icp/about/persona + scoring policy
    * sections), maintained by ensureScoringConfigState. `changed_at` moves ONLY
    * when one of those fields actually changes — unlike workspaces.updated_at,
@@ -616,11 +625,27 @@ export async function getPipelineStatus(supabase: SupabaseClient, workspace_id: 
  * pause's reason/provider). Read-modify-write on the raw policy so the rest of
  * the policy is preserved untouched. Callers: the advance pass (ok/paused) and
  * the Continue action (clears the pause).
+ *
+ * Side effect: on the not-paused → paused edge, emails the workspace owner the
+ * same reason sentence the banner shows. The edge check is the dedupe — a
+ * paused run re-writing its standing status (retry loops, partial runs) stays
+ * on the paused side and sends nothing, so one pause episode = one email.
  */
 export async function setPipelineStatus(supabase: SupabaseClient, workspace_id: string, status: PipelineStatus): Promise<void> {
   const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
   const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
   await supabase.from('workspaces').update({ policy: { ...raw, pipeline: status } }).eq('id', workspace_id);
+  if (status.state === 'paused' && raw.pipeline?.state !== 'paused') {
+    try {
+      // Lazy import keeps policy.ts free of a static cycle with notify.ts.
+      const { notifyPipelinePaused } = await import('./notify.ts');
+      const sent = await notifyPipelinePaused(supabase, workspace_id, status);
+      console.log(`[pipeline] pause alert: ${sent.ok ? `emailed ${sent.to}` : (sent.skipped ?? sent.error)}`);
+    } catch (e) {
+      // Alerting is best-effort; the status write above already succeeded.
+      console.error('[pipeline] pause alert failed:', e instanceof Error ? e.message : String(e));
+    }
+  }
 }
 
 /**

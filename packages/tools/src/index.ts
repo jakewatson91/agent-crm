@@ -31,6 +31,7 @@ export { runRetention, type RetentionResult } from './retention.ts';
 export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
 export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, TIER_ANGLE_COUNT, DEFAULT_QUALIFICATION, resolveQualification } from './policy.ts';
 export { getPipelineStatus, setPipelineStatus, ensureScoringConfigState } from './policy.ts';
+export { sendOwnerAlert, resolveOwnerEmail, notifyPipelinePaused, type AlertResult } from './notify.ts';
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy, ResearchPolicy, ResearchAngle, QualificationPolicy, PipelineStatus } from './policy.ts';
 export { cronToMinIntervalMinutes } from './cron.ts';
 export { compress, estimateTokens, type CompressOptions, type CompressResult, type UrlRef } from './compress.ts';

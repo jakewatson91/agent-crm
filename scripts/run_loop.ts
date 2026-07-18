@@ -240,12 +240,29 @@ async function tick() {
   }
 }
 
+// Dead-man's switch: ping healthchecks.io after each completed tick. If pings
+// stop arriving (launchd unloaded, machine off, DB down, tick wedged), the
+// service emails after its grace period — the one failure class no in-system
+// alert can cover, because the thing that would send the alert is what died.
+// No-op when HEALTHCHECKS_PING_URL is unset.
+async function pingHealthcheck() {
+  const url = process.env.HEALTHCHECKS_PING_URL;
+  if (!url) return;
+  try {
+    const res = await fetch(url);
+    console.log(res.ok ? '  healthcheck ping sent' : `  healthcheck ping rejected: ${res.status} (check the URL)`);
+  } catch (e) {
+    console.error('  healthcheck ping failed:', e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function main() {
   const once = process.env.RUN_ONCE === '1';
   console.log(`agent-crm run loop starting · interval=${INTERVAL_MIN}m · once=${once}`);
   await tick();
+  await pingHealthcheck();
   if (once) { console.log('RUN_ONCE set — exiting after one tick.'); process.exit(0); }
-  setInterval(() => { tick().catch((e) => console.error('tick error:', e)); }, INTERVAL_MIN * 60_000);
+  setInterval(() => { tick().then(pingHealthcheck).catch((e) => console.error('tick error:', e)); }, INTERVAL_MIN * 60_000);
   // Keep alive
   await new Promise(() => {});
 }

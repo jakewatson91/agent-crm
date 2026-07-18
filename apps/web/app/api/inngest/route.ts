@@ -40,6 +40,7 @@ function getHandlers(): Promise<ServeReturn> {
         fns.domainBackfillDaily,
         fns.sourceCurator,
         fns.subscriptionDriftLearner,
+        fns.healthSweepCron,
       ],
     });
   })();
