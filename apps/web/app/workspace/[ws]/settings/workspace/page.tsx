@@ -25,7 +25,7 @@ interface Angle {
   id: string;
   label: string;
   query_template: string;
-  domain_scope: 'own_site' | 'news' | 'open_web';
+  domain_scope: 'own_site' | 'news' | 'open_web' | 'social';
   recency_days?: number;
   num_results?: number;
   enabled?: boolean;

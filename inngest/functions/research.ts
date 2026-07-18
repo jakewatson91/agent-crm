@@ -92,11 +92,12 @@ async function entityContext(
 }
 
 /** Turn one angle into an Exa request for this entity. Returns null if unrunnable. */
-function buildAngleRequest(
+export function buildAngleRequest(
   angle: ResearchAngle,
   entity_name: string,
   domain: string,
   keywords: string,
+  social_domains: string[],
 ): { query: string; params: Parameters<typeof runExaSearch>[1] } | null {
   const query = angle.query_template
     .replaceAll('{entity}', entity_name)
@@ -110,7 +111,7 @@ function buildAngleRequest(
   const start_published_date = angle.recency_days
     ? new Date(Date.now() - angle.recency_days * 86400 * 1000).toISOString()
     : undefined;
-  const num_results = angle.num_results ?? 4;
+  const num_results = angle.num_results ?? 3;
 
   if (angle.domain_scope === 'own_site') {
     if (!domain) return null; // can't scope to a site we don't know
@@ -121,6 +122,13 @@ function buildAngleRequest(
   }
   if (angle.domain_scope === 'news') {
     return { query, params: { query, num_results, category: 'news', start_published_date, include_text: [entity_name] } };
+  }
+  if (angle.domain_scope === 'social') {
+    // Exec posts/talks/interviews on the workspace-configured social hosts.
+    // Searched by name, so results are NOT trusted — they go through the same
+    // disambiguation gate as news/open_web (name collisions are worst here).
+    if (!social_domains.length) return null; // scope not configured
+    return { query, params: { query, num_results, start_published_date, include_domains: social_domains, include_text: [entity_name] } };
   }
   // open_web
   return { query, params: { query, num_results, start_published_date, include_text: [entity_name] } };
@@ -208,7 +216,10 @@ export async function runEntityResearch(
       // budget: a cold pick with angle_count=1 uses its tick on resolution
       // and researches on the next pick, which is fine and self-healing.
       const allAngles = resolveStrategy(policy);
-      const runnable = allAngles.filter((a) => a.domain_scope !== 'own_site' || !!domain);
+      const socialDomains = (policy.research?.social_domains ?? []).filter(Boolean);
+      const runnable = allAngles.filter((a) =>
+        (a.domain_scope !== 'own_site' || !!domain) &&
+        (a.domain_scope !== 'social' || socialDomains.length > 0));
       const toRun = typeof angle_count === 'number' && angle_count > 0
         ? runnable.slice(0, Math.max(angle_count - resolver_spent, 0))
         : runnable;
@@ -247,7 +258,7 @@ export async function runEntityResearch(
       const candidates: Candidate[] = [];
       const ownSiteSnippets: string[] = [];
       for (const angle of toRun) {
-        const built = buildAngleRequest(angle, entity_name, domain, keywords);
+        const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains);
         if (!built) continue;
         searches++;
         const res = await runExaSearch(apiKey, built.params);

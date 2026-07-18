@@ -358,12 +358,19 @@ export interface RetentionPolicy {
  *   - news     : category='news', recency window, includeText=[entity name]. Press /
  *                funding / launch coverage by others.
  *   - open_web : no category, recency window, includeText=[entity name]. Everything else.
+ *   - social   : includeDomains=policy.research.social_domains, recency window,
+ *                includeText=[entity name]. Posts, talks, interviews by the
+ *                company's execs — the trigger material outreach templates
+ *                reference. Inert until social_domains is configured. Results
+ *                are NOT own-site-trusted: they pass the same-name
+ *                disambiguation gate, which matters most on social hosts where
+ *                name collisions are worst.
  */
 export interface ResearchAngle {
   id: string;
   label: string;
   query_template: string;          // uses {entity} and optionally {domain} / {keywords}
-  domain_scope: 'own_site' | 'news' | 'open_web';
+  domain_scope: 'own_site' | 'news' | 'open_web' | 'social';
   recency_days?: number;           // startPublishedDate window; unset = no date filter
   num_results?: number;            // small, default 4
   enabled?: boolean;               // human on/off toggle; unset = enabled
@@ -389,6 +396,15 @@ export interface ResearchAngle {
  *                      lookup gated by the name-match guard) before running
  *                      angles. Default true; it spends from the existing
  *                      research budget, no new spend class.
+ *   domain_backfill_per_day : how many domainless accounts the daily backfill
+ *                      cron may attempt to resolve (one Exa search each,
+ *                      same guard as resolve_domains). 0 / unset = off.
+ *                      Each attempt spends real search credit, so the
+ *                      operator sets the pace explicitly.
+ *   social_domains   : hosts the `social` domain_scope searches within (e.g. a
+ *                      professional network the workspace's buyers post on).
+ *                      Empty/unset = social angles are skipped entirely. The
+ *                      contents are workspace config, never code.
  */
 export interface ResearchPolicy {
   guidance?: string;
@@ -398,6 +414,8 @@ export interface ResearchPolicy {
   strategy?: ResearchAngle[];
   strategy_generated_at?: string;
   resolve_domains?: boolean;
+  domain_backfill_per_day?: number;
+  social_domains?: string[];
 }
 
 /**

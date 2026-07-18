@@ -793,6 +793,23 @@ export async function runAgent(
         channel_id, kind: 'decision', body: reasoning, cites: validCites, parent_post_id: r.target_id,
       }, meta);
     }
+    // Deterministic draft checks: violations never block the draft. They become
+    // one system post under it, so the approval card shows the flag and the
+    // human decides informed.
+    try {
+      const flags = draftAuditFlags({
+        body,
+        reasoning,
+        outreach_channel: outreachChannel,
+        char_budget: policy.drafter?.char_budget,
+        templates: policy.drafter?.templates,
+      });
+      if (flags.length) {
+        await callTool(supabase, actor, 'post_to_channel', {
+          channel_id, kind: 'system', body: `Draft checks: ${flags.join('; ')}`, cites: [], parent_post_id: r.target_id,
+        }, meta);
+      }
+    } catch { /* non-fatal: a failed check must never block the draft */ }
     // Shortlist instrumentation: every draft records what the formula recommended vs
     // what the model picked. Later joined with outcomes to validate the ranking.
     try {
@@ -1336,6 +1353,49 @@ function sanitizeText(s: string, extraBanned: string[] = []): string {
     .replace(/\(\s*\)/g, '')                                // empty parens
     .replace(/^\s+|\s+$/gm, (m) => m.trim() ? m : '')       // tidy line ends
     .trim();
+}
+
+/**
+ * Deterministic post-draft checks. Violations never block a draft — each run's
+ * output is one string per problem, joined into a single `system` post under
+ * the draft, so the approval card carries the flag and the human decides
+ * informed. The shapes live here; the thresholds (char_budget, templates) are
+ * workspace config.
+ */
+export function draftAuditFlags(args: {
+  body: string;
+  reasoning: string;
+  outreach_channel: 'email' | 'linkedin';
+  char_budget?: number;
+  templates?: Array<{ id: string; label: string; audience: string; body: string; enabled?: boolean }>;
+}): string[] {
+  const flags: string[] = [];
+  // Same usability filter as buildDrafterDecision: these are the templates the
+  // model actually saw, numbered [1..n] in prompt order.
+  const usable = (args.templates ?? []).filter((t) => t && t.enabled !== false && t.body?.trim() && t.audience?.trim());
+  const templated = args.outreach_channel === 'linkedin' && usable.length > 0;
+
+  // Mirror the prompt's effective budget: explicit config wins, the
+  // template-driven DM path defaults to 400, otherwise no budget to check.
+  const budget = args.char_budget ?? (templated ? 400 : undefined);
+  if (budget && args.body.length > Math.round(budget * 1.1)) {
+    flags.push(`draft is ${args.body.length} chars, budget ${budget}`);
+  }
+
+  const url = args.body.match(/https?:\/\/\S+|\bwww\.\S+/i);
+  if (url) {
+    flags.push(`draft contains a link (${url[0].slice(0, 60)}); links in a first touch hurt reply rates`);
+  }
+
+  if (templated) {
+    const r = args.reasoning.toLowerCase();
+    const named = usable.some((t, i) =>
+      (t.id && r.includes(t.id.toLowerCase())) ||
+      (t.label && r.includes(t.label.toLowerCase())) ||
+      r.includes(`[${i + 1}]`) || r.includes(`template ${i + 1}`));
+    if (!named) flags.push('reasoning does not name which template it used');
+  }
+  return flags;
 }
 
 /**

@@ -37,6 +37,7 @@ function getHandlers(): Promise<ServeReturn> {
         fns.silenceSweep,
         fns.entityArchiveSweep,
         fns.retentionSweep,
+        fns.domainBackfillDaily,
         fns.sourceCurator,
         fns.subscriptionDriftLearner,
       ],

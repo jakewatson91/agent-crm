@@ -173,11 +173,11 @@ export interface DomainResolveOutcome {
 
 /**
  * Resolve attributes.domain for one account with a single Exa search
- * ("<name>" official website, 5 results), gated by the same precision rules as
+ * ("<name>" official website, 3 results), gated by the same precision rules as
  * the contact-email backfill above: a wrong domain poisons the research
  * identity gate, the ATS check, and contact pulls, so nothing is written unless
  * a candidate host passes nameMatchesHost AND has corroboration:
- *   - the host appears in at least 2 of the 5 results, OR
+ *   - the host appears in at least 2 of the results, OR
  *   - it is the top-ranked hit and its host label exactly equals the entity
  *     name (alphanumerics only). A loose token match on a single rank-1 result
  *     is not enough: on the live book it wrote "Stage" (Indian OTT) to
@@ -216,7 +216,9 @@ export async function resolveDomainViaSearch(
   }
 
   const query = `"${entity_name}" official website`;
-  const res = await runExaSearch(exa_api_key, { query, num_results: 5, text_chars: 300 });
+  // 3 results / 600 chars: the resolver only needs snippets to verify identity,
+  // not full pages, and every extra result is a paid contents-text fetch.
+  const res = await runExaSearch(exa_api_key, { query, num_results: 3, text_chars: 600 });
   if (!res.ok) {
     const error = `Exa ${res.status ?? ''} ${res.error ?? ''}`.trim();
     return { status: 'search_error', domain: null, evidence_urls: [], rejections: [], error };

@@ -249,12 +249,34 @@ export function selectAction(args: SelectArgs): ActionDecision {
     };
   }
 
-  // 4. Watch-only: fit is real but trigger is weak. Keep enriching, no draft.
+  // 4. Watch-only: fit is real but something blocks drafting. Name the actual
+  //    failed condition(s) — the audit trail is how a human debugs "why no
+  //    draft?", and a reason that always blames signal_strength lies whenever
+  //    the true blocker is a missing contact, thin evidence, or the
+  //    suppression window.
   if (args.icp_total >= THRESH.WATCH_ICP_TOTAL) {
+    const blockers: string[] = [];
+    if (args.icp_total < THRESH.DRAFT_ICP_TOTAL) {
+      blockers.push(`icp_total ${args.icp_total.toFixed(2)} is below the draft bar ${THRESH.DRAFT_ICP_TOTAL}`);
+    }
+    if (b.signal_strength < THRESH.DRAFT_SIGNAL_STRENGTH) {
+      blockers.push(`signal_strength ${b.signal_strength.toFixed(2)} is below ${THRESH.DRAFT_SIGNAL_STRENGTH}`);
+    }
+    if (b.evidence_depth < THRESH.DRAFT_EVIDENCE_DEPTH) {
+      blockers.push(`evidence_depth ${b.evidence_depth.toFixed(2)} is below ${THRESH.DRAFT_EVIDENCE_DEPTH}`);
+    }
+    if (args.best_contact_score === undefined) {
+      blockers.push('no scored contact to send to');
+    } else if (args.best_contact_score < THRESH.DRAFT_MIN_CONTACT_SCORE) {
+      blockers.push(`best contact score ${args.best_contact_score.toFixed(2)} is below ${THRESH.DRAFT_MIN_CONTACT_SCORE}`);
+    }
+    if (draftAge < THRESH.DRAFT_SUPPRESSION_DAYS) {
+      blockers.push(`last draft was ${draftAge.toFixed(1)}d ago (suppression window ${THRESH.DRAFT_SUPPRESSION_DAYS}d)`);
+    }
     return {
       action: 'watch_only',
       policy: 'fit_weak_trigger',
-      reason: `Watching: icp_total ${args.icp_total.toFixed(2)} is decent but signal_strength ${b.signal_strength.toFixed(2)} is weak. Keep enriching; no draft.`,
+      reason: `Watching: ${blockers.join('; ') || 'draft conditions met but not routed'}. Keep enriching; no draft.`,
     };
   }
 

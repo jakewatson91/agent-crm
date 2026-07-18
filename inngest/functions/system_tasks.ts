@@ -2,8 +2,11 @@ import { createServerClient } from '@agent-crm/db';
 import {
   scoreAndAssert, callTool, entityIdsOfType, runRetention,
   ensureScoringConfigState, fetchAll, latestMarkerByEntity,
-  recordActivityMarker, ACTIVITY_MARKERS,
+  recordActivityMarker, ACTIVITY_MARKERS, isSubstantiveFact,
+  getPolicy, resolveEnvVar, resolveDomainViaSearch,
+  getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
+import { isHaltingError } from './advance_accounts.js';
 import { inngest } from '../client.js';
 
 const RECOVERY_LOOKBACK_MIN = 30;
@@ -80,11 +83,19 @@ export const recoverUnmatchedSignals = inngest.createFunction(
 // read-only feed health strip — neither interrupts a human.
 
 const RESCORE_LIMIT_PER_RUN = 50;
+// Case C looks for substantive facts observed inside this window. 72h (vs the
+// 30-min tick) tolerates cron outages of up to three days without losing a
+// rescore trigger; scanning the whole facts table instead would re-run the
+// egress mistake (30-47K rows/workspace × 48 ticks/day).
+const RESCORE_FACT_LOOKBACK_MS = 72 * 3600_000;
 
 /**
- * rescore-on-icp-change: every 30 min, find entities whose current icp_fit fact
- * predates the workspace's last scoring-config change, and re-run scoreAndAssert.
- * Caps at 50 entities/run to bound LLM cost.
+ * rescore-on-icp-change: every 30 min, find entities whose score is out of date
+ * and re-run scoreAndAssert. Caps at 50 entities/run to bound LLM cost.
+ * Three pools: (A) current icp_fit predates the last scoring-config change,
+ * (B) never scored, (C) a substantive fact landed after the current icp_fit —
+ * ATS signals, CSV imports, and research facts arrive without an enricher
+ * rescore, so without C a quiet account's ranking never reflects new evidence.
  *
  * Why: when you tune ICP/about, every entity's score should refresh. Without this,
  * scores only update on the next enricher run for that entity (could be never).
@@ -103,95 +114,145 @@ const RESCORE_LIMIT_PER_RUN = 50;
  * re-picked every tick and starve everyone else — those get a rescore_noop
  * marker and are skipped until the config changes again.
  */
+export async function scanRescoreCandidates(
+  supabase: ReturnType<typeof createServerClient>,
+): Promise<Array<{ workspace_id: string; entity_id: string }>> {
+  const { data: workspaces } = await supabase.from('workspaces').select('id');
+  const wsRows = (workspaces ?? []) as Array<{ id: string }>;
+  const out: Array<{ workspace_id: string; entity_id: string }> = [];
+
+  for (const ws of wsRows) {
+    const cfgChangedAt = await ensureScoringConfigState(supabase, ws.id);
+
+    // Case A: entities whose CURRENT icp_fit fact predates the last
+    // scoring-config change. (User re-tuned ICP — refresh all scores.)
+    const rows = await fetchAll<{ id: string; subject_entity: string; observed_at: string; supersedes: string | null }>(
+      (from, to) => supabase.from('facts')
+        .select('id, subject_entity, observed_at, supersedes')
+        .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
+        .order('id', { ascending: true })
+        .range(from, to),
+    );
+    const cfgMs = Date.parse(cfgChangedAt);
+    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+    const stale = rows
+      .filter((r) => !pointedTo.has(r.id) && Date.parse(r.observed_at) < cfgMs)
+      .sort((a, b) => a.observed_at.localeCompare(b.observed_at));
+
+    // Case B: accounts that have NEVER been scored. Pre-existing accounts
+    // from before scoring shipped, or accounts whose enricher run failed
+    // to call scoreAndAssert for some reason. Without this branch, an
+    // account can sit unscored forever and the drafter treats it as low
+    // fit by default. (Ever-scored = any icp_fit row, original included.)
+    const scoredSet = new Set(rows.map((r) => r.subject_entity));
+    const acctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 10000);
+    const allAccts = acctIds.length === 0
+      ? { data: [] as Array<{ id: string; created_at: string }> }
+      : await supabase.from('entities')
+          .select('id, created_at')
+          .in('id', acctIds)
+          .order('created_at', { ascending: true });
+    const unscored = ((allAccts.data ?? []) as Array<{ id: string; created_at: string }>)
+      .filter((a) => !scoredSet.has(a.id));
+
+    // Case C: scored accounts whose evidence outran their score — a
+    // substantive fact (isSubstantiveFact: not bookkeeping, not a score
+    // output) was observed after the current icp_fit was asserted. Only
+    // facts inside the lookback window are scanned; older debt re-enters
+    // when the account's next fact lands. Entities without an icp_fit are
+    // pool B's job, so C needs no entity-type check: only accounts carry
+    // icp_fit facts.
+    const factCutoff = new Date(Date.now() - RESCORE_FACT_LOOKBACK_MS).toISOString();
+    const recentFacts = await fetchAll<{ subject_entity: string; predicate: string; observed_at: string }>(
+      (from, to) => supabase.from('facts')
+        .select('subject_entity, predicate, observed_at')
+        .eq('workspace_id', ws.id)
+        .gte('observed_at', factCutoff)
+        .order('id', { ascending: true })
+        .range(from, to),
+    );
+    const latestFactMs = new Map<string, number>();
+    for (const r of recentFacts) {
+      if (!isSubstantiveFact(r.predicate)) continue;
+      const ts = Date.parse(r.observed_at);
+      if (Number.isFinite(ts) && ts > (latestFactMs.get(r.subject_entity) ?? 0)) {
+        latestFactMs.set(r.subject_entity, ts);
+      }
+    }
+    const currentScoreMs = new Map<string, number>();
+    for (const r of rows) {
+      if (pointedTo.has(r.id)) continue;
+      const ts = Date.parse(r.observed_at);
+      if (Number.isFinite(ts) && ts > (currentScoreMs.get(r.subject_entity) ?? 0)) {
+        currentScoreMs.set(r.subject_entity, ts);
+      }
+    }
+    const outran: Array<{ id: string; factMs: number }> = [];
+    for (const [ent, factMs] of latestFactMs) {
+      const scoreMs = currentScoreMs.get(ent);
+      if (scoreMs !== undefined && factMs > scoreMs) outran.push({ id: ent, factMs });
+    }
+    outran.sort((a, b) => a.factMs - b.factMs); // oldest unscored evidence first
+
+    // Skip entities we already attempted (noop) unless something moved
+    // since that attempt: a config change (pools A/B) or a newer fact
+    // (pool C). One rule covers all pools.
+    const pool = [...new Set([
+      ...stale.map((r) => r.subject_entity),
+      ...unscored.map((a) => a.id),
+      ...outran.map((o) => o.id),
+    ])].slice(0, 2000);
+    if (!pool.length) continue;
+    const attempted = await latestMarkerByEntity(
+      supabase, ws.id, pool, [ACTIVITY_MARKERS.RESCORE_NOOP],
+    );
+    for (const id of pool) {
+      if (out.length >= RESCORE_LIMIT_PER_RUN) break;
+      const marker = attempted.get(id);
+      if (marker !== undefined && marker > Math.max(cfgMs, latestFactMs.get(id) ?? 0)) continue;
+      out.push({ workspace_id: ws.id, entity_id: id });
+    }
+    if (out.length >= RESCORE_LIMIT_PER_RUN) break;
+  }
+  return out;
+}
+
+export async function runRescoreBatch(
+  supabase: ReturnType<typeof createServerClient>,
+  candidates: Array<{ workspace_id: string; entity_id: string }>,
+): Promise<{ rescored: number; noop: number }> {
+  const actor = (workspace_id: string) => ({ workspace_id, actor_kind: 'system' as const, actor_id: 'icp_rescorer' });
+  let rescored = 0;
+  let noop = 0;
+  for (const c of candidates) {
+    try {
+      const score = await scoreAndAssert(supabase, actor(c.workspace_id), c.entity_id);
+      if (score === null) {
+        // Deterministic refusal — mark it so the scan stops re-picking this
+        // entity every tick. A thrown error (transient LLM/provider issue)
+        // deliberately writes NO marker, so the next tick retries.
+        await recordActivityMarker(supabase, actor(c.workspace_id), ACTIVITY_MARKERS.RESCORE_NOOP, c.entity_id);
+        noop++;
+      } else {
+        rescored++;
+      }
+    } catch {
+      // skip; next cron tick retries
+    }
+  }
+  return { rescored, noop };
+}
+
 export const rescoreOnIcpChange = inngest.createFunction(
   { id: 'rescore-on-icp-change' },
   { cron: '*/30 * * * *' },
   async ({ step }) => {
-    const candidates = await step.run('scan-stale-scores', async () => {
-      const supabase = createServerClient();
-      const { data: workspaces } = await supabase.from('workspaces').select('id');
-      const wsRows = (workspaces ?? []) as Array<{ id: string }>;
-      const out: Array<{ workspace_id: string; entity_id: string }> = [];
-
-      for (const ws of wsRows) {
-        const cfgChangedAt = await ensureScoringConfigState(supabase, ws.id);
-
-        // Case A: entities whose CURRENT icp_fit fact predates the last
-        // scoring-config change. (User re-tuned ICP — refresh all scores.)
-        const rows = await fetchAll<{ id: string; subject_entity: string; observed_at: string; supersedes: string | null }>(
-          (from, to) => supabase.from('facts')
-            .select('id, subject_entity, observed_at, supersedes')
-            .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
-            .order('id', { ascending: true })
-            .range(from, to),
-        );
-        const cfgMs = Date.parse(cfgChangedAt);
-        const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
-        const stale = rows
-          .filter((r) => !pointedTo.has(r.id) && Date.parse(r.observed_at) < cfgMs)
-          .sort((a, b) => a.observed_at.localeCompare(b.observed_at));
-
-        // Case B: accounts that have NEVER been scored. Pre-existing accounts
-        // from before scoring shipped, or accounts whose enricher run failed
-        // to call scoreAndAssert for some reason. Without this branch, an
-        // account can sit unscored forever and the drafter treats it as low
-        // fit by default. (Ever-scored = any icp_fit row, original included.)
-        const scoredSet = new Set(rows.map((r) => r.subject_entity));
-        const acctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 10000);
-        const allAccts = acctIds.length === 0
-          ? { data: [] as Array<{ id: string; created_at: string }> }
-          : await supabase.from('entities')
-              .select('id, created_at')
-              .in('id', acctIds)
-              .order('created_at', { ascending: true });
-        const unscored = ((allAccts.data ?? []) as Array<{ id: string; created_at: string }>)
-          .filter((a) => !scoredSet.has(a.id));
-
-        // Skip entities we already attempted since the last config change and
-        // that returned null — retrying them is a guaranteed no-op until the
-        // config moves again.
-        const pool = [...stale.map((r) => r.subject_entity), ...unscored.map((a) => a.id)].slice(0, 2000);
-        if (!pool.length) continue;
-        const attempted = await latestMarkerByEntity(
-          supabase, ws.id, pool, [ACTIVITY_MARKERS.RESCORE_NOOP],
-        );
-        for (const id of pool) {
-          if (out.length >= RESCORE_LIMIT_PER_RUN) break;
-          const marker = attempted.get(id);
-          if (marker !== undefined && marker > cfgMs) continue;
-          out.push({ workspace_id: ws.id, entity_id: id });
-        }
-        if (out.length >= RESCORE_LIMIT_PER_RUN) break;
-      }
-      return out;
-    });
-
+    const candidates = await step.run('scan-stale-scores', async () =>
+      scanRescoreCandidates(createServerClient()));
     if (!candidates.length) return { candidates: 0, rescored: 0, noop: 0 };
 
-    const result = await step.run('rescore-batch', async () => {
-      const supabase = createServerClient();
-      const actor = (workspace_id: string) => ({ workspace_id, actor_kind: 'system' as const, actor_id: 'icp_rescorer' });
-      let rescored = 0;
-      let noop = 0;
-      for (const c of candidates) {
-        try {
-          const score = await scoreAndAssert(supabase, actor(c.workspace_id), c.entity_id);
-          if (score === null) {
-            // Deterministic refusal — mark it so the scan stops re-picking this
-            // entity every tick. A thrown error (transient LLM/provider issue)
-            // deliberately writes NO marker, so the next tick retries.
-            await recordActivityMarker(supabase, actor(c.workspace_id), ACTIVITY_MARKERS.RESCORE_NOOP, c.entity_id);
-            noop++;
-          } else {
-            rescored++;
-          }
-        } catch {
-          // skip; next cron tick retries
-        }
-      }
-      return { rescored, noop };
-    });
-
+    const result = await step.run('rescore-batch', async () =>
+      runRescoreBatch(createServerClient(), candidates));
     return { candidates: candidates.length, ...result };
   },
 );
@@ -369,6 +430,166 @@ export const entityArchiveSweep = inngest.createFunction(
     });
 
     return { archived: toArchive.length, ids: toArchive.map((e) => e.id) };
+  },
+);
+
+// How many step.run batches the daily domain backfill splits its work into.
+// One scan step + this many resolve steps ≈ 6 Inngest executions per day,
+// regardless of how many entities the per-day knob allows.
+const DOMAIN_BACKFILL_BATCHES = 5;
+// A name that failed to resolve is retried after this many days. Shorter than
+// the research runner's 30-day cooldown: the backfill works the whole book on a
+// paced budget, so a weekly re-probe is cheap and catches newly-indexed sites.
+const DOMAIN_BACKFILL_REPROBE_DAYS = 7;
+
+export interface DomainBackfillEntry { workspace_id: string; entity_id: string; entity_name: string }
+
+/**
+ * Pick today's domain-resolution candidates across all workspaces: account
+ * entities with no attributes.domain, not archived, not `_candidate` thin nodes
+ * (unscoreable until promoted — a search on one is spend with no downstream),
+ * and not inside the failed-resolve cooldown. Capped per workspace by
+ * policy.research.domain_backfill_per_day (0/unset = workspace opted out).
+ * Skips workspaces whose pipeline is paused for research (credit wall) and
+ * workspaces with no Exa key.
+ */
+export async function scanDomainBackfillCandidates(
+  supabase: ReturnType<typeof createServerClient>,
+): Promise<DomainBackfillEntry[]> {
+  const { data: workspaces } = await supabase.from('workspaces').select('id');
+  const out: DomainBackfillEntry[] = [];
+  for (const ws of (workspaces ?? []) as Array<{ id: string }>) {
+    const policy = await getPolicy(supabase, ws.id);
+    const perDay = Math.floor(policy.research?.domain_backfill_per_day ?? 0);
+    if (perDay <= 0) continue;
+    if (!resolveEnvVar(policy, 'EXA_API_KEY')) continue;
+    const pipe = await getPipelineStatus(supabase, ws.id);
+    if (pipe?.state === 'paused' && (pipe.scope ?? 'all') !== 'contacts') continue;
+
+    const acctIds = await entityIdsOfType(supabase, ws.id, 'account');
+    const missing: Array<{ id: string; name: string }> = [];
+    for (let i = 0; i < acctIds.length; i += 200) {
+      const { data } = await supabase.from('entities')
+        .select('id, name, attributes, archived_at')
+        .in('id', acctIds.slice(i, i + 200));
+      for (const e of (data ?? []) as Array<{ id: string; name: string; attributes: Record<string, unknown> | null; archived_at: string | null }>) {
+        if (e.archived_at) continue;
+        if (e.attributes?._candidate === true) continue;
+        const domain = e.attributes?.domain;
+        if (typeof domain === 'string' && domain.length > 0) continue;
+        if (!e.name?.trim()) continue;
+        missing.push({ id: e.id, name: e.name });
+      }
+    }
+    if (!missing.length) continue;
+    // Stable order so the same accounts aren't re-picked by chance across days;
+    // failures write cooldown markers, so the frontier advances daily.
+    missing.sort((a, b) => a.id.localeCompare(b.id));
+
+    const failedAt = await latestMarkerByEntity(
+      supabase, ws.id, missing.map((m) => m.id), [ACTIVITY_MARKERS.DOMAIN_RESOLVE_FAILED],
+    );
+    const cooldownCutoff = Date.now() - DOMAIN_BACKFILL_REPROBE_DAYS * 86400_000;
+    const eligible = missing.filter((m) => (failedAt.get(m.id) ?? 0) < cooldownCutoff);
+    for (const m of eligible.slice(0, perDay)) {
+      out.push({ workspace_id: ws.id, entity_id: m.id, entity_name: m.name });
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve one batch of candidates. Sequential on purpose — this is a background
+ * catch-up, not a latency-sensitive path, and pacing keeps Exa happy. A halting
+ * error (credit/auth) pauses that workspace's research scope exactly like the
+ * research runner does, and the rest of its entries are skipped: every further
+ * search would fail identically.
+ */
+export async function runDomainBackfillBatch(
+  supabase: ReturnType<typeof createServerClient>,
+  entries: DomainBackfillEntry[],
+): Promise<{ resolved: number; no_match: number; errors: number; paused_workspaces: string[] }> {
+  let resolved = 0, no_match = 0, errors = 0;
+  const paused = new Set<string>();
+  const keyByWs = new Map<string, string | null>();
+  for (const e of entries) {
+    if (paused.has(e.workspace_id)) continue;
+    let key = keyByWs.get(e.workspace_id);
+    if (key === undefined) {
+      const policy = await getPolicy(supabase, e.workspace_id);
+      key = resolveEnvVar(policy, 'EXA_API_KEY') ?? null;
+      keyByWs.set(e.workspace_id, key);
+    }
+    if (!key) continue;
+    const r = await resolveDomainViaSearch(supabase, {
+      workspace_id: e.workspace_id,
+      entity_id: e.entity_id,
+      entity_name: e.entity_name,
+      exa_api_key: key,
+      actor_id: 'domain_backfill',
+    });
+    if (r.status === 'resolved') resolved++;
+    else if (r.status === 'no_match') no_match++;
+    else if (r.status === 'search_error') {
+      errors++;
+      if (isHaltingError(r.error)) {
+        paused.add(e.workspace_id);
+        const credit = /credit|402|payment/i.test(r.error ?? '');
+        await setPipelineStatus(supabase, e.workspace_id, {
+          state: 'paused',
+          scope: 'research',
+          provider: 'exa',
+          reason: credit
+            ? 'Exa (web research) is out of credit. Research is paused; scoring, contact pulls, and drafting continue. Add credits at dashboard.exa.ai, then click Continue.'
+            : `Exa (web research) returned an error and research is paused: ${(r.error ?? '').slice(0, 140)}. Fix it, then click Continue.`,
+          paused_at: new Date().toISOString(),
+        });
+      }
+    }
+    // 'already_has_domain': another path resolved it since the scan — nothing to do.
+  }
+  return { resolved, no_match, errors, paused_workspaces: [...paused] };
+}
+
+/**
+ * domain-backfill-daily: one run per day that works through up to
+ * policy.research.domain_backfill_per_day domainless accounts per workspace,
+ * resolving attributes.domain via the guarded single-search resolver
+ * (resolveDomainViaSearch — same precision rules, cheap snippet params).
+ *
+ * Why a dedicated pass: resolution otherwise only happens lazily when the
+ * research dispatcher happens to pick an entity, so a book imported without
+ * domains (the Sudden CSV: ~90% domainless) stays blind to own-site research
+ * and contact lookups for months. This clears the backlog at an explicit,
+ * operator-set pace instead.
+ *
+ * The internal batching keeps Inngest cost flat: a 75-entity day is ~6
+ * executions (1 scan + 5 resolve batches), not 75.
+ */
+export const domainBackfillDaily = inngest.createFunction(
+  { id: 'domain-backfill-daily' },
+  { cron: '0 11 * * *' }, // daily at 11:00 UTC, ahead of the noon sweeps and the 14:30 advance pass
+  async ({ step }) => {
+    const candidates = await step.run('scan-missing-domains', async () =>
+      scanDomainBackfillCandidates(createServerClient()));
+    if (!candidates.length) return { candidates: 0, resolved: 0, no_match: 0, errors: 0 };
+
+    const batchSize = Math.ceil(candidates.length / DOMAIN_BACKFILL_BATCHES);
+    const totals = { resolved: 0, no_match: 0, errors: 0 };
+    const pausedWs = new Set<string>();
+    for (let b = 0; b < DOMAIN_BACKFILL_BATCHES; b++) {
+      const batch = candidates
+        .slice(b * batchSize, (b + 1) * batchSize)
+        .filter((c) => !pausedWs.has(c.workspace_id));
+      if (!batch.length) continue;
+      const r = await step.run(`resolve-batch-${b}`, async () =>
+        runDomainBackfillBatch(createServerClient(), batch));
+      totals.resolved += r.resolved;
+      totals.no_match += r.no_match;
+      totals.errors += r.errors;
+      for (const w of r.paused_workspaces) pausedWs.add(w);
+    }
+    return { candidates: candidates.length, ...totals };
   },
 );
 

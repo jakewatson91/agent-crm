@@ -26,7 +26,9 @@ import type { ResearchAngle, WorkspacePolicy } from './policy.ts';
 // puts the drafter on pro. A few cents per regeneration buys much better angles.
 const PLANNER_MODEL = 'deepseek-v4-pro';
 const STRATEGY_STALE_DAYS = 14;
-const DEFAULT_NUM_RESULTS = 4;
+// Each fetched result costs a contents-text page on top of the search itself,
+// so the default stays lean; angles that need more set num_results explicitly.
+const DEFAULT_NUM_RESULTS = 3;
 
 /**
  * Neutral fallback when there's nothing to plan from (empty About + guidance) or the
@@ -59,7 +61,7 @@ export const BASELINE_ANGLES: ResearchAngle[] = [
   },
 ];
 
-const VALID_SCOPES = new Set(['own_site', 'news', 'open_web']);
+const VALID_SCOPES = new Set(['own_site', 'news', 'open_web', 'social']);
 
 function slugify(s: string, fallback: string): string {
   const out = s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
@@ -98,6 +100,10 @@ export interface PlannerContext {
   pain_points: string[];
   guidance: string;
   always_include: string[];
+  // policy.research.social_domains. Non-empty unlocks the `social` scope in the
+  // planner prompt; empty keeps the scope out of the prompt entirely so the
+  // model never plans angles the runner would skip.
+  social_domains?: string[];
 }
 
 async function loadContext(supabase: SupabaseClient, workspace_id: string): Promise<{ ctx: PlannerContext; policy: WorkspacePolicy }> {
@@ -111,6 +117,7 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
     pain_points: (policy.drafter?.pain_points ?? []).filter(Boolean),
     guidance: (policy.research?.guidance ?? '').trim(),
     always_include: (policy.research?.always_include ?? []).filter(Boolean),
+    social_domains: (policy.research?.social_domains ?? []).filter(Boolean),
   };
   return { ctx, policy };
 }
@@ -139,6 +146,14 @@ Do NOT search for jobs/careers/hiring — a separate connector covers hiring. Av
 Tailor query terms to who THIS workspace sells to and the problems they solve (below). Every must-include term provided must be covered by at least one angle.
 
 Return JSON only: {"angles":[{"id","label","query_template","domain_scope","recency_days","num_results"}]}`;
+
+// Appended to SYS_PROMPT only when the workspace configured
+// policy.research.social_domains — otherwise the model never sees the scope and
+// can't plan angles the runner would skip.
+function socialScopeAddendum(domains: string[]): string {
+  return `ADDITIONAL SCOPE available for this workspace:
+    "social"    -> restricted to: ${domains.join(', ')}. Posts, talks, and interviews BY the prospect company's founders and executives — the concrete trigger a first-touch message can reference ("saw your post on X"). Include exactly ONE social angle. Phrase its query_template to surface a person speaking (post, talk, interview, panel, announcement by {entity} leadership), NOT the company's profile page. This is the one exception to the profile/directory-page rule above. Exec posts go stale fast: set recency_days 30-60.`;
+}
 
 function buildUserPayload(ctx: PlannerContext): string {
   const parts: string[] = [];
@@ -170,7 +185,12 @@ export async function planResearchAngles(
       max_tokens: 1200,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYS_PROMPT },
+        {
+          role: 'system',
+          content: ctx.social_domains?.length
+            ? `${SYS_PROMPT}\n\n${socialScopeAddendum(ctx.social_domains)}`
+            : SYS_PROMPT,
+        },
         { role: 'user', content: buildUserPayload(ctx) },
       ],
     });
