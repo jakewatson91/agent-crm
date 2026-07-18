@@ -32,6 +32,10 @@ function alertBody(name: string, reds: CheckResult[]): string {
 
 export async function runHealthAlerts(sb: SupabaseClient): Promise<Record<string, unknown>> {
   const wss = await sb.from('workspaces').select('id, name');
+  // Throw, don't continue: a dead DB must fail the whole step so the cloud
+  // heartbeat is NOT pinged (a completed-but-empty sweep would ping green
+  // with the database down).
+  if (wss.error) throw new Error(`workspaces query failed: ${wss.error.message}`);
   const out: Record<string, unknown> = {};
   for (const ws of (wss.data ?? []) as Array<{ id: string; name: string }>) {
     try {
@@ -76,9 +80,29 @@ export async function runHealthAlerts(sb: SupabaseClient): Promise<Record<string
   return out;
 }
 
+// Cloud heartbeat. This cron is the aliveness proxy for the whole primary
+// scheduler: a ping only fires after a completed sweep, so silence means
+// Render, Inngest, or the DB is down (or this function itself is failing).
+// Separate check + env var from the laptop loop's HEALTHCHECKS_PING_URL —
+// same name in both runtimes would let cloud pings mask a dead backstop.
+async function pingCloudHeartbeat(): Promise<Record<string, unknown>> {
+  const url = process.env.HEALTHCHECKS_PING_URL_CLOUD;
+  if (!url) return { pinged: false, why: 'HEALTHCHECKS_PING_URL_CLOUD unset' };
+  try {
+    const res = await fetch(url);
+    return { pinged: res.ok, status: res.status };
+  } catch (e) {
+    return { pinged: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export const healthSweepCron = inngest.createFunction(
   { id: 'health-sweep', concurrency: { limit: 1 } },
   { cron: '15 11,23 * * *' },
   async ({ step }) =>
-    step.run('sweep-and-alert', async () => runHealthAlerts(createServerClient())),
+    step.run('sweep-and-alert', async () => {
+      const results = await runHealthAlerts(createServerClient());
+      const heartbeat = await pingCloudHeartbeat();
+      return { ...results, heartbeat };
+    }),
 );
