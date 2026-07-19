@@ -19,7 +19,7 @@ const DEFAULT_PRICING = {
   exa_per_search: 0.007, // $7 / 1k requests (1-10 results)
   exa_per_content_page: 0.001, // $1 / 1k pages; each search retrieves ~num_results pages
   exa_avg_pages_per_search: 3,
-  hunter_per_search: 0, // current plan: monthly credits, no overage — cost is credits, not dollars
+  hunter_per_search: 0, // current plan: monthly credits, no overage: cost is credits, not dollars
 };
 
 async function fetchAll<T>(q: (from: number, to: number) => any): Promise<T[]> {
@@ -84,12 +84,12 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
   const policy = (wsRow?.policy ?? {}) as any;
   const pricing = { ...DEFAULT_PRICING, ...(policy.report?.pricing ?? {}), models: { ...DEFAULT_PRICING.models, ...(policy.report?.pricing?.models ?? {}) } };
 
-  L.push(`# ${wsName} — last ${hours}h`, `Window: ${since.slice(0, 16)}Z → now. Pipeline: ${policy.pipeline?.status ? `${policy.pipeline.status} (${policy.pipeline.reason ?? ''})` : 'running'}`);
+  L.push(`# ${wsName}: last ${hours}h`, `Window: ${since.slice(0, 16)}Z → now. Pipeline: ${policy.pipeline?.status ? `${policy.pipeline.status} (${policy.pipeline.reason ?? ''})` : 'running'}`);
 
   // ---- Research ----
   const research = by('research_completed');
   const searches = research.reduce((a, e) => a + (e.payload?.searches ?? 0), 0);
-  H(`Research — ${research.length} runs, ${searches} searches, ${fmt(signals.length)} signals`);
+  H(`Research: ${research.length} runs, ${searches} searches, ${fmt(signals.length)} signals`);
   const sigCountByEntity = new Map<string, number>();
   signals.forEach((s) => { const k = N(s.entity_id); sigCountByEntity.set(k, (sigCountByEntity.get(k) ?? 0) + 1); });
   const topAccounts = [...sigCountByEntity].sort((a, b) => b[1] - a[1]).slice(0, 10);
@@ -105,14 +105,14 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
 
   // ---- Domains ----
   const resolved = by('domain_resolved'); const domFailed = by('domain_resolve_failed');
-  H(`Domains — ${resolved.length} resolved, ${domFailed.length} refused`);
+  H(`Domains: ${resolved.length} resolved, ${domFailed.length} refused`);
   for (const e of resolved) L.push(`- ${N(e.target_id)} → ${e.payload?.domain}`);
 
   // ---- Scoring ----
   const scoreFacts = facts.filter((f) => f.predicate === 'icp_fit');
   const byEntity = new Map<string, typeof scoreFacts>();
   scoreFacts.forEach((f) => { const a = byEntity.get(f.subject_entity) ?? []; a.push(f); byEntity.set(f.subject_entity, a); });
-  H(`Scoring — ${scoreFacts.length} account score writes across ${byEntity.size} accounts`);
+  H(`Scoring: ${scoreFacts.length} account score writes across ${byEntity.size} accounts`);
   // previous value before the window, for delta display
   const prevOf = new Map<string, string>();
   for (const ent of byEntity.keys()) {
@@ -135,7 +135,7 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
   const newContacts = facts.filter((f) => f.predicate === 'is_a' && f.object_text === 'contact');
   const contactScores = new Map(facts.filter((f) => f.predicate === 'contact_score').map((f) => [f.subject_entity, f.object_text]));
   const roles = new Map(facts.filter((f) => f.predicate === 'role').map((f) => [f.subject_entity, f.object_text]));
-  H(`Contacts — ${pulls.length} pull attempts, ${newContacts.length} new contacts`);
+  H(`Contacts: ${pulls.length} pull attempts, ${newContacts.length} new contacts`);
   for (const f of newContacts) L.push(`- ${N(f.subject_entity)} (${roles.get(f.subject_entity) ?? 'role unknown'}, score ${contactScores.get(f.subject_entity) ?? '?'})`);
   const failReasons = new Map<string, number>();
   for (const e of pulls) {
@@ -149,7 +149,7 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
   const drafts = posts.filter((p) => p.kind === 'touch_draft');
   const sends = posts.filter((p) => p.kind === 'system' && /^Sent →/.test(p.body ?? ''));
   const draftFlags = posts.filter((p) => p.kind === 'system' && /^Draft checks:/.test(p.body ?? ''));
-  H(`Drafts — ${drafts.length} written, ${sends.length} sent`);
+  H(`Drafts: ${drafts.length} written, ${sends.length} sent`);
   for (const p of drafts) {
     L.push(`**${N(accountOfChannel.get(p.channel_id))}** (${ts(p.created_at)})`);
     L.push(`> ${(p.body ?? '').replace(/\n/g, ' ')}`, '');
@@ -160,7 +160,7 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
   // ---- Approvals ----
   const { data: pending } = await sb.from('gates').select('id, policy, condition, requested_at').eq('workspace_id', wsId).is('decision', null).order('requested_at', { ascending: true });
   const { data: decided } = await sb.from('gates').select('id, policy, decision, decided_at, resolution').eq('workspace_id', wsId).gte('decided_at', since);
-  H(`Approvals — ${pending?.length ?? 0} waiting, ${decided?.length ?? 0} decided in window`);
+  H(`Approvals: ${pending?.length ?? 0} waiting, ${decided?.length ?? 0} decided in window`);
   for (const g of pending ?? []) L.push(`- WAITING since ${ts(g.requested_at)} [${g.policy}] ${(g.condition?.body ?? '').replace(/\n/g, ' ').slice(0, 140)}`);
   for (const g of decided ?? []) L.push(`- ${g.decision?.toUpperCase()} ${ts(g.decided_at)} [${g.policy}]${g.resolution?.edited ? ' (edited before send)' : ''}`);
 
@@ -168,7 +168,7 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
   const scoringPreds = /^(icp_fit|score_|contact_score)/;
   const identityPreds = new Set(['is_a', 'email', 'works_at', 'role']);
   const researchFacts = facts.filter((f) => !scoringPreds.test(f.predicate) && !identityPreds.has(f.predicate));
-  H(`Facts — ${fmt(facts.length)} total (${researchFacts.length} from research, rest scoring + contact identity)`);
+  H(`Facts: ${fmt(facts.length)} total (${researchFacts.length} from research, rest scoring + contact identity)`);
   const pains = researchFacts.filter((f) => f.predicate === 'pain_observed');
   for (const f of pains) L.push(`- PAIN ${N(f.subject_entity)}: ${(f.object_text ?? '').slice(0, 200)}`);
   for (const f of researchFacts.filter((x) => x.predicate !== 'pain_observed').slice(0, 12))
