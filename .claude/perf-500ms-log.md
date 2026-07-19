@@ -45,6 +45,20 @@ Warm ×2 = 2nd and 3rd consecutive hit. Occasional single outliers up to ~0.66s 
 - [x] 5. Check dev-server config — Turbopack already on (`next dev --turbopack`), nothing to change; cold compiles stay the separate line item
 - [x] 6. Re-measure all pages, confirm <500ms warm — table above
 
+## Round 2 (2026-07-19, same day): idle-return + uncovered pages
+
+Jake asked "make sure everything is under 500ms". Deeper sweep found three gaps the 3-hits-in-a-row test hid:
+
+| Case | Before | After |
+|---|---|---|
+| Feed after 90s idle (keep-alive pool empty) | 1.35s | 0.39s |
+| Sources after 90s idle | 0.56s | 0.13-0.17s |
+| First request after >5min idle (token cache expired, blocking re-verify) | 0.78s | 0.47s |
+| Entity detail page (never measured in round 1) | 0.32-0.52s | 0.15-0.21s |
+| /workspace/new wizard (never measured) | 0.12-0.34s | unchanged, in budget |
+
+8-sample medians, all routes: 0.09-0.35s. Ruled out: no periodic spike at the feed cache's 60s boundary (stale is served while revalidating, it never blocks). Residual: single ~0.5-1.0s outliers at roughly 1-in-10 frequency under concurrent load, from prod Supabase latency variance plus the single-threaded dev server; not attributable to any page's code. Cold compiles per route after a restart (1-6s) stay excluded per the goal.
+
 ## Fixes shipped
 
 1. **Middleware: verify-once-then-cache (apps/web/middleware.ts).** The remote `auth.getUser()` RTT (~100-150ms, every page AND every API call) now only runs the first time a given access token is seen; the exact token string is cached in-process for 5 min after passing the remote signature check. SECURITY NOTE: the first draft of this fix (2026-07-18, never committed) skipped the remote call whenever the cookie JWT's expiry looked fine — decode only, no signature check. That is a hole here because server pages read with the service-role client (no RLS) and page-side getUser() is a local decode: middleware is the ONLY place the token signature is ever verified. A hand-built cookie with a future exp would have read everything. Caught 2026-07-19 before commit; verified the fix bounces a forged cookie (307 → /login) and a valid one stays cached-fast.
@@ -53,6 +67,10 @@ Warm ×2 = 2nd and 3rd consecutive hit. Occasional single outliers up to ~0.66s 
    - icp_fit fact read was unscoped and hit the PostgREST 1000-row cap (arbitrary subset, oldest first). Now scoped with `.in('subject_entity', …)` to the ~50 entities actually in the window.
    - The API's `.is('supersedes', null)` filter returned the STALE original fact (the 2026-06-30 lesson); replaced with the drop-anything-another-fact-points-at logic, ordered by observed_at desc.
    - SSR now carries score_delta and the dual fetch windows (activity vs consequential kinds), so the server HTML matches what SWR swaps in — the old drift meant every feed visit re-rendered seconds after load (936KB SSR payload shrank to 548KB, same 434 items as the API).
+
+4. **Supabase warm ping (apps/web/instrumentation.ts).** Keep-alive alone dies after 60s idle: the next navigation paid TCP+TLS again (feed 1.35s measured after a 90s gap). A HEAD ping to `/rest/v1/` every 45s holds 3 pooled connections open; server-side closes get absorbed by the ping, off the request path. ~2K pings/day at a few hundred bytes each, so egress is ~1MB/day. Runs in prod too on purpose: phone approval checks are exactly idle-return loads.
+5. **Middleware token cache: stale-while-revalidate (apps/web/middleware.ts).** A cache entry older than 5min now passes the request through and re-verifies in the background (event.waitUntil) instead of blocking ~0.5s. Entries older than 1h, or tokens never seen, still block on the remote check. A session revoked elsewhere gets at most one page render before eviction; the blocking version already allowed up to 5 minutes of that, so nothing real is traded. Forged cookies verified still bouncing after the change.
+6. **Entity detail: 3 queries in one round (entities/[entity_id]/page.tsx).** The channels lookup was serialized behind the types read but only its USE depends on it. One Promise.all now; 0.32-0.52s warm went to 0.15-0.21s.
 
 ## Findings
 
@@ -64,4 +82,5 @@ Warm ×2 = 2nd and 3rd consecutive hit. Occasional single outliers up to ~0.66s 
 ## Session log
 
 - 2026-07-18: session start. Wrote plan, took first baseline. Wrote middleware fast path (decode-only — later found unsafe, see fix 1) + undici keep-alive; left uncommitted, unmeasured.
-- 2026-07-19: re-measured with fresh cookie (fast path + keep-alive live): every page under 500ms warm EXCEPT feed (0.69-0.77s). Profiled feed, unified page+API pipeline behind the shared 60s cache, fixed the 1000-row-cap + stale-supersedes fact reads en route. Replaced the decode-only middleware fast path with verify-once-then-cache after spotting the forged-cookie hole; forged cookie now bounces, warm perf unchanged. Final sweep: goal met on every route.
+- 2026-07-19: re-measured with fresh cookie (fast path + keep-alive live): every page under 500ms warm EXCEPT feed (0.69-0.77s). Profiled feed, unified page+API pipeline behind the shared 60s cache, fixed the 1000-row-cap + stale-supersedes fact reads en route. Replaced the decode-only middleware fast path with verify-once-then-cache after spotting the forged-cookie hole; forged cookie now bounces, warm perf unchanged. Final sweep: goal met on every route. Committed 3edc361.
+- 2026-07-19 round 2: idle-return tests exposed the empty keep-alive pool (feed 1.35s after 90s away) and the blocking token re-verify after 5min (0.78s). Shipped the 45s warm ping, stale-while-revalidate on the token cache, and the entity-detail query parallelization. All re-verified including the forged-cookie bounce; tables above updated.

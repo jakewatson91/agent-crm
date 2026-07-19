@@ -11,7 +11,10 @@ export default async function EntityPage({
   const { ws, entity_id } = await params;
   const supabase = createServerClient();
 
-  const [entityRes, typesRes] = await Promise.all([
+  // The channel lookup doesn't depend on the other two reads, so all three go
+  // in one round; its result is only used when the entity turns out to be an
+  // account (account channels aggregate posts/touches/gates).
+  const [entityRes, typesRes, chRes] = await Promise.all([
     supabase
       .from('entities')
       .select('id, name, attributes')
@@ -25,6 +28,12 @@ export default async function EntityPage({
       .eq('subject_entity', entity_id)
       .eq('predicate', 'is_a')
       .is('supersedes', null),
+    supabase
+      .from('channels')
+      .select('id')
+      .eq('workspace_id', ws)
+      .eq('account_entity_id', entity_id)
+      .maybeSingle(),
   ]);
   const entity = entityRes.data;
 
@@ -44,18 +53,7 @@ export default async function EntityPage({
     .filter((s): s is string => !!s);
   const primaryType = types[0] ?? 'entity';
 
-  // Account-typed entities have a channel that aggregates posts/touches/gates.
-  // Other types render the shared sections only.
-  let channelId: string | null = null;
-  if (types.includes('account')) {
-    const { data: ch } = await supabase
-      .from('channels')
-      .select('id')
-      .eq('workspace_id', ws)
-      .eq('account_entity_id', entity_id)
-      .maybeSingle();
-    channelId = ch?.id ?? null;
-  }
+  const channelId = types.includes('account') ? (chRes.data?.id ?? null) : null;
 
   return (
     <EntityDetail
