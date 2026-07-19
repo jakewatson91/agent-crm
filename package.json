@@ -23,6 +23,7 @@
     "agent:list": "tsx scripts/list_agents.ts",
     "loop": "tsx scripts/run_loop.ts",
     "sweep": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/sweep.ts",
+    "report": "tsx scripts/daily_report.ts",
     "hiring:run": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/run_hiring_daily.ts",
     "research:check": "tsx scripts/_check_research.ts",
     "status": "tsx scripts/_status.ts",
