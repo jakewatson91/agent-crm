@@ -8,15 +8,18 @@ import { entityIdsOfType } from '@agent-crm/tools';
 
 type Sb = ReturnType<typeof createServerClient>;
 
-// Per-unit cost assumptions in USD. Override via workspaces.policy.report.pricing
-// (same shape). Token rates are per 1M tokens.
+// Per-unit costs in USD, provider list prices as of 2026-07. Override via
+// workspaces.policy.report.pricing (same shape). Token rates are per 1M tokens;
+// "input" is the cache-miss rate, "cached" the cache-hit rate.
 const DEFAULT_PRICING = {
   models: {
-    'deepseek-v4-flash': { input: 0.14, cached: 0.014, output: 0.28 },
-    'deepseek-v4-pro': { input: 0.56, cached: 0.07, output: 1.68 },
+    'deepseek-v4-flash': { input: 0.14, cached: 0.0028, output: 0.28 },
+    'deepseek-v4-pro': { input: 0.435, cached: 0.003625, output: 0.87 },
   } as Record<string, { input: number; cached: number; output: number }>,
-  exa_per_search: 0.005,
-  hunter_per_search: 0.049,
+  exa_per_search: 0.007, // $7 / 1k requests (1-10 results)
+  exa_per_content_page: 0.001, // $1 / 1k pages; each search retrieves ~num_results pages
+  exa_avg_pages_per_search: 3,
+  hunter_per_search: 0, // current plan: monthly credits, no overage — cost is credits, not dollars
 };
 
 async function fetchAll<T>(q: (from: number, to: number) => any): Promise<T[]> {
@@ -203,12 +206,13 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
   }
   const standaloneDomainSearches = Math.max(0, resolved.length + domFailed.length - research.filter((e) => e.payload?.domain_resolved || /domain/.test(e.payload?.summary ?? '')).length);
   const exaSearches = searches + standaloneDomainSearches;
-  const exaCost = exaSearches * pricing.exa_per_search;
+  const exaPages = exaSearches * pricing.exa_avg_pages_per_search;
+  const exaCost = exaSearches * pricing.exa_per_search + exaPages * pricing.exa_per_content_page;
   const hunterSearches = pulls.filter((e) => /hunter/.test(e.payload?.summary ?? '')).length;
   const hunterCost = hunterSearches * pricing.hunter_per_search;
-  L.push(`- Exa: ~${exaSearches} searches → ${usd(exaCost)}`);
-  L.push(`- Hunter: ${hunterSearches} domain searches → ${usd(hunterCost)}`);
-  L.push(`- **Total: ~${usd(llmTotal + exaCost + hunterCost)}** (unit costs are assumptions; correct them in policy.report.pricing)`);
+  L.push(`- Exa: ~${exaSearches} searches + ~${exaPages} content pages → ${usd(exaCost)}`);
+  L.push(`- Hunter: ${hunterSearches} credits used${hunterCost ? ` → ${usd(hunterCost)}` : ' (credit-limited plan, no overage: hard stop when credits run out)'}`);
+  L.push(`- **Total: ~${usd(llmTotal + exaCost + hunterCost)}/day at this pace** (rates: provider list prices, override in policy.report.pricing)`);
 
   // ---- Next 24h ----
   H('Next 24h');
@@ -228,7 +232,7 @@ export async function buildDailyReport(sb: Sb, wsId: string, wsName: string, hou
     L.push(`- Domain backfill: ${fmt(noDomain)} accounts still missing a domain, draining ${perDay}/day (~${Math.ceil(noDomain / perDay)} days).`);
   }
   const keyErrors = [...failReasons.keys()].filter((r) => /not set|API key/i.test(r));
-  for (const r of keyErrors) L.push(`- BLOCKER: "${r}" — fix the key or contact pulls stay on the fallback provider.`);
+  for (const r of keyErrors) L.push(`- BLOCKER: "${r}". Fix the key or contact pulls stay on the fallback provider.`);
   const noDomainPulls = failReasons.get('no domain on account');
   if (noDomainPulls) L.push(`- ${noDomainPulls} account(s) skipped contact pull for lack of a domain; backfill unblocks them.`);
   return L.join('\n');
