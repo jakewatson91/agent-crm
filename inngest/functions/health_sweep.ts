@@ -70,7 +70,7 @@ export async function runHealthAlerts(sb: SupabaseClient): Promise<Record<string
         out[ws.id] = { reds: 0, sent: false, why: 'cleared' };
         continue;
       }
-      const subject = `[agent-crm] ${ws.name}: ${reds.length} RED health check${reds.length === 1 ? '' : 's'}`;
+      const subject = `${ws.name}: ${reds.length} RED health check${reds.length === 1 ? '' : 's'}`;
       const sent = await sendOwnerAlert(sb, ws.id, subject, alertBody(ws.name, reds));
       out[ws.id] = { reds: reds.length, sent: sent.ok, to: sent.to, problem: sent.error ?? sent.skipped };
     } catch (e) {

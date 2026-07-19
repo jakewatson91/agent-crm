@@ -51,7 +51,7 @@ export async function POST(req: Request) {
     supabase: sb,
     workspace_id: body.workspace_id,
     intended_to: body.email,
-    subject: `You're invited to ${wsName} on agent-crm`,
+    subject: `[agent-crm] You're invited to ${wsName}`,
     body: `You've been invited to join ${wsName} as ${body.role}.\n\nAccept here: ${acceptUrl}\n\nThis link expires in 7 days.`,
   });
 

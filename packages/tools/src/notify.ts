@@ -52,13 +52,17 @@ export async function sendOwnerAlert(sb: SupabaseClient, workspace_id: string, s
     if (!apiKey) return { ok: false, skipped: 'no Resend API key (workspace env or RESEND_API_KEY)' };
     const to = policy.alerts?.email ?? (await resolveOwnerEmail(sb, workspace_id));
     if (!to) return { ok: false, skipped: 'no alert recipient (policy.alerts.email unset, workspace has no members)' };
+    // Every operator email is branded in one place: subject leads with
+    // [agent-crm] and the sender shows a display name instead of the raw
+    // address (otherwise the testing sender reads as "onboarding" in inboxes).
+    const finalSubject = subject.startsWith('[agent-crm]') ? subject : `[agent-crm] ${subject}`;
     const res = await fetch(RESEND_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: policy.outreach?.from_email ?? 'onboarding@resend.dev',
+        from: `agent-crm <${policy.outreach?.from_email ?? 'onboarding@resend.dev'}>`,
         to,
-        subject,
+        subject: finalSubject,
         text: body,
       }),
     });
@@ -89,5 +93,5 @@ export async function notifyPipelinePaused(sb: SupabaseClient, workspace_id: str
     'After fixing the cause, open the workspace and click Continue on the banner.',
     'You get one email per pause, not one per retry.',
   ].join('\n');
-  return sendOwnerAlert(sb, workspace_id, `[agent-crm] ${name}: pipeline paused (${status.provider ?? scope})`, body);
+  return sendOwnerAlert(sb, workspace_id, `${name}: pipeline paused (${status.provider ?? scope})`, body);
 }

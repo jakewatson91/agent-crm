@@ -45,8 +45,11 @@ export async function sendEmail({ supabase, workspace_id, intended_to, subject, 
     return { ok: false, effective_to: '', override_active, error: 'no effective recipient (intended_to empty and no override configured)' };
   }
 
+  // Override-rerouted copies land in the operator's inbox, so they carry the
+  // [agent-crm] tag like every other system email. Real prospect sends keep
+  // the drafted subject untouched — a platform tag on cold outreach kills it.
   const finalSubject = override_active
-    ? `[would-have-sent-to: ${intended_to ?? 'no contact resolved'}] ${subject}`
+    ? `[agent-crm] [would-have-sent-to: ${intended_to ?? 'no contact resolved'}] ${subject}`
     : subject;
 
   try {
