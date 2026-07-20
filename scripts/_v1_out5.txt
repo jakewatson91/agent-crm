@@ -1,0 +1,2 @@
+◇ injected env (24) from .env.local // tip: ⌘ override existing { override: true }
+pending gates before: 0

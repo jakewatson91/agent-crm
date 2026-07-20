@@ -1,0 +1,14 @@
+◇ injected env (24) from .env.local // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+PENDING gates (approvals) now: 1
+  15:05:46  Mastra  to=sam@mastra.ai  subj="Pipeline"
+
+contact PULL attempts in last 15min: 7
+  15:07:38  1 new contact(s) via hunter (1 found)
+  15:07:35  no contacts found via explorium/hunter
+  15:07:32  no contacts found via explorium/hunter
+  15:07:31  no contacts found via explorium/hunter
+  15:07:28  no domain on account
+  15:07:28  no contacts found via explorium/hunter
+  15:03:50  3 new contact(s) via explorium (3 found)
+
+new CONTACT entities in last 15min: 0 

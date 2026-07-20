@@ -1,0 +1,11 @@
+◇ injected env (24) from .env.local // tip: ⌁ auth for agents [www.vestauth.com]
+=== DRAFT (Mastra) ===
+To: sam@mastra.ai
+Subject: Pipeline
+
+I'm writing because you just posted for a Founding Sales hire. You probably dismiss most sales tool pitches, given you build an AI agent framework yourselves. So I'll be quick. The job post makes it clear your pipeline is already growing faster than your team can handle. The founders and your chief of staff are closing deals, but without a dedicated AE yet, either deals slip or the founding team keeps selling instead of building. We run outbound for you end-to-end. An agent finds companies worth reaching, writes the emails, sends them, and follows up. You approve what goes out in about five minutes a day and then focus on closing. Open to a five-minute chat this week?
+
+=== grounded in 3 cited facts ===
+  · hiring_role: sales / founding — Founding Sales
+  · pain_observed: pipeline growing faster than one person can work it
+  · is_first_dedicated_sales_hire: true

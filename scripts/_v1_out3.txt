@@ -1,0 +1,6 @@
+◇ injected env (24) from .env.local // tip: ⌁ auth for agents [www.vestauth.com]
+total gates: 349 | pending(decision null): 0 | decided: 349
+pending by policy: {}
+pending with NO channel_post (phantom): 0
+recent pending: 
+decision values on decided: {"approve":1,"reject":348}

@@ -1698,3 +1698,15 @@ Continuation of the 07-13 session after Jake topped up Exa and said "run the pro
 ### Watch
 - Next 4h research tick: "no runnable angles" errors should drop sharply on Sudden cold picks.
 - Next 13:00 UTC ATS run: newly domained accounts get probed (stale hints dropped); check sources.last_run_summary + hiring signals.
+
+## 2026-07-18 — Operator alerting shipped end-to-end (pause emails, RED sweep cron, two dead-man heartbeats, [agent-crm] branding)
+
+Commits `6b353c6`, `162fa09`, `1a3f9e4`, `a09780a`, all pushed + deployed + Inngest-synced.
+
+- **Pause emails**: `setPipelineStatus` emails the operator on the not-paused → paused edge with the same reason the banner shows. Edge check = dedupe (one pause episode, one email). Live-verified on the test workspace: delivered, second write silent, state restored.
+- **New alert sender** `packages/tools/src/notify.ts`: Resend direct, never rerouted by `override_to`, recipient = `policy.alerts.email` (new knob) → owner login email. Discovery that forced the knob: Resend testing mode only delivers to the Resend account's own address (jakeawatson91), owner login (jaws.watson) 403s. Knob set on all 4 workspaces via config write.
+- **RED health-sweep cron** (`health-sweep`, 11:15/23:15 UTC): same `sweepWorkspace` checks as the session hook, emails only when the RED set changed (fingerprint marker `health_alert` in events). Live-verified: run 1 emailed demo (2 RED) + Sudden (1 RED), run 2 silent.
+- **Two dead-man heartbeats**: laptop loop pings `HEALTHCHECKS_PING_URL` (check 6f79f088, live in `.env.local`); `health-sweep` cron pings `HEALTHCHECKS_PING_URL_CLOUD` (check bbeada63, armed; Render env var still Jake-only-open). Bug fixed en route: a dead DB previously let the sweep "complete" empty and ping green — workspaces query now throws.
+- **Verified in Inngest docs**: no native missed-run alerting exists; onFailure/function.failed only fire when runs execute and run through Inngest itself. Heartbeats are the only cover for the June class.
+- **All operator emails now lead with `[agent-crm]`** (enforced once in `sendOwnerAlert`), sender display name "agent-crm" replaces raw "onboarding" address; invite subject retagged; override-rerouted outreach copies tagged; real prospect outreach untouched.
+- Also committed the prior session's applied-but-untracked migration `0045_events_parent_index.sql`.

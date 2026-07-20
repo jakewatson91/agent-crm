@@ -1,0 +1,70 @@
+[
+  {
+    "domain": "hud.ai",
+    "entity_id": "e658445f-f866-46be-be02-b8a36a5497c5",
+    "account_name": "hud",
+    "contacts": []
+  },
+  {
+    "domain": "furtherai.com",
+    "entity_id": "c96f5233-5501-4175-9f00-2e2663aef6d7",
+    "account_name": "FurtherAI",
+    "contacts": [
+      {
+        "name": "Aman Gour",
+        "email": "aman@furtherai.com",
+        "role": "Chief Executive",
+        "seniority": "executive",
+        "source_confidence": 0.99
+      }
+    ]
+  },
+  {
+    "domain": "useflai.com",
+    "entity_id": "25a46a75-24a1-4602-b419-ed07d6a3bebb",
+    "account_name": "Flai",
+    "contacts": []
+  },
+  {
+    "domain": "avallon.ai",
+    "entity_id": "cf747158-d96c-413c-91ed-d2c3e661de15",
+    "account_name": "Avallon AI",
+    "contacts": []
+  },
+  {
+    "domain": "noxmetals.co",
+    "entity_id": "47d848d6-5a8c-4a62-8f6e-378cbfde5e45",
+    "account_name": "Nox Metals",
+    "contacts": []
+  },
+  {
+    "domain": "aquavoice.com",
+    "entity_id": "9987fb39-745f-42e9-b456-606377672d00",
+    "account_name": "Aqua Voice",
+    "contacts": []
+  },
+  {
+    "domain": "fleetline.ai",
+    "entity_id": "5b838c8d-c6b2-473f-aa90-a881bbdb4890",
+    "account_name": "Fleetline",
+    "contacts": []
+  },
+  {
+    "domain": "workweave.dev",
+    "entity_id": "5c39302d-1f0e-4ede-8470-a4c7671875ce",
+    "account_name": "Weave",
+    "contacts": []
+  },
+  {
+    "domain": "fromolive.com",
+    "entity_id": "dd037614-0d99-40c4-ba78-7a79ef782c62",
+    "account_name": "Olive",
+    "contacts": []
+  },
+  {
+    "domain": "uplane.com",
+    "entity_id": "641d6601-c00a-475d-89aa-958ebe62a848",
+    "account_name": "Uplane",
+    "contacts": []
+  }
+]

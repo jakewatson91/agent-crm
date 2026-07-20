@@ -1,0 +1,22 @@
+◇ injected env (24) from .env.local // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+isHaltingError:
+  OK  true	"Hunter 402: Insufficient Balance"
+  OK  true	"DeepSeek 429 rate limit exceeded"
+  OK  true	"401 Unauthorized"
+  OK  false	"Explorium match 200: no business found"
+  OK  false	"no domain"
+  OK  false	"some transient network ECONNRESET"
+
+dry advanceAccounts(contactCap:0, draftCap:0, maxAccounts:8):
+{
+  "scanned": 8,
+  "contacts_pulled": 0,
+  "contacts_created": 0,
+  "drafts_created": 0,
+  "decisions": {
+    "needs_contact": 6,
+    "draft_cap_reached": 1,
+    "not_draft_ready": 1
+  }
+}
+pipeline status now: {"state":"ok","last_run":{"scanned":8,"drafts_created":0,"contacts_pulled":0,"contacts_created":0},"last_run_at":"2026-07-01T15:01:55.080Z"}
