@@ -656,6 +656,9 @@ export async function runAgent(
     forbidden_phrases: policy.outreach?.banned_phrases ?? [],
     forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
     market_brief: policy.drafter?.market_brief,
+    templates: policy.drafter?.templates,
+    message_rules: policy.drafter?.message_rules,
+    char_budget: policy.drafter?.char_budget,
   });
   // Compute the deterministic shortlist for drafters. ~30 token addition; the
   // drafter prompt is told to prefer these but can override when context demands.
