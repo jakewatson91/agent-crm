@@ -659,6 +659,7 @@ export async function runAgent(
     templates: policy.drafter?.templates,
     message_rules: policy.drafter?.message_rules,
     char_budget: policy.drafter?.char_budget,
+    trigger_max_age_days: policy.drafter?.trigger_max_age_days,
   });
   // Compute the deterministic shortlist for drafters. ~30 token addition; the
   // drafter prompt is told to prefer these but can override when context demands.
@@ -1055,7 +1056,7 @@ DUPLICATION — the system already runs deterministic checks before invoking you
 
 Now to your specific task.`;
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   behavior: AgentBehavior,
   about: string,
   constitution: string,
@@ -1076,6 +1077,7 @@ function buildSystemPrompt(
     templates?: Array<{ id: string; label: string; audience: string; body: string; anatomy?: string; enabled?: boolean }>;
     message_rules?: string[];
     char_budget?: number;
+    trigger_max_age_days?: number;
   },
 ): string {
   const identity = behavior === 'drafter'
@@ -1108,6 +1110,7 @@ function buildSystemPrompt(
     templates: drafterPolicy?.templates,
     message_rules: drafterPolicy?.message_rules,
     char_budget: drafterPolicy?.char_budget,
+    trigger_max_age_days: drafterPolicy?.trigger_max_age_days,
     subject_style: drafterPolicy?.subject_style,
     paragraph_count: drafterPolicy?.paragraph_count,
     pain_points: drafterPolicy?.pain_points,
@@ -1221,7 +1224,7 @@ Output strictly valid JSON:
 If nothing genuinely new is extractable, output {"facts":[],"summary":"No new facts; data already known or signal too vague.","reasoning":"<why nothing new>"}`;
 }
 
-function buildUserPrompt(
+export function buildUserPrompt(
   agentId: string,
   subName: string,
   subSemantic: string,
@@ -1388,6 +1391,28 @@ export function draftAuditFlags(args: {
   const url = args.body.match(/https?:\/\/\S+|\bwww\.\S+/i);
   if (url) {
     flags.push(`draft contains a link (${url[0].slice(0, 60)}); links in a first touch hurt reply rates`);
+  }
+
+  // Craft checks, same shapes for every workspace (see OUTREACH_CRAFT in
+  // prompt_builders.ts). These catch the two failure modes the prompt alone
+  // didn't stop: a message that asks for calendar time, and a message with no
+  // question in it at all. Customer-specific phrase bans are NOT here — those
+  // live in policy.outreach.banned_phrases.
+  const TIME_ASKS: Array<[RegExp, string]> = [
+    [/\bopen to a (quick |brief |short )?(chat|call|conversation)\b/i, 'asks for a chat instead of offering something'],
+    [/\bworth a (quick |brief |short )?(chat|call)\b/i, 'asks for a call instead of offering something'],
+    [/\b\d{1,2}\s*(-|\s)?\s*(min|minute)s?\b/i, 'proposes a meeting length'],
+    [/\b(can|could) we (sync|connect|hop on|jump on)\b/i, 'asks for a meeting'],
+    [/\b(calendly|savvycal|cal\.com)\b/i, 'contains a scheduling link'],
+    [/\b(does|would) (next |this )?(week|tuesday|wednesday|thursday|monday|friday) work\b/i, 'proposes a specific day'],
+  ];
+  for (const [re, why] of TIME_ASKS) {
+    const m = args.body.match(re);
+    if (m) { flags.push(`CTA ${why}: "${m[0]}" — offer to do the work or give them an easy out instead`); break; }
+  }
+
+  if (!args.body.includes('?')) {
+    flags.push('no question in the draft; the reader has nothing cheap to answer');
   }
 
   if (templated) {

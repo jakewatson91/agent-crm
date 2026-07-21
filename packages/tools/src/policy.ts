@@ -123,6 +123,13 @@ export interface DrafterPolicy {
   message_rules?: string[];
   /** Character target for the DM body. Default 400 when templates are present. */
   char_budget?: number;
+  /**
+   * How old a trigger may be before the drafter refuses to build on it. How fast
+   * "recent" goes stale depends on the customer's market, so it is a knob, not a
+   * constant: a funding-driven book moves in weeks, an infrastructure book in
+   * quarters. Default 90 days.
+   */
+  trigger_max_age_days?: number;
   /** Connection-request note template. For manual use at CR time; not rendered. */
   cr_note?: string;
 

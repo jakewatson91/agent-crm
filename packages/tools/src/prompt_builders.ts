@@ -81,7 +81,105 @@ export interface DrafterDecisionOpts {
   message_rules?: string[];
   /** Character target for the DM body. Default 400. */
   char_budget?: number;
+  /**
+   * How old a trigger may be before the drafter should refuse rather than use
+   * it (policy.drafter.trigger_max_age_days). How fast "recent" goes stale is a
+   * property of the customer's market, not of outreach craft: a funding-driven
+   * book moves in weeks, an infrastructure book in quarters. Vertical-neutral
+   * default of 90 days; tune per workspace, no code change.
+   */
+  trigger_max_age_days?: number;
 }
+
+/**
+ * How to write a first-touch outreach message. This is craft, not content: it is
+ * the same for every workspace and every vertical, so it lives in code next to
+ * the other shared machinery rather than on workspaces.policy. What a given
+ * customer is allowed to CLAIM (numbers, sources, pricing) is config and stays
+ * in the constitution and message_rules.
+ *
+ * Sourced from the outreach writers whose results are public and measured:
+ * Josh Braun (ditch the pitch / poke the bear; never ask for calendar time),
+ * 30 Minutes to President's Club (pitching costs up to 57% of replies, leading
+ * with the problem adds 20%, an offer-based CTA adds 28%; personalization has to
+ * attach to the problem or it reads robotic; ban "nothing nouns" and filler
+ * verbs), Chris Voss (no-oriented asks, where "no" still moves it forward), and
+ * Lavender's 231,818-email benchmark (replies peak at a fifth-grade reading
+ * level; one "talking at you" informative tone costs 26% of replies).
+ *
+ * Lands in the cached system prefix, which is stable per workspace, so the
+ * length is close to free after the first call of a run.
+ */
+const outreachCraft = (maxAgeDays: number) => `Work these steps in order. Do not skip ahead to writing.
+
+STEP 1 — FIND THE TRIGGER, OR STOP.
+A trigger is something that HAPPENED. They posted, spoke, shipped, launched, raised, hired, published a number, changed a plan. Test it by finishing this sentence with a real date and a verb: "On <date>, they <did X>."
+NOT triggers, and a message built on one will be rejected: what the company IS ("a streaming platform"), what it FOCUSES ON ("cost efficiency"), what you INFER it suffers from ("must be facing buffering"), an award, a topic they cover, or a description of their market.
+IT HAS TO BE RECENT. Inside the last ${maxAgeDays} days. Anything older reads as "I found you in a database" unless it is still visibly unfolding right now, and then say what is unfolding rather than the old date. If the freshest thing you have is stale, that is a reason to stop, not a reason to use it.
+PICK THE STRONGEST, NOT THE FIRST. When several facts qualify, lead with the one closest to the problem in STEP 2. A market launch or a traffic number beats a conference appearance every time. Do not open on a weak trigger and then quietly build the question off a stronger fact further down: put the strong one first.
+If the facts hold no real trigger, output the request_gate escape hatch naming the one fact you would need. A message not sent costs nothing. A fake trigger burns the account permanently.
+
+STEP 2 — TURN THE TRIGGER INTO THE JOB THEY HATE.
+Because of this trigger, what unglamorous job or growing cost lands on this person's desk? Write it the way their own team would say it out loud, not the way a product page would. "The bill grows every time an episode drops" beats "rising infrastructure costs."
+ONE HOP, NOT THREE. The trigger must reach the problem in a single step. If you need "they did X, so probably Y, which might mean Z" to get there, the trigger is too weak — go back to STEP 1 and find another or stop. An award, badge, certification or partner status is recognition of something they already do well, so it almost never reaches a problem in one hop; a growth number, a launch, a hire or a stated plan usually does.
+If you could delete the first sentence and the rest still reads fine, the personalization is decoration and you have not done the work.
+If the trigger honestly points the other way, that they already solved this, that LOWERS fit. Drop the angle or stop. Never tell them their own strategy is wrong.
+
+STEP 3 — WRITE THE THINK QUESTION. This is the most important line in the message.
+It makes them check an assumption about the way they do things now. It is never a question about your product.
+It must be answerable from memory in one line. If they would have to open a dashboard to answer it, it is too heavy.
+Prefer a fork over an open question. "Does X fall, or does it grow 1:1?" costs less to answer than "how do you think about X?"
+Do not answer it yourself in the line before it. If the previous sentence already asserts the answer, the question is rhetorical and dead.
+Do not ask a question whose honest answer is "we're fine" with nowhere to go.
+BUILD IT FROM THEIR SITUATION, DO NOT COPY THE EXEMPLAR'S. The exemplar's question was written for a different company. Yours has to point at the specific thing in STEP 2: their peak, their release cadence, their new market, the thing that just changed. "When you drop a new series, how much egress is the same segments over and over?" is doing the work. The same question with the specifics filed off is not. If your question would read identically to another company in this industry, it is too generic — rewrite it.
+
+STEP 4 — CRED. ONE SENTENCE, AND ONLY IF THE TEMPLATE CALLS FOR IT.
+Cred is a pattern you have seen across the category, or a number with a named source. It is never a promise about their results.
+The strongest form names a cost they cannot currently see, rather than a benefit you would deliver.
+With no honest pattern and no sourced number, write no cred at all. A missing cred beats an invented one.
+
+STEP 5 — TALK. NEVER ASK FOR TIME.
+Asking for a slot on the calendar is the most common way these messages die. Ranked, best first:
+  1. Offer to do the work for them: "Want me to put your numbers to it?"
+  2. Status-quo exit that lets them decline: "Already got that handled?"
+  3. No-oriented ask, where "no" still moves it forward: "Would you be opposed to me sending it over?"
+  4. Nothing at all, when the template says so. The reply is the win.
+BANNED with no exceptions: "Open to a quick chat?", "Worth a quick call?", "Do you have 15 minutes?", "Can we sync?", any proposed day, time or meeting length, and any calendar link.
+
+STEP 6 — LINE EDIT. Read it back as the recipient.
+- Open on them. The first five words are about their world, never yours.
+- Use their first name if you have it. A bare "Hey," with no name is worse than no greeting at all: drop the greeting entirely instead.
+- Never tell them what they think, feel, worry about or wonder. "That must keep you up at night", "a spike like that makes you wonder", "you're probably frustrated by" — all out. State the fact and ask the question; let them supply the feeling.
+- Fifth-grade reading level. Short sentences, one idea each, common words.
+- Cut every word that survives being cut. Kill "just", "quick", "really", "I hope this finds you well", and every exclamation mark.
+- No abstract product nouns ("single source of truth", "all-in-one platform", "seamless integration"). No filler verbs (streamline, leverage, optimize, empower, unlock, revolutionize).
+- Keep the pitch to one sentence, and never place it before the Think question.
+- Write in English, always, whatever language their own content is in.
+- No links.
+- Never invent numbers, customer names, case studies, or results.
+- Never remark on anyone's race, ethnicity, nationality, gender or religion, even admiringly. Where a team is based can be business context. Who they are is never a hook.
+
+STEP 7 — PICK ONE TEMPLATE AND MATCH ITS SHAPE.
+Match the recipient's real role to the AUDIENCE lines and pick exactly one. If the recipient matches none of them, do not force a fit: output request_gate.
+What MUST be built fresh for this account: the trigger, the problem in STEP 2, and the think question. Never take those from the exemplar.
+What MAY repeat across accounts: the credibility claim and the sentence describing what you do. Those are the approved wording and there is no value in reinventing them.
+The test: strip the first sentence and the question from your draft and from the exemplar. If what is left is nearly all that is different between them, you have written the exemplar with a new hat on. Go back to STEP 3.
+
+STEP 8 — COUNT THE CHARACTERS. If you are over budget, cut in this order until you fit:
+  1. The verification detail that trails the ask ("X shows up in your dashboard").
+  2. Adjectives and any clause that restates something already said.
+  3. The credibility sentence. It is the most expendable of the four parts; a message with a sharp trigger and a sharp question still works with no cred at all.
+Never cut the question to fit. Never cut the trigger to fit.
+
+STEP 9 — CHECK BEFORE YOU OUTPUT. Any "no" means rewrite.
+- Can I name the trigger, roughly when it happened, and is it inside the last ${maxAgeDays} days?
+- Does the trigger reach the problem in one hop?
+- Is there a question they can answer from memory in one line, and is it about THEIR situation rather than the exemplar's?
+- Does the message open on them?
+- Is the pitch one sentence or less, and does it come after the question?
+- Can I source every number and claim?
+- Is it under the character budget?
+- Would this person feel researched, or processed?`;
 
 export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
   if ((opts.outreach_channel ?? 'email') === 'linkedin') {
@@ -99,26 +197,27 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
         .join('\n\n');
       return `A new high-fit signal matched your saved filter rule. Write the LinkedIn DM for this account, following the workspace templates below.
 
-RULES:
+${outreachCraft(opts.trigger_max_age_days ?? 90)}
+
+THIS WORKSPACE'S RULES — these override anything above if they conflict:
 ${rulesBlock}
 - No greeting-and-sign-off padding. LinkedIn shows the sender's name.
 - No subject line — set "subject" to null in your output.
 - Do NOT mention "our system", "your profile", "according to our data", or any internal field name.
 ${toneBlock}
-TEMPLATES — pick exactly ONE by matching the recipient (role, seniority, relationship to the buying decision) to each template's AUDIENCE line. Write a NEW message in the chosen template's structure and voice, anchored to THIS account's real trigger facts. Never reuse an exemplar's names, numbers, or trigger — the exemplar shows the shape, not the content.
+TEMPLATES:
 
 ${templatesBlock}
 
-NO TRIGGER, NO DM — the trigger must be a real, recent, specific event or statement from the SIGNAL or active facts (a post, a talk, a launch, a hire, a stated number). A topic they cover or a generic description of their business is NOT a trigger. If the facts contain no genuine trigger, output {"action":"request_gate","body":"<one sentence: what trigger you'd need>","policy":"facts_insufficient_for_draft"} instead of forcing one.
+LEAD-FACT SELECTION — prefer the RECOMMENDED FACTS shortlist when the user message includes one.
 
-LEAD-FACT SELECTION — same as always: prefer the RECOMMENDED FACTS shortlist when present. Anchor on evidence they have a problem you solve, not just any fact about them.
+REQUEST_GATE — when STEP 1, STEP 2 or STEP 7 tells you to stop, output exactly:
+{"action":"request_gate","body":"<one sentence: the fact you would need>","policy":"facts_insufficient_for_draft"}
 
-DON'T BEND THE SIGNAL — if the signal suggests they've already solved the problem (hired the team, built in-house), that's a disqualifier, not an angle.
-
-REASONING — include a "reasoning" field: 1-2 sentences naming which template you chose, why it fits this recipient, and which facts you anchored to. Shown in the audit channel, not sent to the recipient.
+REASONING — include a "reasoning" field: name the template you chose, the trigger you anchored to and roughly when it happened, and why this recipient fits that template's audience. Shown in the audit channel, never sent to the recipient.
 
 Output strictly valid JSON:
-{"action":"post_touch_draft","subject":null,"body":"<linkedin DM, aim under ${budget} chars>","cites":["<fact_id_uuid>",...],"reasoning":"<template chosen + facts anchored>","to_email":null}`;
+{"action":"post_touch_draft","subject":null,"body":"<linkedin DM, aim under ${budget} chars>","cites":["<fact_id_uuid>",...],"reasoning":"<template chosen + trigger + why this audience>","to_email":null}`;
     }
     const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);
     const values = (opts.value_props ?? []).filter((s) => s.trim().length > 0);
@@ -148,6 +247,8 @@ ${valueBlock}
 LEAD-FACT SELECTION — same as always: prefer the RECOMMENDED FACTS shortlist when present. Anchor on evidence they have a problem you solve, not just any fact about them.
 
 DON'T BEND THE SIGNAL — if the signal suggests they've already solved the problem (hired the team, built in-house), that's a disqualifier, not an angle.
+
+NEVER LEAD WITH IDENTITY — do not comment on, praise, or remark on a person's or team's race, ethnicity, nationality, gender, religion, or similar identity characteristic, even when the source frames it positively. A fact about where a team is based can be useful business context (time zone, market, cost structure) but must never become a personalization line like "impressive that your engineers are from X." If a fact is only about who someone is rather than what the company builds, sells, ships, or needs, it is not a valid hook — skip it.
 
 REASONING — include a "reasoning" field: 1-2 sentences on which facts you anchored to. Shown in the audit channel, not sent to the recipient.
 
@@ -227,6 +328,8 @@ LEAD-FACT SELECTION — the user message may include a RECOMMENDED FACTS block (
 GROUND THE CALLOUT IN EVIDENCE OF A PROBLEM WE SOLVE — the SIGNAL block contains the real source text. Anchor on the specific detail in it that shows this company actually has one of the pains in the PROBLEM STATEMENT above, and connect that evidence to what we sell (see ABOUT). The callout is NOT "any specific fact about them": a topic they cover, an article they wrote, an award, or a generic description of their business is NOT evidence they have our problem and NOT a reason to buy — do not anchor on it. The test for every opening line: would a reader think "yes, that's a real problem I have, and this product is about that"? If the signal shows no honest sign they have a problem we solve, do NOT force an angle — output the request_gate escape hatch naming the fact you'd need. Quote the relevant detail in their own words and let it drive both the problem statement and which value point you pick. Never invent numbers, customer names, case studies, or results ("3x more demos", "teams like yours saw…") — a specific true behavior beats a fake metric.
 
 DON'T BEND THE SIGNAL TO FIT THE PITCH — most signals cut both ways. The same hiring post, funding round, partnership, or launch can mean the prospect HAS the problem we solve, or that they've already solved it (they hired the team, raised the money, built the function in-house). Read it the honest way, not the convenient way, and assume the prospect knows their own situation better than you do. Anchor only on evidence that genuinely shows the problem still exists for THEM. If the strongest signal actually points the other way — it suggests they've already addressed or outgrown the problem — that LOWERS the fit, it does not raise it: drop that angle, pose it as a question rather than a verdict, or refuse via request_gate. Never tell the prospect their own strategy is a mistake, and never assert a problem the facts don't clearly support, just to force a connection to what we sell.
+
+NEVER LEAD WITH IDENTITY — do not comment on, praise, or remark on a person's or team's race, ethnicity, nationality, gender, religion, or similar identity characteristic, even when the source frames it positively. A fact about where a team is based can be useful business context (time zone, market, cost structure) but must never become a personalization line like "impressive that your engineers are from X." If a fact is only about who someone is rather than what the company builds, sells, ships, or needs, it is not a valid hook — skip it.
 ${toneBlock}${marketBriefBlock}
 RECIPIENT — if CONTACTS are present in the user message, pick the best fit for the angle. Echo the chosen email in the output's "to_email" field. If no CONTACTS, set "to_email" to null.
 
