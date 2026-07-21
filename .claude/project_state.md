@@ -1,11 +1,17 @@
 # Project State
 
-Last Update: 2026-07-19
+Last Update: 2026-07-21
 
 > Open items + reference only. Dated session history → `progress_log.md`. Current system map → `architecture.md`. Cross-project lessons → agent_memory daily log.
 
 ## Next session — read first
 See `.claude/backlog.md`. North star = more agent autonomy + phone-actionable approvals (Jake wants the system running itself and pinging him to accept/reject from his phone, including dial-now/snooze for call moments).
+
+**2026-07-21 — Drafter craft rules live (`50e8f80`, `dd8961a` pushed). WATCH the gate rate: refusing is now the correct majority outcome.** The LinkedIn template prompt now walks 9 steps (real trigger or stop → one-hop problem → answer-from-memory question → never ask for calendar time → line edit → re-check). Dry-run over 6 real Sudden accounts: 2 drafts, 4 gates. That ratio is the design working, not a breakage — do NOT "fix" a drop in draft volume by loosening the trigger rule. If volume matters, the lever is more fresh facts (research/ATS yield), not a laxer drafter. Grade any prompt change with `pnpm tsx scripts/_dryrun_drafts.ts [n]` before it can reach a send approval — it builds the real prompts, writes nothing, and greps for banned CTAs / unsourced claims / filler.
+- New knob `policy.drafter.trigger_max_age_days` (default 90, unset everywhere). It is the ONLY part of the craft block that varies by customer — how fast a trigger goes stale is a property of their market. Everything else is craft and stays in code.
+- `draftAuditFlags` now also flags a draft that asks for a meeting or contains no question. Shapes only; customer phrase bans stay in `policy.outreach.banned_phrases`.
+- WATCH parse failures: one of ~10 dry-run completions came back as unparseable JSON, cut mid-body. Live drafter and the dry-run share `max_tokens: 1500` (`agent_logic.ts:690`), and the craft block asks for a longer `reasoning` field than before. Did not reproduce on a 6-account rerun, so it is unconfirmed — if real drafts start failing to parse, raise that number first.
+- **Adding an option to `buildSystemPrompt` has now dropped a sibling field TWICE** (`f101935` dropped `templates`, this session's working tree had dropped `char_budget` — caught before commit by tracing the field, restored). The call site is a wide object literal where an edit-in-place silently removes the old key and nothing type-errors, because every field is optional. Any change there: diff the call site key-by-key against `DrafterDecisionOpts`.
 
 **2026-07-19 — Perf goal met (every page <500ms warm, incl. idle-return); middleware IS the auth boundary — never add a decode-only fast path.** Server pages read with the service-role key (no RLS) and pages-side getUser() is a local cookie decode, so the middleware remote check is the ONLY place the session token's signature is verified. Current design: verify-once-then-cache (5 min fresh, then pass + background re-verify up to 1 h; never-seen tokens always block). A decode-only expiry check was written 07-18 and caught 07-19 before commit — a hand-built cookie would have read everything. Test any middleware change with a forged-cookie curl (expect 307). WATCH: instrumentation.ts now HEAD-pings Supabase every 45s (keeps 3 connections warm, runs in prod too, ~1MB/day) — given the June egress history, glance at Supabase egress once this week to confirm it stays flat. Feed page + /api/feed/list now share one cached pipeline (`apps/web/app/_lib/feed_items.ts`); don't re-fork them. Full numbers: `.claude/perf-500ms-log.md`.
 
