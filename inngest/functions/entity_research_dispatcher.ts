@@ -12,6 +12,12 @@
  *   Cold    — score_total < 0.3       → every 30d
  *   Suppressed — dropped_until in the future → never
  *
+ * Accounts with no resolved attributes.domain never become candidates, tier
+ * aside — no domain means no own_site angle and no contact pull afterward,
+ * so a search there is spend with no possible payoff. domain-backfill-daily
+ * (system_tasks.ts) resolves domains on its own cadence; once one lands, the
+ * account is a normal candidate on its next due cycle.
+ *
  * Among the "due" accounts, a per-workspace Exa search budget is split across three
  * selection buckets so we don't only ever re-research what we already know:
  *   high_value (exploit)  — top score, deep (all strategy angles)
@@ -158,6 +164,7 @@ export const entityResearchDispatcher = inngest.createFunction(
       let skipped_suppressed = 0;
       let due_total = 0;
       let skipped_capped = 0;
+      let skipped_no_domain = 0;
 
       for (const ws of workspaces) {
         // A standing pause that covers research (scope 'research' or 'all')
@@ -167,11 +174,12 @@ export const entityResearchDispatcher = inngest.createFunction(
         if (pipeStatus?.state === 'paused' && (pipeStatus.scope ?? 'all') !== 'contacts') continue;
 
         const allAcctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 5000);
-        const accounts = await chunkedIn<{ id: string; name: string }>(allAcctIds, (chunk) =>
-          supabase.from('entities').select('id, name').in('id', chunk));
+        const accounts = await chunkedIn<{ id: string; name: string; attributes: Record<string, unknown> | null }>(allAcctIds, (chunk) =>
+          supabase.from('entities').select('id, name, attributes').in('id', chunk));
         if (!accounts.length) continue;
         total_evaluated += accounts.length;
         const acctIds = accounts.map((a) => a.id);
+        const domainByEntity = new Map(accounts.map((a) => [a.id, typeof a.attributes?.domain === 'string' && a.attributes.domain.length > 0]));
 
         // Batched fact load — score + lifecycle predicates, in one query.
         const factRows = await chunkedIn<{ subject_entity: string; predicate: string; object_text: string | null; observed_at: string }>(
@@ -282,6 +290,7 @@ export const entityResearchDispatcher = inngest.createFunction(
             const until = Date.parse(s.dropped_until);
             if (Number.isFinite(until) && until > now) { skipped_suppressed++; continue; }
           }
+          if (!domainByEntity.get(a.id)) { skipped_no_domain++; continue; }
           let tier: Tier;
           if (engaged.has(a.id) || (s.signal_strength ?? 0) >= HOT_SIGNAL_THRESHOLD || (s.score_total ?? 0) >= HOT_ICP_THRESHOLD) {
             tier = 'hot';
@@ -353,6 +362,7 @@ export const entityResearchDispatcher = inngest.createFunction(
         due: due_total,
         skipped_capped,
         skipped_suppressed,
+        skipped_no_domain,
         dispatch_errors,
       };
     });
