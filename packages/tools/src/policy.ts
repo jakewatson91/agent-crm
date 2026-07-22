@@ -576,6 +576,14 @@ export const DEFAULT_SELECTION_MIX = { high_value: 0.55, active_comms: 0.30, exp
 /** Exa searches each tier spends per entity researched. Exploration grants a cold account 1. */
 export const TIER_ANGLE_COUNT = { hot: 3, default: 1, cold: 0 } as const;
 
+/**
+ * Single source of truth for the research dispatcher's cadence — used both as
+ * the Inngest cron schedule (entity_research_dispatcher.ts) and by the
+ * pipeline-status API to compute "next run" for the banner, so the two can't
+ * drift apart.
+ */
+export const RESEARCH_DISPATCH_CRON = '0 */4 * * *';
+
 export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrichment' | 'drafter' | 'llm' | 'routing' | 'scoring'>> & WorkspacePolicy = {
   outreach: {
     override_to: null,
