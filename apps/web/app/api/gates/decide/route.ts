@@ -57,20 +57,21 @@ export async function POST(req: Request) {
 
   let sendInfo: { effective_to?: string; override_active?: boolean; message_id?: string; intended_to?: string | null; edited?: boolean } | null = null;
 
-  // On outreach approve for email, send BEFORE updating the gate. If the send
-  // fails, leave the gate undecided so the user can retry.
-  // LinkedIn drafts are approved for copy-to-send manually — no automated send.
-  if (isOutreachApprove && channelType !== 'linkedin') {
+  // On outreach approve, resolve what the final message IS (original or edited)
+  // before touching the gate. Email then sends it; LinkedIn records it for the
+  // manual copy-to-send. Edits are persisted either way — an edited LinkedIn
+  // approval used to fall through the email-only branch and silently drop the
+  // edited text.
+  let finalText: string | null = null;
+  if (isOutreachApprove) {
     const cond = (gate.condition ?? {}) as { to_email?: string | null; subject?: string; body?: string; entity_id?: string };
     const subject = body.edited_subject ?? cond.subject ?? '';
     const intended_to = cond.to_email ?? null;
     // Rich-text edit: sanitize the HTML and derive a plain-text fallback from it
-    // so both parts of the email agree. Plain-text edit or no edit: send text only.
+    // so both parts of the email agree. Plain-text edit or no edit: text only.
     const html = body.edited_html ? sanitizeEmailHtml(body.edited_html) : null;
     const text = html ? htmlToPlainText(html) : (body.edited_body ?? cond.body ?? '');
-    if (!text) {
-      return NextResponse.json({ error: 'gate condition has no body to send' }, { status: 400 });
-    }
+    finalText = text;
     const edited = body.edited_subject !== undefined || body.edited_body !== undefined || body.edited_html !== undefined;
     if (edited) {
       const originalSubject = cond.subject ?? '';
@@ -82,19 +83,30 @@ export async function POST(req: Request) {
         edited: true,
         ...(subjectDiff ? { subject_diff: subjectDiff } : {}),
         ...(bodyDiff.length ? { body_diff: bodyDiff } : {}),
+        // The full final text, not just the diff, so the feed and any later
+        // audit can show exactly what the operator approved to send.
+        ...(channelType === 'linkedin' ? { final_body: text } : {}),
       };
     }
-    const sendRes = await sendEmail({ supabase, workspace_id: body.workspace_id, intended_to, subject, body: text, html: html ?? undefined });
-    if (!sendRes.ok) {
-      return NextResponse.json({ error: `send failed: ${sendRes.error}` }, { status: 502 });
+
+    // Email: send BEFORE updating the gate. If the send fails, leave the gate
+    // undecided so the user can retry. LinkedIn: no automated send.
+    if (channelType !== 'linkedin') {
+      if (!text) {
+        return NextResponse.json({ error: 'gate condition has no body to send' }, { status: 400 });
+      }
+      const sendRes = await sendEmail({ supabase, workspace_id: body.workspace_id, intended_to, subject, body: text, html: html ?? undefined });
+      if (!sendRes.ok) {
+        return NextResponse.json({ error: `send failed: ${sendRes.error}` }, { status: 502 });
+      }
+      sendInfo = {
+        effective_to: sendRes.effective_to,
+        override_active: sendRes.override_active,
+        message_id: sendRes.message_id,
+        intended_to,
+        edited,
+      };
     }
-    sendInfo = {
-      effective_to: sendRes.effective_to,
-      override_active: sendRes.override_active,
-      message_id: sendRes.message_id,
-      intended_to,
-      edited,
-    };
   }
 
   // Update the gate row.
@@ -113,8 +125,15 @@ export async function POST(req: Request) {
     if (isOutreachApprove && channelId) {
       // Audit note varies by channel type, but cooldown + stage are the same.
       if (channelType === 'linkedin') {
+        // When the operator edited before approving, the parent draft post no
+        // longer shows the real message — include the final text here so the
+        // feed always has the exact thing to paste.
+        const editedLi = resolution.edited === true && finalText;
         await callTool(supabase, actor, 'post_to_channel', {
-          channel_id: channelId, kind: 'system', body: 'LinkedIn message approved — send manually via LinkedIn.',
+          channel_id: channelId, kind: 'system',
+          body: editedLi
+            ? `LinkedIn message approved (edited) — send manually via LinkedIn:\n\n${finalText}`
+            : 'LinkedIn message approved — send manually via LinkedIn.',
           parent_post_id: gate.channel_post_id ?? undefined,
         });
       } else if (sendInfo) {

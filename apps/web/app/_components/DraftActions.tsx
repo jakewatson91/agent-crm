@@ -58,6 +58,10 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sentInfo, setSentInfo] = useState<{ effective_to: string; override_active: boolean } | null>(null);
+  const [copied, setCopied] = useState(false);
+  // What the copy button copies: the draft as approved. Starts as the original
+  // body; an edit-then-approve replaces it with the edited plain text.
+  const [finalText, setFinalText] = useState<string | null>(null);
 
   useEffect(() => {
     // Skip fetch when the parent already inlined the gate (feed path).
@@ -86,6 +90,21 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
   const condBody = gate.condition?.body ?? '';
   const intendedTo = gate.condition?.to_email ?? null;
 
+  function copyDraft(text: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => setError('copy failed — select the text manually'));
+  }
+  const copyPill = (text: string) => (
+    <button
+      onClick={() => copyDraft(text)}
+      style={{ ...PILL_BASE, background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--border)' }}
+    >
+      {copied ? 'copied ✓' : 'copy text'}
+    </button>
+  );
+
   async function decide(decision: 'approve' | 'reject', overrides?: { edited_subject?: string; edited_html?: string; reason?: string }) {
     if (!gate) return;
     setBusy(true); setError(null);
@@ -99,6 +118,13 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
       if (!res.ok) { setError(j.error ?? `error ${res.status}`); return; }
       if (decision === 'approve') {
         setSentInfo(j.sent ?? null);
+        // No send info = LinkedIn (manual send). Remember the approved text so
+        // the sent state can offer it for copy-paste.
+        if (!j.sent) {
+          setFinalText(overrides?.edited_html
+            ? new DOMParser().parseFromString(overrides.edited_html, 'text/html').body.innerText
+            : condBody);
+        }
         setMode('sent');
       } else {
         setMode('rejected');
@@ -110,6 +136,17 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
   }
 
   if (mode === 'sent') {
+    // finalText is set when THIS session approved a draft that has no email
+    // send (LinkedIn) — the paste-into-LinkedIn moment. Nothing was actually
+    // sent, so don't claim it was; hand over the text instead.
+    if (!sentInfo && finalText !== null) {
+      return (
+        <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap', marginTop: '.5rem' }}>
+          <span className="badge badge-green">approved — paste into LinkedIn</span>
+          {copyPill(finalText)}
+        </div>
+      );
+    }
     return (
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap', marginTop: '.5rem' }}>
         <span className="badge badge-green">sent ✓</span>
@@ -227,6 +264,7 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
         >
           reject
         </button>
+        {copyPill(condBody)}
         {intendedTo && (
           <span className="subtle mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
             intended: {intendedTo}
