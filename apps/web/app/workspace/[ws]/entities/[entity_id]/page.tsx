@@ -1,5 +1,7 @@
 import { createServerClient } from '@agent-crm/db';
+import { findMergeCandidatesForEntity } from '@agent-crm/tools';
 import { EntityDetail } from './EntityDetail';
+import { MergeProposal } from './MergeProposal';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,14 +57,25 @@ export default async function EntityPage({
 
   const channelId = types.includes('account') ? (chRes.data?.id ?? null) : null;
 
+  // Duplicate-account detection (accounts only). The pipeline never merges on its own;
+  // it surfaces a proposal the human approves or rejects in the card below.
+  const mergeCandidates = types.includes('account')
+    ? await findMergeCandidatesForEntity(supabase, ws, entity_id)
+    : [];
+
   return (
-    <EntityDetail
-      ws={ws}
-      entityId={entity_id}
-      entityName={entity.name}
-      entityKind={primaryType}
-      entityAttributes={(entity.attributes ?? {}) as Record<string, unknown>}
-      channelId={channelId}
-    />
+    <>
+      {mergeCandidates.length ? (
+        <MergeProposal ws={ws} entityId={entity_id} entityName={entity.name} candidates={mergeCandidates} />
+      ) : null}
+      <EntityDetail
+        ws={ws}
+        entityId={entity_id}
+        entityName={entity.name}
+        entityKind={primaryType}
+        entityAttributes={(entity.attributes ?? {}) as Record<string, unknown>}
+        channelId={channelId}
+      />
+    </>
   );
 }

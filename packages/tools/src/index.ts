@@ -50,6 +50,7 @@ export { selectAction, loadActionContext, loadBestContactScore, type Action, typ
 export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights, isSubstantiveFact, ADMIN_PREDICATES, type ScoreBreakdown } from './scoring.ts';
 export { graphProximity, type GraphProximityResult } from './graph.ts';
 export { resolveOrCreateEntity, normalizeEntityName, trigramSim, looksLikeEntityName, type ResolveResult } from './resolve.ts';
+export { findMergeCandidatesForEntity, mergeAccounts, dismissMergeCandidate, type MergeCandidate, type MergeResult } from './merge.ts';
 export { getEntityTypes, getEntityTypesBatch, isEntityOfType, entityIdsOfType, listWorkspaceTypes } from './entity_types.ts';
 export { ingestRows, getPath, normalizeDomain, hashItem, type IngestSpec, type IngestProvenance, type IngestResult } from './ingest.ts';
 export { setOutreachStage, DEFAULT_STAGE_FACT_NAME } from './lifecycle.ts';
