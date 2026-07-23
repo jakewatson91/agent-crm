@@ -17,6 +17,7 @@ import { createServerClient } from '@agent-crm/db';
 import {
   callTool, recordActivityMarker, latestMarkerAt, ACTIVITY_MARKERS,
   getPolicy, resolveEnvVar, resolveStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
+  dedupeResearchCandidates, DUP_LOOKBACK_DAYS,
   resolveDomainViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
@@ -177,6 +178,21 @@ export async function runEntityResearch(
       const apiKey = resolveEnvVar(policy, 'EXA_API_KEY');
       if (!apiKey) return { ok: false, reason: 'EXA_API_KEY not set' };
 
+      // What this workspace sells, for the relevance test in the disambiguation
+      // check. signal_type lives on workspaces.icp; pain/guidance on policy. All
+      // optional — an unconfigured workspace passes empty arrays and the check
+      // degrades to identity + substance only (no over-filtering a fresh import).
+      const wsRow = await supabase.from('workspaces').select('icp').eq('id', workspace_id).maybeSingle();
+      const icpSignalTypes = (() => {
+        const st = (wsRow.data?.icp as { signal_type?: unknown } | null)?.signal_type;
+        return Array.isArray(st) ? st.filter((s): s is string => typeof s === 'string') : [];
+      })();
+      const relevance = {
+        pains: (policy.drafter?.pain_points ?? []).filter(Boolean),
+        signal_types: icpSignalTypes,
+        guidance: (policy.research?.guidance ?? '').trim() || undefined,
+      };
+
       // Entity domain drives the own_site angle + collision guards.
       const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
       let domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
@@ -277,32 +293,57 @@ export async function runEntityResearch(
         }
       }
 
-      // --- Relevance phase: own-site results are trusted; everything else must pass the
-      // same-name disambiguation gate (domain-host auto-accept, else one LLM check). ---
-      const ownIds = new Set(candidates.filter((c) => c.scope === 'own_site').map((c) => c.er.id));
-      const toGate = candidates
-        .filter((c) => c.scope !== 'own_site')
-        .map((c) => ({ id: c.er.id, title: c.er.title, url: c.er.url, text: c.er.text }));
-      let collisions_dropped = 0;
-      const acceptedIds = new Set<string>(ownIds);
-      if (toGate.length) {
+      // --- Relevance phase: identity + substance + (when the workspace configured what it
+      // sells) relevance, in one check. Own-site results have identity auto-confirmed inside
+      // by the host match; with no relevance config they're accepted outright (unchanged),
+      // with relevance config they still must clear the relevance bar. This is the fix for
+      // the NHL/VAST case: that off-topic storage press came from the company's OWN newsroom
+      // (own_site scope), which the old "trust own-site" path never relevance-checked. ---
+      const allForGate = candidates.map((c) => ({ id: c.er.id, title: c.er.title, url: c.er.url, text: c.er.text }));
+      let filtered_out = 0;
+      const acceptedIds = new Set<string>();
+      if (allForGate.length) {
         // Ground the disambiguation in the company's own words. Reuse own-site snippets
         // when we have them; otherwise fetch the homepage so a thin, common-named entity
         // (no facts, own-site not indexed) still anchors to the right company.
         let grounding = ownSiteSnippets.slice(0, 2).join(' | ');
         if (!grounding && domain) grounding = await fetchEntityGrounding(apiKey, entity_name, domain);
         const context = await entityContext(supabase, workspace_id, entity_id, grounding ? [grounding] : []);
-        const rel = await filterResultsByEntity({ name: entity_name, domain, context }, toGate);
+        const rel = await filterResultsByEntity({ name: entity_name, domain, context, relevance }, allForGate);
         for (const id of rel.accepted) acceptedIds.add(id);
-        collisions_dropped = rel.dropped;
+        filtered_out = rel.dropped;
       }
 
-      // --- Create phase: only accepted results become signals. ---
+      // --- Dedup phase: collapse near-identical accepted results (two articles on the
+      // same event) and anything that restates a research signal already on the entity,
+      // by embedding cosine — BEFORE any signal is created, so the enricher never runs
+      // twice on the same story and no duplicate facts land. Own-site first = highest
+      // trust kept when a same-event own page and a news page collide. ---
+      const acceptedOrdered = candidates
+        .filter((c) => acceptedIds.has(c.er.id))
+        .sort((a, b) => (a.scope === 'own_site' ? 0 : 1) - (b.scope === 'own_site' ? 0 : 1))
+        .map((c) => ({ id: c.er.id, body: [c.er.title, c.er.text].filter(Boolean).join('\n') }));
+      const dupSince = new Date(Date.now() - DUP_LOOKBACK_DAYS * 86400 * 1000).toISOString();
+      const priorSig = await supabase
+        .from('signals')
+        .select('body_for_embedding')
+        .eq('workspace_id', workspace_id)
+        .eq('entity_id', entity_id)
+        .eq('type', 'research_result')
+        .gte('observed_at', dupSince)
+        .order('observed_at', { ascending: false })
+        .limit(60);
+      const priorBodies = ((priorSig.data ?? []) as Array<{ body_for_embedding: string | null }>)
+        .map((s) => s.body_for_embedding ?? '')
+        .filter(Boolean);
+      const { keep: dedupKeep, dropped: duplicates_dropped } = await dedupeResearchCandidates(acceptedOrdered, priorBodies);
+
+      // --- Create phase: only accepted, non-duplicate results become signals. ---
       let created = 0;
       let firstSignalId: string | null = null;
       const perAngle: Record<string, number> = {};
       for (const c of candidates) {
-        if (!acceptedIds.has(c.er.id)) continue;
+        if (!acceptedIds.has(c.er.id) || !dedupKeep.has(c.er.id)) continue;
         const body = [c.er.title, c.er.text].filter(Boolean).join('\n').slice(0, 1500);
         if (!body) continue;
         try {
@@ -403,13 +444,14 @@ export async function runEntityResearch(
       await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_COMPLETED, entity_id, {
         results_created: created,
         searches,
-        collisions_dropped,
+        filtered_out,
+        duplicates_dropped,
         per_angle: perAngle,
         ...(resolver_spent ? { domain_resolved: domain || null } : {}),
-        summary: `${created} results from ${searches} search(es)${collisions_dropped ? `, ${collisions_dropped} same-name dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
+        summary: `${created} results from ${searches} search(es)${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${duplicates_dropped ? `, ${duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
       });
 
-      return { ok: true, searches, signals_created: created, collisions_dropped, per_angle: perAngle, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
+      return { ok: true, searches, signals_created: created, filtered_out, duplicates_dropped, per_angle: perAngle, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
     }
   }
 }

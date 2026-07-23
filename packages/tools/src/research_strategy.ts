@@ -16,9 +16,10 @@
  * names, no vertical assumptions. The query CONTENTS are AI-generated or human-entered.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chatComplete } from '@agent-crm/primitives';
+import { chatComplete, embed } from '@agent-crm/primitives';
 import { getPolicy } from './policy.ts';
 import { runExaSearch } from './exa_search.ts';
+import { cosine } from './icp_embeddings.ts';
 import type { ResearchAngle, WorkspacePolicy } from './policy.ts';
 
 // Pro, not flash: the planner runs rarely (≈once per workspace per 14 days, or on a
@@ -262,17 +263,42 @@ export interface RelevanceResult { accepted: Set<string>; checked: number; auto:
  * the company's domain + a short description. This is what makes the news / open_web
  * angles safe — only own_site is collision-proof by construction.
  */
+export interface RelevanceTarget {
+  name: string;
+  domain: string;
+  context: string;
+  // What this workspace sells / the pain it solves / what to dig for. Optional:
+  // when empty, the check falls back to identity + substance only, so a fresh
+  // workspace with no configured value prop is never over-filtered. When present,
+  // it adds a third test that drops on-company but off-topic pages (a storage-vendor
+  // deal for a CDN-cost product) before they ever become a signal.
+  relevance?: { pains?: string[]; signal_types?: string[]; guidance?: string };
+}
+
 export async function filterResultsByEntity(
-  target: { name: string; domain: string; context: string },
+  target: RelevanceTarget,
   results: Array<{ id: string; title: string | null; url: string; text?: string }>,
   opts?: { model?: string },
 ): Promise<RelevanceResult> {
+  // Relevance config decides how own-domain results are handled below, so compute it up
+  // front. Only set when the workspace has said what it sells; empty = identity + substance
+  // only, so a fresh workspace is never over-filtered.
+  const pains = (target.relevance?.pains ?? []).filter(Boolean);
+  const signalTypes = (target.relevance?.signal_types ?? []).filter(Boolean);
+  const relGuidance = (target.relevance?.guidance ?? '').trim();
+  const hasRelevance = pains.length > 0 || signalTypes.length > 0 || relGuidance.length > 0;
+
   const accepted = new Set<string>();
-  const toCheck: typeof results = [];
+  const toCheck: Array<{ r: (typeof results)[number]; own: boolean }> = [];
   for (const r of results) {
     const host = hostOf(r.url);
-    if (target.domain && host && (host === target.domain || host.endsWith(`.${target.domain}`))) accepted.add(r.id);
-    else toCheck.push(r);
+    const onOwnDomain = !!target.domain && !!host && (host === target.domain || host.endsWith(`.${target.domain}`));
+    // On their own domain → identity is proven. With no relevance config that's a full
+    // accept (unchanged behavior). With relevance config it still must clear the relevance
+    // bar — being on nhl.com does not make a storage-vendor press release relevant to a
+    // CDN-cost seller — so it goes to the check with identity pre-confirmed (own=true).
+    if (onOwnDomain && !hasRelevance) accepted.add(r.id);
+    else toCheck.push({ r, own: onOwnDomain });
   }
   const auto = accepted.size;
   if (!toCheck.length) return { accepted, checked: 0, auto, dropped: 0 };
@@ -286,20 +312,30 @@ export async function filterResultsByEntity(
     ? 'When genuinely unsure AND the page clearly fits the target\'s description, lean toward matching.'
     : 'Almost nothing is known about the target, so identity cannot be confirmed from a description. Only match a page that explicitly references the target\'s website domain or is unmistakably the same organization. When unsure, do NOT match.';
 
-  const sys = `You verify whether a web page is (a) about a SPECIFIC target company and (b) substantive enough to be worth reading.
+  // Third condition (optional). Present only when the workspace configured what it sells /
+  // what pain it solves. This is what stops an on-company but off-topic page — the exact
+  // NHL/VAST storage press that scored 0.4 signal_strength — from becoming a signal on a
+  // CDN-cost seller, whether the page is on their own site or in the news.
+  const relevanceCondition = hasRelevance
+    ? `\n3. It carries a signal RELEVANT to what this seller offers. The seller${pains.length ? ` helps companies with: ${pains.join('; ')}.` : ''}${signalTypes.length ? ` They watch for these triggers: ${signalTypes.join('; ')}.` : ''}${relGuidance ? ` What to dig for: ${relGuidance}` : ''}
+   A page is relevant if its content plausibly connects to that problem area — the company growing or scaling in a way that drives it, a person there discussing it, a change that creates or reveals the need, or how the company runs the systems involved. A page about the right company but a clearly unrelated topic (a different part of the business with no bearing on that problem) is NOT relevant. Judge the connection by meaning, not keywords: "expanding to new regions" or "scaling to more users" counts even when none of the exact terms above appear.`
+    : '';
+  const passClause = hasRelevance ? 'all three tests' : 'both tests';
+
+  const sys = `You verify whether a web page is (a) about a SPECIFIC target company, (b) substantive enough to be worth reading${hasRelevance ? ', and (c) relevant to what a specific seller offers' : ''}.
 
 TARGET COMPANY:
 - name: ${target.name}
 - website: ${target.domain || '(unknown)'}
 - about: ${target.context || '(nothing known)'}
 
-A page is a MATCH only if BOTH hold:
-1. It is about THIS company (the one at that website / fitting that description). A company in a different industry, sector, or country that happens to share the name is NOT a match. ${unsureRule}
-2. It carries substantive content: news, a launch, a blog post, a case study, an interview, a partnership, a review with real detail. Directory listings, tool aggregators, company-profile pages, and databases that merely restate name + category + description are NOT a match even when they're about the right company — they contain nothing we don't already know.
+A page is a MATCH only if ${hasRelevance ? 'ALL THREE' : 'BOTH'} hold:
+1. It is about THIS company (the one at that website / fitting that description). A company in a different industry, sector, or country that happens to share the name is NOT a match. A page hosted on the target's own website is by definition this company — treat condition 1 as satisfied for it and judge it on the remaining conditions only. ${unsureRule}
+2. It carries substantive content: news, a launch, a blog post, a case study, an interview, a partnership, a review with real detail. Directory listings, tool aggregators, company-profile pages, and databases that merely restate name + category + description are NOT a match even when they're about the right company — they contain nothing we don't already know.${relevanceCondition}
 
-Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass both tests.`;
+Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass ${passClause}.`;
 
-  const payload = JSON.stringify(toCheck.map((r) => ({ id: r.id, title: r.title, url: r.url, text: (r.text ?? '').slice(0, 500) })));
+  const payload = JSON.stringify(toCheck.map(({ r }) => ({ id: r.id, title: r.title, url: r.url, text: (r.text ?? '').slice(0, 500) })));
   try {
     const llm = await chatComplete({
       model: opts?.model ?? RELEVANCE_MODEL,
@@ -310,14 +346,59 @@ Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass both 
     const parsed = JSON.parse(llm.text) as { matches?: string[] };
     const matchSet = new Set((parsed.matches ?? []).map(String));
     let kept = 0;
-    for (const r of toCheck) if (matchSet.has(r.id)) { accepted.add(r.id); kept++; }
+    for (const { r } of toCheck) if (matchSet.has(r.id)) { accepted.add(r.id); kept++; }
     return { accepted, checked: toCheck.length, auto, dropped: toCheck.length - kept };
   } catch {
-    // Fail-closed: if the gate can't run, unverified results are dropped rather than
-    // let through — polluting an entity with a same-name company's news is worse than
-    // one thin research pass (the dispatcher re-runs on cadence anyway). Own-domain
-    // results were already auto-accepted above and are unaffected.
-    return { accepted, checked: toCheck.length, auto, dropped: toCheck.length };
+    // Fail: keep identity-confirmed own-domain results (only their relevance was in
+    // question, and losing real own-site context is worse than one off-topic page), but
+    // drop unverified off-domain results — a same-name company's news polluting the entity
+    // is worse than one thin pass (the dispatcher re-runs on cadence anyway).
+    let keptOnErr = 0;
+    for (const { r, own } of toCheck) if (own) { accepted.add(r.id); keptOnErr++; }
+    return { accepted, checked: toCheck.length, auto, dropped: toCheck.length - keptOnErr };
+  }
+}
+
+// --- Near-duplicate research dedup ---
+// Two articles about the same event (or the same story re-surfacing weeks later) each
+// pass the identity + relevance check and would each become a research_result signal —
+// the enricher then writes overlapping facts and the feed shows "duplicates." Collapse
+// them by embedding cosine before any signal is created.
+const DUP_SIM_THRESHOLD = 0.88;
+export const DUP_LOOKBACK_DAYS = 90;
+const DUP_MAX_PRIORS = 60;
+
+/**
+ * Given research candidates (in keep-priority order) and the bodies of research_result
+ * signals already on the entity, return the ids to KEEP: the first of each near-identical
+ * cluster, dropping later duplicates within this run and any candidate that merely restates
+ * a prior signal. Uses embedding cosine (text-embedding-3-small), not string match, so
+ * "media production" and "media production and archival" about the same partnership collapse.
+ * Fails OPEN — any embed error keeps every candidate, because losing a real signal is worse
+ * than letting one duplicate through (assert_fact still content-hashes downstream).
+ */
+export async function dedupeResearchCandidates(
+  ordered: Array<{ id: string; body: string }>,
+  priorBodies: string[],
+): Promise<{ keep: Set<string>; dropped: number }> {
+  const keep = new Set(ordered.map((c) => c.id));
+  // Nothing to compare against (one candidate, no priors) → no work, no embed spend.
+  if (ordered.length === 0 || ordered.length + priorBodies.length < 2) return { keep, dropped: 0 };
+  try {
+    const priorVecs = await Promise.all(
+      priorBodies.slice(0, DUP_MAX_PRIORS).map((b) => embed(b.slice(0, 1500))),
+    );
+    const keptVecs: number[][] = [];
+    let dropped = 0;
+    for (const c of ordered) {
+      const v = await embed(c.body.slice(0, 1500));
+      const isDup = [...priorVecs, ...keptVecs].some((p) => cosine(v, p) >= DUP_SIM_THRESHOLD);
+      if (isDup) { keep.delete(c.id); dropped++; }
+      else keptVecs.push(v);
+    }
+    return { keep, dropped };
+  } catch {
+    return { keep, dropped: 0 };
   }
 }
 

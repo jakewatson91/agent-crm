@@ -23,7 +23,7 @@ export { TOOL_SCHEMAS, type ToolName };
 export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
 export { runExaSearch, fetchPageText, type ExaResult, type ExaSearchParams, type ExaSearchResult, type ExaContentsResult } from './exa_search.ts';
-export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, resolveStrategy, filterResultsByEntity, fetchEntityGrounding, BASELINE_ANGLES, type PlannerContext, type RelevanceResult } from './research_strategy.ts';
+export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, resolveStrategy, filterResultsByEntity, fetchEntityGrounding, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type RelevanceResult, type RelevanceTarget } from './research_strategy.ts';
 export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
