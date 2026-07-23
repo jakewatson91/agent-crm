@@ -374,16 +374,25 @@ export const entityArchiveSweep = inngest.createFunction(
 
       const ids = candidates.map((e) => e.id);
 
-      // Three "has activity" queries; any hit disqualifies the entity from sweep.
-      const [factHits, signalHits, postHits] = await Promise.all([
-        supabase.from('facts').select('subject_entity').in('subject_entity', ids).limit(ids.length),
-        supabase.from('signals').select('entity_id').in('entity_id', ids).limit(ids.length),
-        supabase.from('channels').select('id, account_entity_id').in('account_entity_id', ids),
-      ]);
-
+      // "Has activity" presence checks. A false negative here archives a real, enriched
+      // account, so completeness is critical. The old form — one `.in(ids)` over up to a
+      // thousand candidate ids with `.limit(ids.length)` — overflowed the request URL AND
+      // hit the PostgREST 1000-row cap, so it returned nothing and the sweep archived EVERY
+      // candidate (hundreds of live accounts a day). Chunk the id list (URL length) and page
+      // each chunk (row cap) so a hit is never missed.
+      const CHUNK = 150;
       const hasActivity = new Set<string>();
-      for (const r of (factHits.data ?? []) as Array<{ subject_entity: string }>) hasActivity.add(r.subject_entity);
-      for (const r of (signalHits.data ?? []) as Array<{ entity_id: string }>) hasActivity.add(r.entity_id);
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const chunk = ids.slice(i, i + CHUNK);
+        const [factRows, sigRows] = await Promise.all([
+          fetchAll<{ subject_entity: string }>((from, to) =>
+            supabase.from('facts').select('subject_entity').in('subject_entity', chunk).range(from, to)),
+          fetchAll<{ entity_id: string }>((from, to) =>
+            supabase.from('signals').select('entity_id').in('entity_id', chunk).range(from, to)),
+        ]);
+        for (const r of factRows) hasActivity.add(r.subject_entity);
+        for (const r of sigRows) hasActivity.add(r.entity_id);
+      }
 
       // A connector can mark an entity as a recurring watch target by setting the
       // reserved `_watched_by_source` attribute flag — e.g. the ATS connector
@@ -398,16 +407,22 @@ export const entityArchiveSweep = inngest.createFunction(
         if (e.attributes?._watched_by_source) hasActivity.add(e.id);
       }
 
-      const channelIds = ((postHits.data ?? []) as Array<{ id: string; account_entity_id: string }>).map((c) => c.id);
-      const channelToEntity = new Map<string, string>(
-        ((postHits.data ?? []) as Array<{ id: string; account_entity_id: string }>)
-          .map((c) => [c.id, c.account_entity_id]),
-      );
-      if (channelIds.length) {
-        const { data: posts } = await supabase.from('channel_posts').select('channel_id').in('channel_id', channelIds);
-        for (const p of (posts ?? []) as Array<{ channel_id: string }>) {
-          const eid = channelToEntity.get(p.channel_id);
-          if (eid) hasActivity.add(eid);
+      // Channel-post activity — same chunk + page treatment for the channel and post `.in()`s.
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const chunk = ids.slice(i, i + CHUNK);
+        const chans = await fetchAll<{ id: string; account_entity_id: string }>((from, to) =>
+          supabase.from('channels').select('id, account_entity_id').in('account_entity_id', chunk).range(from, to));
+        if (!chans.length) continue;
+        const channelToEntity = new Map(chans.map((c) => [c.id, c.account_entity_id]));
+        const channelIds = chans.map((c) => c.id);
+        for (let j = 0; j < channelIds.length; j += CHUNK) {
+          const cchunk = channelIds.slice(j, j + CHUNK);
+          const posts = await fetchAll<{ channel_id: string }>((from, to) =>
+            supabase.from('channel_posts').select('channel_id').in('channel_id', cchunk).range(from, to));
+          for (const p of posts) {
+            const eid = channelToEntity.get(p.channel_id);
+            if (eid) hasActivity.add(eid);
+          }
         }
       }
 
