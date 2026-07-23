@@ -12,6 +12,10 @@
  *   Cold    — score_total < 0.3       → every 30d
  *   Suppressed — dropped_until in the future → never
  *
+ * Yield backoff: an already-researched account whose signal stays weak (research keeps
+ * finding nothing usable) has its cadence stretched 2-3x, so spend follows yield rather
+ * than paper ICP fit. Engaged / live-signal accounts are exempt and it resets on a yield.
+ *
  * Accounts with no resolved attributes.domain never become candidates, tier
  * aside — no domain means no own_site angle and no contact pull afterward,
  * so a search there is spend with no possible payoff. domain-backfill-daily
@@ -305,7 +309,14 @@ export async function runResearchDispatch(
       } else {
         tier = 'cold';
       }
-      const cadenceMs = TIER_CADENCE_HOURS[tier] * 3600 * 1000;
+      // Yield-based backoff: an account we've already researched that still has a weak
+      // signal (high ICP fit but research keeps finding nothing usable — the NHL case)
+      // waits longer between passes, so search spend follows yield, not paper fit.
+      // Engaged accounts and ones with a live signal never back off, and the multiplier
+      // returns to 1 the moment a pass lifts the signal. sig<0.3 -> 3x, sig<0.5 -> 2x.
+      const sig = s.signal_strength ?? 0;
+      const backoff = (s.last_research_at > 0 && !engaged.has(a.id) && sig < 0.5) ? (sig < 0.3 ? 3 : 2) : 1;
+      const cadenceMs = TIER_CADENCE_HOURS[tier] * backoff * 3600 * 1000;
       if (s.last_research_at && now - s.last_research_at < cadenceMs) continue;
       candidates.push({
         entity_id: a.id, entity_name: a.name, tier,
