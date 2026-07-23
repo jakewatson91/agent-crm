@@ -687,7 +687,10 @@ export async function runAgent(
       behavior,
       // DeepSeek-v4 spends output tokens on reasoning before emitting content;
       // a rich hiring post needs headroom or the JSON body comes back empty.
-      max_tokens: behavior === 'drafter' ? 1500 : 1200,
+      // Drafter got 3000 after a high-fact account (53 facts) burned the whole
+      // 1500 budget on reasoning and truncated the JSON. It is a cap, not a
+      // target, so drafts that finish early still cost what they use.
+      max_tokens: behavior === 'drafter' ? 3000 : 1200,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },

@@ -146,11 +146,11 @@ Asking for a slot on the calendar is the most common way these messages die. Ran
   4. Nothing at all, when the template says so. The reply is the win.
 BANNED with no exceptions: "Open to a quick chat?", "Worth a quick call?", "Do you have 15 minutes?", "Can we sync?", any proposed day, time or meeting length, and any calendar link.
 
-STEP 6 — LINE EDIT. Read it back as the recipient.
+STEP 6 — WELD IT INTO ONE VOICE, THEN LINE EDIT. The steps above are how you THINK; they are not a list of sentences to emit. Your message has fewer sentences than there are steps, because beats share sentences. Weld them: the trigger and the problem it creates belong in one sentence; the credibility number never stands alone, it rides inside a sentence that says what it costs them; the pitch and the ask carry the close. Now read it back as the recipient, out loud. It should sound like one person talking, not parts with the bullets removed.
 - Open on them. The first five words are about their world, never yours.
 - Use their first name if you have it. A bare "Hey," with no name is worse than no greeting at all: drop the greeting entirely instead.
 - Never tell them what they think, feel, worry about or wonder. "That must keep you up at night", "a spike like that makes you wonder", "you're probably frustrated by" — all out. State the fact and ask the question; let them supply the feeling.
-- Fifth-grade reading level. Short sentences, one idea each, common words.
+- Fifth-grade reading level: common words, plain sentences. Short does not mean chopped. A sentence may carry two welded beats joined by a comma or "and" when that makes it flow. Every sentence is complete, with a subject and a verb: no trailing fragments like "Shows in your dashboard."
 - Cut every word that survives being cut. Kill "just", "quick", "really", "I hope this finds you well", and every exclamation mark.
 - No abstract product nouns ("single source of truth", "all-in-one platform", "seamless integration"). No filler verbs (streamline, leverage, optimize, empower, unlock, revolutionize).
 - Keep the pitch to one sentence, and never place it before the Think question.
@@ -163,7 +163,7 @@ STEP 7 — PICK ONE TEMPLATE AND MATCH ITS SHAPE.
 Match the recipient's real role to the AUDIENCE lines and pick exactly one. If the recipient matches none of them, do not force a fit: output request_gate.
 What MUST be built fresh for this account: the trigger, the problem in STEP 2, and the think question. Never take those from the exemplar.
 What MAY repeat across accounts: the credibility claim and the sentence describing what you do. Those are the approved wording and there is no value in reinventing them.
-The test: strip the first sentence and the question from your draft and from the exemplar. If what is left is nearly all that is different between them, you have written the exemplar with a new hat on. Go back to STEP 3.
+Two tests, both must pass. CONTENT: the trigger, the problem and the think question are built from THIS account and read nothing like the exemplar's. SHAPE: your sentence count, your order, and where you fuse beats are your own, not a trace of the exemplar's outline. A draft with a fresh trigger is still a clone if it walks the exemplar's shape sentence for sentence. If either fails, go back to STEP 3.
 
 STEP 8 — COUNT THE CHARACTERS. If you are over budget, cut in this order until you fit:
   1. The verification detail that trails the ask ("X shows up in your dashboard").
@@ -179,6 +179,7 @@ STEP 9 — CHECK BEFORE YOU OUTPUT. Any "no" means rewrite.
 - Is the pitch one sentence or less, and does it come after the question?
 - Can I source every number and claim?
 - Is it under the character budget?
+- Does it read as one person talking, or as separate beats jammed together? Any bare stat sentence or subjectless fragment gets welded into its neighbor.
 - Would this person feel researched, or processed?`;
 
 export function buildDrafterDecision(opts: DrafterDecisionOpts): string {

@@ -112,7 +112,7 @@ async function main() {
     const res = await chatCompleteForWorkspace(sb as any, WS, {
       model: 'deepseek-v4-pro',
       behavior: 'drafter',
-      max_tokens: 1500,
+      max_tokens: 3000,
       response_format: { type: 'json_object' },
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     } as any);
