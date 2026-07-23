@@ -8,6 +8,7 @@
 import { NextResponse } from 'next/server';
 import { unstable_cache } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
+import { fetchAll } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
 
@@ -69,28 +70,25 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
   const supabase = createServerClient();
 
   // Round 1: fire all workspace-scoped reads in parallel — no entity IDs needed.
-  const [policyRow, entitiesRes, typeFacts, fitFacts] = await Promise.all([
+  // All three scale with entity count and silently truncated at the PostgREST 1000-row
+  // cap once a workspace crossed 1000 entities — so entities late in the name order (and
+  // their types/scores) vanished from the page and its client-side search. Page them all.
+  const [policyRow, entityRows, typeFactRows, fitFactRows] = await Promise.all([
     supabase.from('workspaces').select('policy').eq('id', ws).maybeSingle(),
-    supabase
-      .from('entities')
-      .select('id, name, attributes, updated_at, archived_at')
-      .eq('workspace_id', ws)
-      .is('archived_at', null)
-      .order('name'),
-    supabase.from('facts')
-      .select('subject_entity, object_text')
-      .eq('workspace_id', ws)
-      .eq('predicate', 'is_a')
-      .is('supersedes', null),
-    supabase.from('facts')
-      .select('subject_entity, object_text, id')
-      .eq('workspace_id', ws)
-      .eq('predicate', 'icp_fit')
-      .is('supersedes', null),
+    fetchAll<{ id: string; name: string; attributes: Record<string, unknown>; updated_at: string }>((from, to) =>
+      supabase.from('entities')
+        .select('id, name, attributes, updated_at, archived_at')
+        .eq('workspace_id', ws).is('archived_at', null).order('name').range(from, to)),
+    fetchAll<{ subject_entity: string; object_text: string | null }>((from, to) =>
+      supabase.from('facts').select('subject_entity, object_text')
+        .eq('workspace_id', ws).eq('predicate', 'is_a').is('supersedes', null).range(from, to)),
+    fetchAll<{ subject_entity: string; object_text: string; id: string }>((from, to) =>
+      supabase.from('facts').select('subject_entity, object_text, id')
+        .eq('workspace_id', ws).eq('predicate', 'icp_fit').is('supersedes', null).range(from, to)),
   ]);
 
   const publicationBlocklist = (((policyRow.data?.policy as Record<string, unknown> | null)?.publication_blocklist) as string[] | undefined ?? []).filter(Boolean);
-  const rawEntities = ((entitiesRes.data ?? []) as Array<{ id: string; name: string; attributes: Record<string, unknown>; updated_at: string }>).filter((e) => {
+  const rawEntities = entityRows.filter((e) => {
     const dom = (e.attributes?.['domain'] as string | undefined) ?? '';
     if (dom.endsWith('.example')) return false;
     if (isJunkName(e.name, dom, publicationBlocklist)) return false;
@@ -100,7 +98,7 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
   const ids = new Set(rawEntities.map((e) => e.id));
 
   const typesByEntity = new Map<string, string[]>();
-  for (const f of (typeFacts.data ?? []) as Array<{ subject_entity: string; object_text: string | null }>) {
+  for (const f of typeFactRows) {
     if (!f.object_text || !ids.has(f.subject_entity)) continue;
     const arr = typesByEntity.get(f.subject_entity) ?? [];
     arr.push(f.object_text);
@@ -113,39 +111,47 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
 
   const accountIds = entities.filter((e) => e.types.includes('account')).map((e) => e.id);
 
-  // Round 2: channels + active cooldowns depend on entity ids derived above.
+  // Round 2: channels + active cooldowns depend on entity ids derived above. Fetch all
+  // workspace channels (paged) and filter in memory — a `.in()` over 1000+ account ids
+  // blows past the PostgREST URL limit and silently returns nothing.
   const icpMap = new Map<string, number>();
   const lastActivity = new Map<string, Activity>();
-  const [chansRes, cooldownRes] = await Promise.all([
+  const accountIdSet = new Set(accountIds);
+  const [allChannels, cooldownRes] = await Promise.all([
     accountIds.length
-      ? supabase.from('channels').select('id, account_entity_id').eq('workspace_id', ws).in('account_entity_id', accountIds)
-      : Promise.resolve({ data: [] as unknown[] }),
+      ? fetchAll<{ id: string; account_entity_id: string }>((from, to) =>
+          supabase.from('channels').select('id, account_entity_id').eq('workspace_id', ws).range(from, to))
+      : Promise.resolve([] as Array<{ id: string; account_entity_id: string }>),
     supabase.from('facts')
       .select('subject_entity, object_text')
       .eq('workspace_id', ws)
       .eq('predicate', 'outreach_cooldown_until')
       .is('supersedes', null),
   ]);
+  const chans = allChannels.filter((c) => accountIdSet.has(c.account_entity_id));
 
-  for (const f of (fitFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; id: string }>) {
+  for (const f of fitFactRows) {
     if (!ids.has(f.subject_entity)) continue;
     const v = parseFloat(f.object_text);
     if (!isNaN(v) && !icpMap.has(f.subject_entity)) icpMap.set(f.subject_entity, v);
   }
 
-  // Round 3: last agent activity needs channel IDs from round 2.
+  // Round 3: last agent activity needs channel IDs from round 2. Chunk the channel_id
+  // `.in()` so a workspace with 1000+ channels doesn't overflow the URL. Each channel
+  // lives in exactly one chunk and its posts come back newest-first, so the first post
+  // seen per channel is its most recent.
   const channelToEntity = new Map<string, string>();
-  for (const c of (chansRes.data ?? []) as Array<{ id: string; account_entity_id: string }>) {
-    channelToEntity.set(c.id, c.account_entity_id);
-  }
+  for (const c of chans) channelToEntity.set(c.id, c.account_entity_id);
   const channelIds = [...channelToEntity.keys()];
-  if (channelIds.length) {
+  const CH_CHUNK = 200;
+  for (let i = 0; i < channelIds.length; i += CH_CHUNK) {
+    const chunk = channelIds.slice(i, i + CH_CHUNK);
     const { data: posts } = await supabase
       .from('channel_posts')
       .select('channel_id, kind, created_at')
-      .in('channel_id', channelIds)
+      .in('channel_id', chunk)
       .order('created_at', { ascending: false })
-      .limit(Math.max(200, channelIds.length * 3));
+      .limit(Math.max(200, chunk.length * 3));
     for (const p of (posts ?? []) as Array<{ channel_id: string; kind: string; created_at: string }>) {
       const entId = channelToEntity.get(p.channel_id);
       if (!entId || lastActivity.has(entId)) continue;
