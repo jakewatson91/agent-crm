@@ -12,3 +12,4 @@ export { advanceAccountsCron } from './advance_accounts.js';
 export { sourceCurator } from './source_curator.js';
 export { subscriptionDriftLearner } from './subscription_drift.js';
 export { healthSweepCron } from './health_sweep.js';
+export { dailyDigestCron } from './daily_digest.js';

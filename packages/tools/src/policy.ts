@@ -517,6 +517,24 @@ export interface WorkspacePolicy {
   alerts?: { email?: string };
 
   /**
+   * Daily digest + spend reporting (see report.ts and daily_digest.ts).
+   * `daily_email` opts the workspace into one summary email per day covering
+   * the last 24h: score moves with their reasons, drafts written, approvals
+   * waiting, spend estimate. Recipient/key resolution is sendOwnerAlert's.
+   * `pricing` overrides the provider list prices the spend estimate uses.
+   */
+  report?: {
+    daily_email?: boolean;
+    pricing?: {
+      models?: Record<string, { input: number; cached: number; output: number }>;
+      exa_per_search?: number;
+      exa_per_content_page?: number;
+      exa_avg_pages_per_search?: number;
+      hunter_per_search?: number;
+    };
+  };
+
+  /**
    * Fingerprint of the fields scoring reads (icp/about/persona + scoring policy
    * sections), maintained by ensureScoringConfigState. `changed_at` moves ONLY
    * when one of those fields actually changes — unlike workspaces.updated_at,

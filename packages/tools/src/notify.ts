@@ -45,7 +45,7 @@ export async function resolveOwnerEmail(sb: SupabaseClient, workspace_id: string
  * outreach sender (policy.env.RESEND_API_KEY → legacy outreach field →
  * process.env) so any workspace that can send outreach can send alerts.
  */
-export async function sendOwnerAlert(sb: SupabaseClient, workspace_id: string, subject: string, body: string): Promise<AlertResult> {
+export async function sendOwnerAlert(sb: SupabaseClient, workspace_id: string, subject: string, body: string, html?: string): Promise<AlertResult> {
   try {
     const policy = await getPolicy(sb, workspace_id);
     const apiKey = policy.env?.RESEND_API_KEY ?? policy.outreach?.resend_api_key ?? process.env.RESEND_API_KEY;
@@ -64,6 +64,9 @@ export async function sendOwnerAlert(sb: SupabaseClient, workspace_id: string, s
         to,
         subject: finalSubject,
         text: body,
+        // Optional rich rendering (the daily digest). The text body always
+        // rides along so clients that strip HTML still show everything.
+        ...(html ? { html } : {}),
       }),
     });
     if (!res.ok) return { ok: false, to, error: `resend ${res.status}: ${(await res.text()).slice(0, 300)}` };
