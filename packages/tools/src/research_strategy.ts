@@ -128,10 +128,12 @@ const SYS_PROMPT = `You design a small set of WEB SEARCH ANGLES an AI sales agen
 Return 3 to 5 angles. Fewer, sharper angles beat many overlapping ones.
 
 PRIORITIES (most valuable first):
-1. The company's OWN site — recent blog posts, product launches, changelog, customer/case-study pages. ALWAYS include at least one "own_site" angle.
-2. Who they sell to — customers, case studies, "trusted by", partnerships. Include one.
-3. Recent third-party coverage of substance — a launch, partnership, or product story.
+1. What CHANGED or what they're pushing toward — launches, expansions, deals, published numbers, stated priorities and plans, executives explaining what the company is working on. These are the anchors a message can open with. Every angle should be able to surface something that HAPPENED or something the company SAYS it is doing next.
+2. The company's OWN site — recent blog posts, product launches, changelog, customer/case-study pages. ALWAYS include at least one "own_site" angle.
+3. Who they sell to — customers, case studies, "trusted by", partnerships. Include one.
 Funding rounds and investor names are LOW value on their own: include at most ONE angle that touches funding, never as the lead, and only with domain_scope "news".
+
+NEAR-WORTHLESS, never plan an angle toward it: pages that merely confirm the company matches a target profile — its industry, category, size, or what kind of business it is. The agent already knows who fits. A search that returns "yes, they are indeed that kind of company" gives a message nothing to anchor on.
 
 Each angle has:
 - "query_template": plain search keywords / OR-groups. MUST contain the literal token {entity} (the company name is substituted). You may use {domain}. Write it the way you'd phrase a web search to surface substantive pages. Do NOT use search-engine operators — no site:, -site:, filetype:, intitle:, or minus-exclusions. Domain include/exclude is handled by domain_scope, not the query text.
@@ -253,7 +255,19 @@ export async function fetchEntityGrounding(apiKey: string, name: string, domain:
     .slice(0, 500);
 }
 
-export interface RelevanceResult { accepted: Set<string>; checked: number; auto: number; dropped: number }
+/**
+ * What kind of hook an accepted page carries, judged in the same LLM pass as
+ * relevance. Drives signal magnitude so profile-confirmation pages ("yes, they
+ * are that kind of company") stop ranking beside real triggers:
+ *   event     — something dated happened (launch, deal, number, exec statement)
+ *   direction — evidence of a current priority or push, no single dated event
+ *   profile   — describes what the company is/does; confirms fit, nothing new
+ * Pages accepted without the LLM pass (own-domain auto-accept, error fallback)
+ * have no class and keep full magnitude.
+ */
+export type HookClass = 'event' | 'direction' | 'profile';
+
+export interface RelevanceResult { accepted: Set<string>; classById: Map<string, HookClass>; checked: number; auto: number; dropped: number }
 
 /**
  * Disambiguate open-web results against the target company so a same-name but unrelated
@@ -289,6 +303,7 @@ export async function filterResultsByEntity(
   const hasRelevance = pains.length > 0 || signalTypes.length > 0 || relGuidance.length > 0;
 
   const accepted = new Set<string>();
+  const classById = new Map<string, HookClass>();
   const toCheck: Array<{ r: (typeof results)[number]; own: boolean }> = [];
   for (const r of results) {
     const host = hostOf(r.url);
@@ -301,7 +316,7 @@ export async function filterResultsByEntity(
     else toCheck.push({ r, own: onOwnDomain });
   }
   const auto = accepted.size;
-  if (!toCheck.length) return { accepted, checked: 0, auto, dropped: 0 };
+  if (!toCheck.length) return { accepted, classById, checked: 0, auto, dropped: 0 };
 
   // With real grounding (own-site snippets / descriptive facts) an unsure-but-fitting
   // page is probably right, so lean toward matching. With nothing to test against,
@@ -333,7 +348,12 @@ A page is a MATCH only if ${hasRelevance ? 'ALL THREE' : 'BOTH'} hold:
 1. It is about THIS company (the one at that website / fitting that description). A company in a different industry, sector, or country that happens to share the name is NOT a match. A page hosted on the target's own website is by definition this company — treat condition 1 as satisfied for it and judge it on the remaining conditions only. ${unsureRule}
 2. It carries substantive content: news, a launch, a blog post, a case study, an interview, a partnership, a review with real detail. Directory listings, tool aggregators, company-profile pages, and databases that merely restate name + category + description are NOT a match even when they're about the right company — they contain nothing we don't already know.${relevanceCondition}
 
-Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass ${passClause}.`;
+For each matching page, also classify what kind of hook it carries:
+- "event": something dated HAPPENED — a launch, expansion, deal, published number, hire, or a person there saying something tied to a moment (a post, talk, interview).
+- "direction": evidence of a current priority or push — what the company keeps working toward or says it is doing next, without one dated event.
+- "profile": describes what the company is or does — confirms it fits a market but reports nothing new happening. These are the least valuable; be honest when a page is only this.
+
+Return JSON only: {"matches":[{"id":"<id>","class":"event"|"direction"|"profile"}, ...]} — one entry per page that passes ${passClause}.`;
 
   const payload = JSON.stringify(toCheck.map(({ r }) => ({ id: r.id, title: r.title, url: r.url, text: (r.text ?? '').slice(0, 500) })));
   try {
@@ -343,11 +363,18 @@ Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass ${pas
       response_format: { type: 'json_object' },
       messages: [{ role: 'system', content: sys }, { role: 'user', content: payload }],
     });
-    const parsed = JSON.parse(llm.text) as { matches?: string[] };
-    const matchSet = new Set((parsed.matches ?? []).map(String));
+    const parsed = JSON.parse(llm.text) as { matches?: Array<string | { id?: string; class?: string }> };
+    const matchSet = new Set<string>();
+    for (const m of parsed.matches ?? []) {
+      // Tolerate the old bare-string shape (a cached model / retry could emit it).
+      if (typeof m === 'string') { matchSet.add(m); continue; }
+      if (!m?.id) continue;
+      matchSet.add(String(m.id));
+      if (m.class === 'event' || m.class === 'direction' || m.class === 'profile') classById.set(String(m.id), m.class);
+    }
     let kept = 0;
     for (const { r } of toCheck) if (matchSet.has(r.id)) { accepted.add(r.id); kept++; }
-    return { accepted, checked: toCheck.length, auto, dropped: toCheck.length - kept };
+    return { accepted, classById, checked: toCheck.length, auto, dropped: toCheck.length - kept };
   } catch {
     // Fail: keep identity-confirmed own-domain results (only their relevance was in
     // question, and losing real own-site context is worse than one off-topic page), but
@@ -355,7 +382,7 @@ Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass ${pas
     // is worse than one thin pass (the dispatcher re-runs on cadence anyway).
     let keptOnErr = 0;
     for (const { r, own } of toCheck) if (own) { accepted.add(r.id); keptOnErr++; }
-    return { accepted, checked: toCheck.length, auto, dropped: toCheck.length - keptOnErr };
+    return { accepted, classById, checked: toCheck.length, auto, dropped: toCheck.length - keptOnErr };
   }
 }
 

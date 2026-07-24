@@ -142,6 +142,14 @@ export interface DrafterPolicy {
    * quarters. Default 90 days.
    */
   trigger_max_age_days?: number;
+  /**
+   * How recent an event must be to LEAD a message as its trigger ("saw you
+   * launched X"). Older events (up to trigger_max_age_days) can still serve as
+   * evidence for a theme-led message, but never get presented as news. Like
+   * trigger_max_age_days, how fast news goes stale is a property of the
+   * customer's market. Default 14 days.
+   */
+  trigger_fresh_days?: number;
   /** Connection-request note template. For manual use at CR time; not rendered. */
   cr_note?: string;
 

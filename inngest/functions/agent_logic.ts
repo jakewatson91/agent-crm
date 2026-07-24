@@ -122,10 +122,10 @@ export async function runAgent(
   // 2. Active facts.
   const allFacts = await supabase
     .from('facts')
-    .select('id, predicate, object_text, confidence, supersedes, created_at, observed_at, source_event_id')
+    .select('id, predicate, object_text, confidence, supersedes, created_at, observed_at, source_event_id, signal_id')
     .eq('subject_entity', ent.data.id);
   if (allFacts.error) return { ok: false, action: 'skip', reason: `facts query failed: ${allFacts.error.message}` };
-  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string; observed_at: string; source_event_id: number | null }>;
+  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string; observed_at: string; source_event_id: number | null; signal_id: string | null; source_date?: string }>;
   const supersededIds = new Set(factRows.map((f) => f.supersedes).filter((x): x is string => !!x));
   const activeFacts = factRows.filter((f) => !supersededIds.has(f.id));
 
@@ -630,6 +630,27 @@ export async function runAgent(
           .slice(0, 3);
       }
     } catch { /* non-fatal */ }
+
+    // Facts get observed_at stamped at extraction time, which hides how old the
+    // underlying event is: a fact extracted today from a January article looks
+    // fresh. Recover each fact's source date from its signal (the article's
+    // published_at when the connector recorded one, else when the signal was
+    // observed) so the craft rules can tell a fresh trigger from theme evidence.
+    try {
+      const sigIds = [...new Set(activeFacts.map((f) => f.signal_id).filter((x): x is string => !!x))];
+      const dateBySig = new Map<string, string>();
+      if (sigIds.length) {
+        const srcSigs = await supabase.from('signals')
+          .select('id, observed_at, structured_tags')
+          .in('id', sigIds);
+        for (const s of (srcSigs.data ?? []) as Array<{ id: string; observed_at: string; structured_tags: { published_at?: string | null } | null }>) {
+          dateBySig.set(s.id, s.structured_tags?.published_at || s.observed_at);
+        }
+      }
+      for (const f of activeFacts) {
+        f.source_date = (f.signal_id ? dateBySig.get(f.signal_id) : undefined) ?? f.observed_at;
+      }
+    } catch { /* non-fatal — fact lines render without dates */ }
   }
 
   // Relationship-edge extraction config (Step 2). Off by default; when on, the
@@ -668,6 +689,7 @@ export async function runAgent(
     message_rules: policy.drafter?.message_rules,
     char_budget: policy.drafter?.char_budget,
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
+    trigger_fresh_days: policy.drafter?.trigger_fresh_days,
   });
   // Compute the deterministic shortlist for drafters. ~30 token addition; the
   // drafter prompt is told to prefer these but can override when context demands.
@@ -1135,6 +1157,7 @@ export function buildSystemPrompt(
     message_rules?: string[];
     char_budget?: number;
     trigger_max_age_days?: number;
+    trigger_fresh_days?: number;
   },
 ): string {
   const identity = behavior === 'drafter'
@@ -1168,6 +1191,7 @@ export function buildSystemPrompt(
     message_rules: drafterPolicy?.message_rules,
     char_budget: drafterPolicy?.char_budget,
     trigger_max_age_days: drafterPolicy?.trigger_max_age_days,
+    trigger_fresh_days: drafterPolicy?.trigger_fresh_days,
     subject_style: drafterPolicy?.subject_style,
     paragraph_count: drafterPolicy?.paragraph_count,
     pain_points: drafterPolicy?.pain_points,
@@ -1287,7 +1311,7 @@ export function buildUserPrompt(
   subSemantic: string,
   signal: any,
   entity: { id: string; name: string; attributes: unknown },
-  activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number }>,
+  activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number; source_date?: string }>,
   pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown>; draft_excerpt?: string | null }> = [],
   contacts: Array<{ name: string; email: string; role: string }> = [],
   recommended: FactScore[] = [],
@@ -1338,7 +1362,7 @@ ATTRIBUTES (already known — do not re-extract these as facts):
 ${proseAttributes ? renderAttributesProse(entity.attributes) : JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
-${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence})`).join('\n') : '  (none yet)'}
+${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence}${f.source_date ? `, seen ${f.source_date.slice(0, 10)}` : ''})`).join('\n') : '  (none yet)'}
 When a new fact is the same kind of thing as one above, REUSE that fact's label (the part before "=") rather than inventing a new label for it. Only coin a new label when the fact is a genuinely new kind. (e.g. if a label already captures this fact, restate or refine it under that label instead of adding a near-synonym label for the same thing.)
 ${pastOutcomesBlock}${contactsBlock}${recommendedBlock}
 Decide.`;

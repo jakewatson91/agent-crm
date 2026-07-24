@@ -332,6 +332,7 @@ export async function runEntityResearch(
       const allForGate = candidates.map((c) => ({ id: c.er.id, title: c.er.title, url: c.er.url, text: c.er.text }));
       let filtered_out = 0;
       const acceptedIds = new Set<string>();
+      let hookClassById = new Map<string, 'event' | 'direction' | 'profile'>();
       if (allForGate.length) {
         // Ground the disambiguation in the company's own words. Reuse own-site snippets
         // when we have them; otherwise fetch the homepage so a thin, common-named entity
@@ -341,6 +342,7 @@ export async function runEntityResearch(
         const context = await entityContext(supabase, workspace_id, entity_id, grounding ? [grounding] : []);
         const rel = await filterResultsByEntity({ name: entity_name, domain, context, relevance }, allForGate);
         for (const id of rel.accepted) acceptedIds.add(id);
+        hookClassById = rel.classById;
         filtered_out = rel.dropped;
       }
 
@@ -380,21 +382,36 @@ export async function runEntityResearch(
       const { keep: dedupKeep, dropped: duplicates_dropped } = await dedupeResearchCandidates(acceptedOrdered, priorBodies);
 
       // --- Create phase: only accepted, non-duplicate results become signals. ---
+      // Hook-class weights: a page that only confirms the company fits a market
+      // ("profile") is background, not a trigger, so its signal starts at half
+      // magnitude; evidence of a current push ("direction") is close to full; a
+      // dated event keeps full. Unclassified (own-domain auto-accept, gate
+      // fallback) keeps full — unchanged behavior for unconfigured workspaces.
+      const HOOK_CLASS_WEIGHT: Record<string, number> = { event: 1, direction: 0.85, profile: 0.5 };
       let created = 0;
       let firstSignalId: string | null = null;
       const perAngle: Record<string, number> = {};
-      for (const c of candidates) {
+      const perClass: Record<string, number> = {};
+      // Create in class order (event > direction > profile). The burst coalescer
+      // only fully enriches the FIRST signal of a batch, and the direct dispatch
+      // below fires on firstSignalId — so the enricher should read the launch
+      // story, not whichever fit-confirmation page happened to fetch first.
+      const createOrder = [...candidates].sort((a, b) =>
+        (HOOK_CLASS_WEIGHT[hookClassById.get(b.er.id) ?? ''] ?? 1) - (HOOK_CLASS_WEIGHT[hookClassById.get(a.er.id) ?? ''] ?? 1));
+      for (const c of createOrder) {
         if (!acceptedIds.has(c.er.id) || !dedupKeep.has(c.er.id)) continue;
         const body = [c.er.title, c.er.text].filter(Boolean).join('\n').slice(0, 1500);
         if (!body) continue;
+        const hookClass = hookClassById.get(c.er.id);
         try {
           const sig = await callTool(supabase, actor, 'create_signal', {
             entity_id,
             type: 'research_result',
             // Base 0.6, decayed by how old the source is (halves every
-            // half-life days). A fresh launch keeps ~0.6; an older-but-passing
-            // article is visibly weaker so it can't outrank current news.
-            magnitude: Number((0.6 * ageDecay(c.er.publishedDate, halfLifeDays)).toFixed(3)),
+            // half-life days) and by hook class. A fresh launch keeps ~0.6; an
+            // older-but-passing article or a fit-confirmation page is visibly
+            // weaker so it can't outrank current news.
+            magnitude: Number((0.6 * ageDecay(c.er.publishedDate, halfLifeDays) * (HOOK_CLASS_WEIGHT[hookClass ?? ''] ?? 1)).toFixed(3)),
             body_for_embedding: body,
             structured_tags: {
               signal_source: 'research',
@@ -403,11 +420,13 @@ export async function runEntityResearch(
               url: c.er.url,
               published_at: c.er.publishedDate ?? null,
               triggered_by: reason,
+              ...(hookClass ? { hook_class: hookClass } : {}),
             },
           });
           if (sig.ok) {
             created++;
             perAngle[c.angleId] = (perAngle[c.angleId] ?? 0) + 1;
+            perClass[hookClass ?? 'unclassified'] = (perClass[hookClass ?? 'unclassified'] ?? 0) + 1;
             if (!firstSignalId && sig.target_id) firstSignalId = sig.target_id;
           }
         } catch {
@@ -435,12 +454,17 @@ export async function runEntityResearch(
           try {
             await inngest.send({
               name: 'agent.run',
+              // Same idempotency key the organic match path uses, so this signal
+              // enriches once even though both paths fire for it. entity_id keys
+              // the per-entity serialization that collapses the rest of the burst.
+              id: `agentrun:${firstSignalId}:${enricherSub.owner_id}`,
               data: {
                 workspace_id,
                 agent: enricherSub.owner_id,
                 trigger_event: 'manual',
                 subscription_id: enricherSub.id,
                 signal_id: firstSignalId,
+                entity_id,
               },
             });
           } catch (e) {
@@ -493,11 +517,12 @@ export async function runEntityResearch(
         same_url_dropped,
         duplicates_dropped,
         per_angle: perAngle,
+        per_class: perClass,
         ...(resolver_spent ? { domain_resolved: domain || null } : {}),
         summary: `${created} results from ${searches} search(es)${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${filtered_stale ? `, ${filtered_stale} stale dropped` : ''}${(same_url_dropped + duplicates_dropped) ? `, ${same_url_dropped + duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
       });
 
-      return { ok: true, searches, signals_created: created, filtered_out, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
+      return { ok: true, searches, signals_created: created, filtered_out, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, per_class: perClass, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
     }
   }
 }

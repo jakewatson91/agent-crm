@@ -82,13 +82,19 @@ export interface DrafterDecisionOpts {
   /** Character target for the DM body. Default 400. */
   char_budget?: number;
   /**
-   * How old a trigger may be before the drafter should refuse rather than use
-   * it (policy.drafter.trigger_max_age_days). How fast "recent" goes stale is a
+   * How old a fact may be before the drafter should treat it as dead weight
+   * (policy.drafter.trigger_max_age_days). How fast "recent" goes stale is a
    * property of the customer's market, not of outreach craft: a funding-driven
    * book moves in weeks, an infrastructure book in quarters. Vertical-neutral
    * default of 90 days; tune per workspace, no code change.
    */
   trigger_max_age_days?: number;
+  /**
+   * How recent an event must be to LEAD the message as its trigger. Events
+   * between this and trigger_max_age_days can only serve as theme evidence,
+   * never presented as news. Default 14 days; per-workspace knob.
+   */
+  trigger_fresh_days?: number;
 }
 
 /**
@@ -110,20 +116,26 @@ export interface DrafterDecisionOpts {
  * Lands in the cached system prefix, which is stable per workspace, so the
  * length is close to free after the first call of a run.
  */
-const outreachCraft = (maxAgeDays: number) => `Work these steps in order. Do not skip ahead to writing.
+const outreachCraft = (maxAgeDays: number, freshDays: number) => `Work these steps in order. Do not skip ahead to writing.
 
-STEP 1 — FIND THE TRIGGER, OR STOP.
-A trigger is something that HAPPENED. They posted, spoke, shipped, launched, raised, hired, published a number, changed a plan. Test it by finishing this sentence with a real date and a verb: "On <date>, they <did X>."
-NOT triggers, and a message built on one will be rejected: what the company IS ("a streaming platform"), what it FOCUSES ON ("cost efficiency"), what you INFER it suffers from ("must be facing buffering"), an award, a topic they cover, or a description of their market.
-IT HAS TO BE RECENT. Inside the last ${maxAgeDays} days. Anything older reads as "I found you in a database" unless it is still visibly unfolding right now, and then say what is unfolding rather than the old date. If the freshest thing you have is stale, that is a reason to stop, not a reason to use it.
-PICK THE STRONGEST, NOT THE FIRST. When several facts qualify, lead with the one closest to the problem in STEP 2. A market launch or a traffic number beats a conference appearance every time. Do not open on a weak trigger and then quietly build the question off a stronger fact further down: put the strong one first.
-If the facts hold no real trigger, output the request_gate escape hatch naming the one fact you would need. A message not sent costs nothing. A fake trigger burns the account permanently.
+STEP 1 — READ THE DATES, THEN PICK THE MESSAGE MODE.
+Fact lines in the user message carry a date: when the source was published or the fact was observed. Trust those dates over your instincts, and never present something older than ${freshDays} days as if it just happened.
 
-STEP 2 — TURN THE TRIGGER INTO THE JOB THEY HATE.
-Because of this trigger, what unglamorous job or growing cost lands on this person's desk? Write it the way their own team would say it out loud, not the way a product page would. "The bill grows every time an episode drops" beats "rising infrastructure costs."
-ONE HOP, NOT THREE. The trigger must reach the problem in a single step. If you need "they did X, so probably Y, which might mean Z" to get there, the trigger is too weak — go back to STEP 1 and find another or stop. An award, badge, certification or partner status is recognition of something they already do well, so it almost never reaches a problem in one hop; a growth number, a launch, a hire or a stated plan usually does.
+MODE A, TRIGGER-LED: there is a real event dated inside the last ${freshDays} days. An event is something that HAPPENED: they posted, spoke, shipped, launched, raised, hired, published a number, changed a plan. Test it by finishing this sentence with the fact's date and a verb: "On <date>, they <did X>." Lead with it.
+NOT events, and a trigger-led message built on one will be rejected: what the company IS ("a streaming platform"), what it FOCUSES ON ("cost efficiency"), what you INFER it suffers from ("must be facing buffering"), an award, a topic they cover, or a description of their market.
+
+MODE B, THEME-LED: nothing is fresh enough to lead with, but two or more facts, from different dates or sources, point at the same current priority: a cost they keep attacking, a market they keep entering, a platform they keep scaling, a strategy they keep stating. Open on the pattern, the way you would after following a company for months: "you've spent this year pushing X", "every move lately points at Y". An older event may appear as supporting evidence with honest timing ("back when you launched X"), never as the news of the message.
+A theme needs convergence. One old launch alone is not a theme. "They match who we sell to" is not a theme. If the facts don't agree on a direction, there is no theme.
+
+Facts older than ${maxAgeDays} days are dead weight in both modes: not a trigger, not evidence.
+PICK THE STRONGEST, NOT THE FIRST. In mode A, when several fresh events qualify, lead with the one closest to the problem in STEP 2. A market launch or a traffic number beats a conference appearance every time. Do not open on a weak trigger and then quietly build the question off a stronger fact further down: put the strong one first.
+If neither mode has an honest anchor, output the request_gate escape hatch naming the one fact you would need. A message not sent costs nothing. A fake trigger, or a stale event dressed up as fresh, burns the account permanently.
+
+STEP 2 — TURN THE ANCHOR INTO THE JOB THEY HATE.
+Because of this anchor (the fresh event in mode A, the running theme in mode B), what unglamorous job or growing cost lands on this person's desk? Write it the way their own team would say it out loud, not the way a product page would. "The bill grows every time an episode drops" beats "rising infrastructure costs."
+ONE HOP, NOT THREE. The anchor must reach the problem in a single step. If you need "they did X, so probably Y, which might mean Z" to get there, the anchor is too weak — go back to STEP 1 and find another or stop. An award, badge, certification or partner status is recognition of something they already do well, so it almost never reaches a problem in one hop; a growth number, a launch, a hire or a stated plan usually does.
 If you could delete the first sentence and the rest still reads fine, the personalization is decoration and you have not done the work.
-If the trigger honestly points the other way, that they already solved this, that LOWERS fit. Drop the angle or stop. Never tell them their own strategy is wrong.
+If the anchor honestly points the other way, that they already solved this, that LOWERS fit. Drop the angle or stop. Never tell them their own strategy is wrong.
 
 STEP 3 — WRITE THE THINK QUESTION. This is the most important line in the message.
 It makes them check an assumption about the way they do things now. It is never a question about your product.
@@ -133,9 +145,11 @@ Do not answer it yourself in the line before it. If the previous sentence alread
 Do not ask a question whose honest answer is "we're fine" with nowhere to go.
 BUILD IT FROM THEIR SITUATION, DO NOT COPY THE EXEMPLAR'S. The exemplar's question was written for a different company. Yours has to point at the specific thing in STEP 2: their peak, their release cadence, their new market, the thing that just changed. "When you drop a new series, how much egress is the same segments over and over?" is doing the work. The same question with the specifics filed off is not. If your question would read identically to another company in this industry, it is too generic — rewrite it.
 
-STEP 4 — CRED. ONE SENTENCE, AND ONLY IF THE TEMPLATE CALLS FOR IT.
+STEP 4 — CRED AND PITCH ARE TOOLS, NOT A QUOTA.
 Cred is a pattern you have seen across the category, or a number with a named source. It is never a promise about their results.
-The strongest form names a cost they cannot currently see, rather than a benefit you would deliver.
+The workspace's approved claims and the exemplar's pitch wording are a menu, not a requirement. Use a claim only when it answers the specific problem in STEP 2. When the message's angle doesn't call for one, write no cred at all. A flagship stat jammed into a message whose angle doesn't need it is what makes ten messages read like one mail merge.
+Same for the pitch sentence: of the true things you could say about what you sell, pick the one that answers THIS message's problem. The exemplar's wording is one option, not the mandatory one.
+The strongest cred names a cost they cannot currently see, rather than a benefit you would deliver.
 With no honest pattern and no sourced number, write no cred at all. A missing cred beats an invented one.
 
 STEP 5 — TALK. NEVER ASK FOR TIME.
@@ -161,9 +175,9 @@ STEP 6 — WELD IT INTO ONE VOICE, THEN LINE EDIT. The steps above are how you T
 
 STEP 7 — PICK ONE TEMPLATE AND MATCH ITS SHAPE.
 Match the recipient's real role to the AUDIENCE lines and pick exactly one. If the recipient matches none of them, do not force a fit: output request_gate.
-What MUST be built fresh for this account: the trigger, the problem in STEP 2, and the think question. Never take those from the exemplar.
-What MAY repeat across accounts: the credibility claim and the sentence describing what you do. Those are the approved wording and there is no value in reinventing them.
-Two tests, both must pass. CONTENT: the trigger, the problem and the think question are built from THIS account and read nothing like the exemplar's. SHAPE: your sentence count, your order, and where you fuse beats are your own, not a trace of the exemplar's outline. A draft with a fresh trigger is still a clone if it walks the exemplar's shape sentence for sentence. If either fails, go back to STEP 3.
+What MUST be built fresh for this account: the anchor (trigger or theme), the problem in STEP 2, and the think question. Never take those from the exemplar.
+What MAY repeat across accounts: approved claim wording and the sentence describing what you do, WHEN the message includes them at all. Whether to include them is STEP 4's call, made per message. A message that skips the cred, or pitches a different true behavior than the exemplar did, is often the better message. What never varies is honesty and shape discipline.
+Two tests, both must pass. CONTENT: the anchor, the problem and the think question are built from THIS account and read nothing like the exemplar's. SHAPE: your sentence count, your order, and where you fuse beats are your own, not a trace of the exemplar's outline. A draft with a fresh anchor is still a clone if it walks the exemplar's shape sentence for sentence. If either fails, go back to STEP 3.
 
 STEP 8 — COUNT THE CHARACTERS. If you are over budget, cut in this order until you fit:
   1. The verification detail that trails the ask ("X shows up in your dashboard").
@@ -172,8 +186,9 @@ STEP 8 — COUNT THE CHARACTERS. If you are over budget, cut in this order until
 Never cut the question to fit. Never cut the trigger to fit.
 
 STEP 9 — CHECK BEFORE YOU OUTPUT. Any "no" means rewrite.
-- Can I name the trigger, roughly when it happened, and is it inside the last ${maxAgeDays} days?
-- Does the trigger reach the problem in one hop?
+- Which mode is this, and does it earn it: a trigger dated inside the last ${freshDays} days, or a theme backed by two or more dated facts pointing the same way?
+- Check every dated fact the message references: does any sentence imply an old event just happened?
+- Does the anchor reach the problem in one hop?
 - Is there a question they can answer from memory in one line, and is it about THEIR situation rather than the exemplar's?
 - Does the message open on them?
 - Is the pitch one sentence or less, and does it come after the question?
@@ -198,7 +213,7 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
         .join('\n\n');
       return `A new high-fit signal matched your saved filter rule. Write the LinkedIn DM for this account, following the workspace templates below.
 
-${outreachCraft(opts.trigger_max_age_days ?? 90)}
+${outreachCraft(opts.trigger_max_age_days ?? 90, opts.trigger_fresh_days ?? 14)}
 
 THIS WORKSPACE'S RULES — these override anything above if they conflict:
 ${rulesBlock}
@@ -215,7 +230,7 @@ LEAD-FACT SELECTION — prefer the RECOMMENDED FACTS shortlist when the user mes
 REQUEST_GATE — when STEP 1, STEP 2 or STEP 7 tells you to stop, output exactly:
 {"action":"request_gate","body":"<one sentence: the fact you would need>","policy":"facts_insufficient_for_draft"}
 
-REASONING — include a "reasoning" field: name the template you chose, the trigger you anchored to and roughly when it happened, and why this recipient fits that template's audience. Shown in the audit channel, never sent to the recipient.
+REASONING — include a "reasoning" field: name the template you chose, the mode (trigger-led or theme-led), the anchor (the event and its date, or the theme and the dated facts behind it), and why this recipient fits that template's audience. Shown in the audit channel, never sent to the recipient.
 
 Output strictly valid JSON:
 {"action":"post_touch_draft","subject":null,"body":"<linkedin DM, aim under ${budget} chars>","cites":["<fact_id_uuid>",...],"reasoning":"<template chosen + trigger + why this audience>","to_email":null}`;
