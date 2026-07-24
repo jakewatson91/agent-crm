@@ -13,6 +13,10 @@ function actorWord(kind: string | null | undefined): string {
   return kind ?? 'unknown';
 }
 
+function whenText(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
 interface ChainHop {
   fact_id: string;
   fact: {
@@ -49,8 +53,11 @@ interface ChainResponse {
 }
 
 /**
- * Inline expander showing the full provenance chain for a fact_id.
- * Closed by default. Click to fetch + expand. Click again to collapse.
+ * The provenance trace for a fact: a clean vertical rail from the claim on the
+ * page down to the actual sentence on the actual page the agent read. Closed by
+ * default (a "trace" pill); click to fetch + expand. The raw event ids / hashes
+ * stay behind a per-hop "raw" toggle so the default view reads as a story, not
+ * a debug dump.
  */
 export function CiteChain({ fact_id, label }: { fact_id: string; label?: string }) {
   const [open, setOpen] = useState(false);
@@ -72,99 +79,99 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
   }, [open, chain, loading, fact_id]);
 
   return (
-    <div style={{ display: 'inline-block' }}>
+    <div style={{ display: 'inline-block', width: open ? '100%' : 'auto' }}>
       <button
         onClick={() => setOpen(!open)}
         title="Show where this came from"
         style={{
           padding: '2px 8px',
           background: open ? 'var(--accent-blue)' : 'var(--accent-blue-soft)',
-          color: open ? 'white' : 'var(--badge-blue-fg)',
+          color: open ? '#fff' : 'var(--badge-blue-fg)',
           border: 'none',
           borderRadius: 999,
           fontSize: '.7rem',
           cursor: 'pointer',
-          marginRight: '.25rem',
         }}
       >
-        {label ?? 'trace'}
+        {open ? '× trace' : (label ?? 'trace')}
       </button>
+
       {open && (
-        <div style={{
-          display: 'block',
-          marginTop: '.4rem',
-          padding: '.7rem .85rem',
-          background: 'var(--panel-2)',
-          border: '1px solid var(--border)',
-          borderLeft: '3px solid var(--accent-blue)',
-          borderRadius: 6,
-          fontSize: '.78rem',
-          maxWidth: 700,
-        }}>
-          {loading && <div className="subtle">walking chain…</div>}
-          {error && <div style={{ color: 'var(--accent-coral)' }}>✗ {error}</div>}
+        <div style={{ marginTop: '.5rem', maxWidth: 640 }}>
+          {loading && <div className="subtle" style={{ fontSize: '.75rem' }}>walking the trace…</div>}
+          {error && <div style={{ color: 'var(--accent-coral)', fontSize: '.78rem' }}>✗ {error}</div>}
           {chain && (
-            <>
-              <div className="subtle" style={{ marginBottom: '.55rem', fontSize: '.72rem' }}>
-                where this came from{chain.hop_count > 1 ? ` · ${chain.hop_count} steps` : ''}
-              </div>
-              {chain.hops.map((h, i) => (
-                <div key={h.fact_id} style={{
-                  marginBottom: i < chain.hops.length - 1 ? '.6rem' : 0,
-                  paddingBottom: i < chain.hops.length - 1 ? '.6rem' : 0,
-                  borderBottom: i < chain.hops.length - 1 ? '1px dashed var(--border)' : 'none'
-                }}>
-                  <div style={{ color: 'var(--badge-green-fg)' }}>
-                    <span style={{ color: 'var(--text)' }}>{h.fact ? humanizePredicate(h.fact.predicate) : '?'} = {h.fact?.object_text ?? '?'}</span>
-                    {h.fact && lowConfLabel(h.fact.confidence) && (
-                      <span style={{ color: 'var(--accent-coral)' }}> · {lowConfLabel(h.fact.confidence)}</span>
+            <div style={{ position: 'relative', paddingLeft: '1.15rem' }}>
+              {/* the rail */}
+              <div style={{ position: 'absolute', left: 5, top: 6, bottom: 6, width: 2, background: 'var(--border-strong)' }} />
+              {chain.hops.map((h, i) => {
+                const last = i === chain.hops.length - 1;
+                return (
+                  <div key={h.fact_id} style={{ position: 'relative', paddingBottom: last ? 0 : '1rem' }}>
+                    <TraceDot />
+                    <div style={{ fontSize: '.84rem', color: 'var(--text)', lineHeight: 1.5 }}>
+                      <span className="subtle">{h.fact ? humanizePredicate(h.fact.predicate) : 'claim'}</span>
+                      {h.fact?.object_text ? <> · <span style={{ color: 'var(--text)' }}>{h.fact.object_text}</span></> : null}
+                      {h.fact && lowConfLabel(h.fact.confidence) && (
+                        <span style={{ color: 'var(--accent-coral)' }}> · {lowConfLabel(h.fact.confidence)}</span>
+                      )}
+                    </div>
+                    {h.source_event && (
+                      <div className="subtle" style={{ fontSize: '.73rem', marginTop: '.15rem' }}>
+                        noted by {actorWord(h.source_event.actor_kind)} · <span suppressHydrationWarning>{whenText(h.source_event.created_at)}</span>
+                      </div>
+                    )}
+
+                    {h.signal && (h.signal.body_excerpt || h.signal.source_url) && (
+                      <div style={{ marginTop: '.45rem' }}>
+                        {h.signal.source_url ? (
+                          <a href={h.signal.source_url} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: '.74rem', color: 'var(--accent-blue)' }}>
+                            {h.signal.source_name ?? h.signal.source_url.replace(/^https?:\/\//, '').split('/')[0]} ↗
+                          </a>
+                        ) : (
+                          h.signal.source_name && <span className="mono subtle" style={{ fontSize: '.74rem' }}>source: {h.signal.source_name}</span>
+                        )}
+                        {h.signal.body_excerpt && (
+                          <div style={{
+                            fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: '.88rem',
+                            color: 'var(--text-2)', lineHeight: 1.5, marginTop: '.3rem',
+                            borderLeft: '2px solid var(--border-strong)', paddingLeft: '.7rem',
+                          }}>
+                            “{h.signal.body_excerpt}{h.signal.body_excerpt.length >= 280 ? '…' : ''}”
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {(h.source_event || h.fact?.content_hash) && (
+                      <details style={{ marginTop: '.35rem' }}>
+                        <summary className="subtle mono" style={{ cursor: 'pointer', fontSize: '.66rem' }}>raw</summary>
+                        <div className="mono muted" style={{ marginTop: '.2rem', fontSize: '.66rem', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                          {h.source_event && (
+                            <>event #{h.source_event.id} · {h.source_event.action} · {h.source_event.actor_kind}/{h.source_event.actor_id}<br /></>
+                          )}
+                          {h.source_event?.prompt_hash && <>prompt_hash {h.source_event.prompt_hash}<br /></>}
+                          {h.fact?.content_hash && <>content_hash {h.fact.content_hash}</>}
+                        </div>
+                      </details>
                     )}
                   </div>
-                  {h.source_event && (
-                    <div className="subtle" style={{ marginTop: '.25rem', fontSize: '.72rem' }}>
-                      noted by {actorWord(h.source_event.actor_kind)} · <span suppressHydrationWarning>{new Date(h.source_event.created_at).toLocaleString()}</span>
-                    </div>
-                  )}
-                  {h.signal && (
-                    <div style={{ marginTop: '.4rem', padding: '.45rem .6rem', background: 'var(--panel)', borderLeft: '2px solid var(--badge-green-fg)', borderRadius: 4 }}>
-                      <div className="mono" style={{ fontSize: '.7rem', color: 'var(--badge-green-fg)', marginBottom: '.2rem' }}>
-                        ↳ from signal
-                      </div>
-                      {h.signal.body_excerpt && (
-                        <div style={{ fontSize: '.75rem', color: 'var(--text)', lineHeight: 1.45, marginBottom: '.3rem' }}>
-                          “{h.signal.body_excerpt}{h.signal.body_excerpt.length >= 280 ? '…' : ''}”
-                        </div>
-                      )}
-                      <div className="mono subtle" style={{ fontSize: '.68rem' }}>
-                        {h.signal.source_name && <>source: {h.signal.source_name} · </>}
-                        {h.signal.source_url && (
-                          <a href={h.signal.source_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-blue)' }}>
-                            open link ↗
-                          </a>
-                        )}
-                        {' · '}
-                        <span suppressHydrationWarning>{new Date(h.signal.observed_at).toLocaleString()}</span>
-                      </div>
-                    </div>
-                  )}
-                  {(h.source_event || h.fact?.content_hash) && (
-                    <details style={{ marginTop: '.3rem' }}>
-                      <summary className="subtle mono" style={{ cursor: 'pointer', fontSize: '.66rem' }}>raw</summary>
-                      <div className="mono muted" style={{ marginTop: '.2rem', fontSize: '.66rem', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
-                        {h.source_event && (
-                          <>event #{h.source_event.id} · {h.source_event.action} · {h.source_event.actor_kind}/{h.source_event.actor_id}<br /></>
-                        )}
-                        {h.source_event?.prompt_hash && <>prompt_hash {h.source_event.prompt_hash}<br /></>}
-                        {h.fact?.content_hash && <>content_hash {h.fact.content_hash}</>}
-                      </div>
-                    </details>
-                  )}
-                </div>
-              ))}
-            </>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+function TraceDot() {
+  return (
+    <span style={{
+      position: 'absolute', left: '-1.15rem', top: 4,
+      width: 11, height: 11, borderRadius: '50%',
+      background: 'var(--panel)', border: '2px solid var(--accent-blue)',
+    }} />
   );
 }
