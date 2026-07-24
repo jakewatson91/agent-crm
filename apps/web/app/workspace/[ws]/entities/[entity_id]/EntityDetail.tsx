@@ -12,6 +12,7 @@ import { humanizePredicate, looksLikeCode, stripActionTag } from '../../../../_l
 import { SCORE_DIMENSIONS, scoreWord } from '../../../../_lib/score_labels';
 import { ScoreTimeline } from './ScoreTimeline';
 import { AttributeGrid } from './AttributeGrid';
+import { RelationshipGraph } from './RelationshipGraph';
 import { useSetPageContext, type PageContext } from '../../../../_components/PageContext';
 
 interface GroupedItem {
@@ -143,7 +144,6 @@ export function EntityDetail({
   const [related, setRelated] = useState<RelatedResponse | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [relatedOpen, setRelatedOpen] = useState(true);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Audit slider state — channel-scoped today. Hidden when no channel.
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
@@ -181,7 +181,6 @@ export function EntityDetail({
   useEffect(() => {
     let cancelled = false;
     setRelated(null);
-    setExpandedGroups(new Set());
     setRelatedLoading(true);
     fetch(`/api/entities/${entityId}/related`)
       .then((r) => r.json())
@@ -235,14 +234,6 @@ export function EntityDetail({
     });
   }
 
-  function toggleGroup(label: string) {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(label)) next.delete(label); else next.add(label);
-      return next;
-    });
-  }
-
   if (loading) return <section><h2 style={{ marginTop: 0 }}>loading…</h2></section>;
 
   const currentFacts: Record<string, Fact[]> = data?.current_facts ?? thinFacts ?? {};
@@ -292,18 +283,11 @@ export function EntityDetail({
   const outbound = related?.outbound ?? [];
   const neighborCount = inbound.length + outbound.length;
 
-  // Group every neighbor by its relationship label so the graph reads as
-  // "contacts · works at · invested in", each row clickable to walk onward.
-  const connectionGroups = (() => {
-    const groups = new Map<string, RelatedEntity[]>();
-    for (const n of [...inbound, ...outbound]) {
-      const label = predicateLabel(n.via_predicate);
-      const arr = groups.get(label) ?? [];
-      arr.push(n);
-      groups.set(label, arr);
-    }
-    return [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
-  })();
+  // Flatten inbound + outbound into one neighbor list for the graph, highest
+  // confidence first, each carrying its human relationship label.
+  const graphNeighbors = [...inbound, ...outbound]
+    .map((n) => ({ entity_id: n.entity_id, name: n.name, kind: n.kind, rel: predicateLabel(n.via_predicate), confidence: n.confidence }))
+    .sort((a, b) => b.confidence - a.confidence);
 
   // Identity strip: linked domain + score chip, derived from attributes/facts.
   const domain = typeof entityAttributes.domain === 'string' ? entityAttributes.domain : null;
@@ -394,7 +378,7 @@ export function EntityDetail({
           {related && ` · ${neighborCount}`}
         </button>
         {relatedOpen && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '.75rem', marginTop: '.75rem' }}>
+          <div style={{ marginTop: '.75rem' }}>
             {relatedLoading && (
               <div className="subtle" style={{ fontSize: '.75rem' }}>loading…</div>
             )}
@@ -403,16 +387,11 @@ export function EntityDetail({
                 No connections in the graph yet.
               </div>
             )}
-            {connectionGroups.map(([label, items]) => (
-              <RelatedGroup
-                key={label}
-                ws={ws}
-                title={label}
-                items={items}
-                expanded={expandedGroups.has(label)}
-                onToggle={() => toggleGroup(label)}
-              />
-            ))}
+            {related && neighborCount > 0 && (
+              <div className="card" style={{ padding: '.5rem' }}>
+                <RelationshipGraph ws={ws} centerName={entityName} centerKind={entityKind} neighbors={graphNeighbors} />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -590,55 +569,6 @@ export function EntityDetail({
         </details>
       )}
     </section>
-  );
-}
-
-function RelatedGroup({
-  ws,
-  title,
-  items,
-  expanded,
-  onToggle,
-}: {
-  ws: string;
-  title: string;
-  items: RelatedEntity[];
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const collapsedLimit = 5;
-  const shown = expanded ? items : items.slice(0, collapsedLimit);
-  const hasMore = items.length > collapsedLimit;
-
-  return (
-    <div className="card" style={{ padding: '.7rem .9rem' }}>
-      <div className="subtle" style={{ fontSize: '.7rem', marginBottom: '.4rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
-        {title} · {items.length}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
-        {shown.map((r) => (
-          <div key={r.via_fact_id} style={{ display: 'flex', gap: '.6rem', alignItems: 'baseline', fontSize: '.82rem' }}>
-            <Link href={`/workspace/${ws}/entities/${r.entity_id}`} style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}>
-              {r.name}
-            </Link>
-            <span className="badge badge-mute" style={{ fontSize: '.62rem' }}>{r.kind}</span>
-            {lowConfLabel(r.confidence) && (
-              <span className="mono" style={{ fontSize: '.68rem', marginLeft: 'auto', color: 'var(--accent-coral)' }}>
-                {lowConfLabel(r.confidence)}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-      {hasMore && (
-        <button
-          onClick={onToggle}
-          style={{ marginTop: '.4rem', fontSize: '.72rem', background: 'transparent', color: 'var(--accent-blue)', border: 'none', padding: 0, cursor: 'pointer' }}
-        >
-          {expanded ? 'show fewer' : `show all ${items.length}`}
-        </button>
-      )}
-    </div>
   );
 }
 
