@@ -33,7 +33,7 @@ export interface Pricing {
 // Per-unit costs in USD, provider list prices as of 2026-07. Override via
 // workspaces.policy.report.pricing (same shape). Token rates are per 1M tokens;
 // "input" is the cache-miss rate, "cached" the cache-hit rate.
-const DEFAULT_PRICING: Pricing = {
+export const DEFAULT_PRICING: Pricing = {
   models: {
     'deepseek-v4-flash': { input: 0.14, cached: 0.0028, output: 0.28 },
     'deepseek-v4-pro': { input: 0.435, cached: 0.003625, output: 0.87 },

@@ -32,13 +32,18 @@
   --badge-purple-fg: #6f5c8a;
   --link: #8fa8d1;
   --link-hover: #6e8ec0;
+
+  /* Chart marks. A darker step of the accent blue so a bar clears 3:1 against
+     the panel; the track is a light step of the same hue (meter pattern). */
+  --chart-ink: #4f6da3;
+  --chart-ink-strong: #3d5787;
+  --chart-track: #dfe6f2;
   --shadow: 0 1px 2px rgba(40, 36, 30, .04);
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  /* The agent's "voice": a readable serif for the parts where the system is
-     writing to a person (the Today briefing, why-an-account-moved). It reads
-     as a note, not a data field. System serif stack — no webfont to load. */
+  /* Used for quoted source sentences in the provenance trace (CiteChain), so a
+     quote reads as someone else's words. System stack, no webfont to load. */
   --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Georgia', serif;
 }
 
@@ -71,6 +76,10 @@
     --badge-purple-fg: #c6b3dc;
     --link: #8fa8d1;
     --link-hover: #b3c6e6;
+
+    --chart-ink: #a9bde0;
+    --chart-ink-strong: #c6d5ee;
+    --chart-track: #2b3444;
     --shadow: 0 1px 3px rgba(0, 0, 0, .35);
   }
 }
@@ -97,6 +106,10 @@
   --badge-purple-fg: #c6b3dc;
   --link: #8fa8d1;
   --link-hover: #b3c6e6;
+
+  --chart-ink: #a9bde0;
+  --chart-ink-strong: #c6d5ee;
+  --chart-track: #2b3444;
   --shadow: 0 1px 3px rgba(0, 0, 0, .35);
 }
 
@@ -166,17 +179,6 @@ input[type="range"] {
   box-shadow: var(--shadow);
 }
 
-/* The agent's written voice — the briefing sentence and the "why it moved"
-   lines. Serif + a touch more line-height so it reads like prose, not chrome. */
-.agent-voice {
-  font-family: var(--font-serif);
-  font-size: 1.08rem;
-  line-height: 1.6;
-  color: var(--text);
-  text-wrap: pretty;
-}
-.agent-voice b { color: var(--accent-blue); font-weight: 600; }
-
 /* Home "moved today" rows: a whole-card link that lifts slightly on hover. */
 .move-card { cursor: pointer; transition: border-color 120ms ease, transform 120ms ease; }
 .move-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
@@ -205,3 +207,19 @@ input[type="range"] {
 .badge-coral  { background: var(--accent-coral-soft);  color: var(--badge-coral-fg); }
 .badge-purple { background: var(--accent-purple-soft); color: var(--badge-purple-fg); }
 .badge-mute   { background: var(--panel-2);            color: var(--text-2); }
+
+/* Same pill shape as .badge but keeps its text's own case — for chips that
+   carry a proper name (a company, a person) rather than a status word. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  background: var(--panel-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  text-decoration: none;
+}
+a.chip:hover { border-color: var(--border-strong); color: var(--text); }
