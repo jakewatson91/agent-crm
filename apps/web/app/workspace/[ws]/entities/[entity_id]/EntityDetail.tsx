@@ -565,7 +565,7 @@ export function EntityDetail({
                           {replayActiveFacts.length} active facts at this timestamp
                         </div>
                         {replayActiveFacts.slice(0, 10).map((f) => (
-                          <div key={f.id} className="mono" style={{ fontSize: '.72rem', color: '#5a7e5f' }}>
+                          <div key={f.id} className="mono" style={{ fontSize: '.72rem', color: 'var(--badge-green-fg)' }}>
                             {f.predicate} = {f.object_text}
                           </div>
                         ))}

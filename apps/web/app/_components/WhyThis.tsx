@@ -80,7 +80,7 @@ export function WhyThis({
         style={{
           padding: '2px 10px',
           background: open ? 'var(--accent-blue)' : 'var(--accent-blue-soft)',
-          color: open ? 'white' : '#4f6da3',
+          color: open ? 'white' : 'var(--badge-blue-fg)',
           border: 'none',
           borderRadius: 999,
           fontSize: '.7rem',
@@ -101,7 +101,7 @@ export function WhyThis({
           fontSize: '.78rem',
           maxWidth: 700,
         }}>
-          <div style={{ color: '#4f6da3', fontSize: '.68rem', marginBottom: '.4rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+          <div style={{ color: 'var(--badge-blue-fg)', fontSize: '.68rem', marginBottom: '.4rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
             agent&apos;s reasoning
           </div>
           {reasoning ? (
@@ -114,7 +114,7 @@ export function WhyThis({
             </div>
           )}
 
-          <div style={{ color: '#5a7e5f', fontSize: '.68rem', marginBottom: '.3rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+          <div style={{ color: 'var(--badge-green-fg)', fontSize: '.68rem', marginBottom: '.3rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>
             cited facts · {cites.length}
           </div>
           {cites.length === 0 && (
@@ -128,7 +128,7 @@ export function WhyThis({
             <div style={{ display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
               {facts.map((f) => (
                 <div key={f.id} className="mono" style={{ fontSize: '.74rem', display: 'flex', gap: '.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
-                  <span style={{ color: '#5a7e5f' }}>✓</span>
+                  <span style={{ color: 'var(--badge-green-fg)' }}>✓</span>
                   <span style={{ color: 'var(--text)' }}>
                     {humanizePredicate(f.predicate)} ={' '}
                     {f.object_entity && f.object_entity_name ? (

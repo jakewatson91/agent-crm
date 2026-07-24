@@ -142,7 +142,7 @@ function SectionHead({ title, count, attention }: { title: string; count: number
         style={{
           fontSize: '.68rem', padding: '1px 8px', borderRadius: 999,
           background: attention ? 'var(--accent-amber-soft)' : 'var(--panel-2)',
-          color: attention ? '#a9761a' : 'var(--text-2)',
+          color: attention ? 'var(--badge-amber-fg)' : 'var(--text-2)',
           border: '1px solid var(--border)',
           fontWeight: attention ? 700 : 500,
         }}

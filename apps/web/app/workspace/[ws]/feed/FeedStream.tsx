@@ -9,6 +9,7 @@ import { CitedText } from '../../../_components/CitedText';
 import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
 import { type Band, BAND_LABEL, bandOf } from '../../../_lib/bands';
 import { humanizePredicate, stripActionTag } from '../../../_lib/labels';
+import { ScorePill } from '../../../_components/ScorePill';
 
 interface FeedItem {
   id: string;
@@ -93,14 +94,6 @@ function matchesFilter(it: FeedItem, key: FilterKey): boolean {
   }
 }
 
-function icpColor(v: number | null): string {
-  if (v === null) return 'var(--text-3)';
-  if (v >= 0.7) return 'var(--accent-green)';
-  if (v >= 0.5) return 'var(--accent-amber)';
-  if (v >= 0.3) return 'var(--accent-amber)';
-  return 'var(--accent-coral)';
-}
-
 export function FeedStream({ items, ws, onDecided }: { items: FeedItem[]; ws: string; onDecided?: () => void }) {
   // Land on the approvals when any are waiting — "open the app, see the 5-10
   // things to approve." Falls back to the full feed when the queue is empty.
@@ -180,8 +173,8 @@ export function FeedStream({ items, ws, onDecided }: { items: FeedItem[]; ws: st
               onClick={() => setFilter(f.key)}
               style={{
                 padding: '.3rem .7rem',
-                background: active ? 'var(--accent-blue-soft)' : alert ? 'rgba(240, 170, 40, .14)' : 'var(--panel)',
-                color: active ? '#4f6da3' : alert ? '#a9761a' : 'var(--text-2)',
+                background: active ? 'var(--accent-blue-soft)' : alert ? 'var(--accent-amber-soft)' : 'var(--panel)',
+                color: active ? 'var(--badge-blue-fg)' : alert ? 'var(--badge-amber-fg)' : 'var(--text-2)',
                 border: `1px solid ${active ? 'var(--accent-blue)' : alert ? 'rgba(240, 170, 40, .5)' : 'var(--border)'}`,
                 fontSize: '.78rem',
                 fontWeight: alert ? 600 : 500,
@@ -275,19 +268,7 @@ function FeedRow({
           {item.entity_name}
         </Link>
         {item.icp_fit !== null && (
-          <span
-            className="mono"
-            style={{
-              fontSize: '.72rem',
-              color: icpColor(item.icp_fit),
-              padding: '1px 6px',
-              background: 'var(--panel-2)',
-              borderRadius: 4,
-            }}
-            title="composite score (signal, evidence, recency, fit, graph)"
-          >
-            score {item.icp_fit.toFixed(2)}
-          </span>
+          <ScorePill icp={item.icp_fit} title={`fit score ${item.icp_fit.toFixed(2)} — signal, evidence, recency, fit, graph`} />
         )}
         {item.score_delta !== null && Math.abs(item.score_delta) >= 0.005 && (
           <span

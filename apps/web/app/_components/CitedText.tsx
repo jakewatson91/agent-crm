@@ -87,7 +87,7 @@ export function CitedText({ text, cites }: { text: string; cites: string[] }) {
       >
         <mark style={{
           background: 'var(--accent-blue-soft)', color: 'inherit',
-          borderBottom: '1px dotted #4f6da3', borderRadius: 2, padding: '0 1px', cursor: 'help',
+          borderBottom: '1px dotted var(--badge-blue-fg)', borderRadius: 2, padding: '0 1px', cursor: 'help',
         }}>
           {text.slice(s.start, s.end)}
         </mark>
@@ -100,11 +100,11 @@ export function CitedText({ text, cites }: { text: string; cites: string[] }) {
             fontFamily: 'var(--font-sans)', whiteSpace: 'normal',
             boxShadow: '0 4px 14px rgba(0,0,0,.18)',
           }}>
-            <span className="mono" style={{ color: '#4f6da3', fontSize: '.66rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+            <span className="mono" style={{ color: 'var(--badge-blue-fg)', fontSize: '.66rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>
               cited fact
             </span>
             <span style={{ display: 'block', color: 'var(--text)', marginTop: '.25rem' }}>
-              <span className="mono" style={{ color: '#5a7e5f' }}>{f.predicate}</span> = {f.object_text ?? '—'}
+              <span className="mono" style={{ color: 'var(--badge-green-fg)' }}>{f.predicate}</span> = {f.object_text ?? '—'}
             </span>
             <span className="mono subtle" style={{ display: 'block', marginTop: '.3rem', fontSize: '.68rem' }}>
               {src?.source_name ? <>via {src.source_name}</> : <>conf {f.confidence.toFixed(2)}</>}

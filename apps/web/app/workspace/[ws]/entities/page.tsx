@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
+import { ScorePill } from '../../../_components/ScorePill';
 import { type Band, BAND_LABEL, bandOf } from '../../../_lib/bands';
 
 interface EntityRow {
@@ -344,13 +345,6 @@ function KindSection({
   );
 }
 
-function fitColor(v: number | null): string {
-  if (v === null) return 'var(--text-3)';
-  if (v >= 0.7) return 'var(--accent-green)';
-  if (v >= 0.5) return 'var(--accent-amber)';
-  return 'var(--accent-coral)';
-}
-
 function EntityCard({
   entity, ws, icp, activity,
 }: {
@@ -383,21 +377,7 @@ function EntityCard({
         </div>
       </div>
       {icp !== null && (
-        <span
-          className="mono"
-          style={{
-            fontSize: '.72rem',
-            color: fitColor(icp),
-            padding: '1px 6px',
-            background: 'var(--panel-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            whiteSpace: 'nowrap',
-          }}
-          title="composite score (signal, evidence, recency, fit, graph)"
-        >
-          score {icp.toFixed(2)}
-        </span>
+        <ScorePill icp={icp} title={`fit score ${icp.toFixed(2)} — signal, evidence, recency, fit, graph`} />
       )}
     </div>
   );

@@ -106,7 +106,7 @@ function TimelineRow({ entry }: { entry: TimelineEntry }) {
   let arrowColor = 'var(--text-3)';
   let deltaLabel = 'initial';
   if (delta != null) {
-    if (delta > 0.0049) { arrow = '↑'; arrowColor = '#5a7e5f'; deltaLabel = `+${delta.toFixed(2)}`; }
+    if (delta > 0.0049) { arrow = '↑'; arrowColor = 'var(--badge-green-fg)'; deltaLabel = `+${delta.toFixed(2)}`; }
     else if (delta < -0.0049) { arrow = '↓'; arrowColor = 'var(--accent-coral)'; deltaLabel = delta.toFixed(2); }
     else { arrow = '→'; arrowColor = 'var(--text-3)'; deltaLabel = '±0.00'; }
   }

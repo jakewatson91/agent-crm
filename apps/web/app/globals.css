@@ -23,6 +23,17 @@
   --accent-purple: #b09bc8;
   --accent-purple-soft: #ede6f4;
 
+  /* Badge text colors + link colors as tokens so dark mode flips in one place
+     (the token block) instead of every component. */
+  --badge-blue-fg: #4f6da3;
+  --badge-green-fg: #5a7e5f;
+  --badge-amber-fg: #8d6429;
+  --badge-coral-fg: #a14d44;
+  --badge-purple-fg: #6f5c8a;
+  --link: #8fa8d1;
+  --link-hover: #6e8ec0;
+  --shadow: 0 1px 2px rgba(40, 36, 30, .04);
+
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   /* The agent's "voice": a readable serif for the parts where the system is
@@ -31,9 +42,69 @@
   --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Georgia', serif;
 }
 
+/* Dark theme — a warm near-black that keeps the same muted-pastel accent
+   family, just brightened to read on a dark ground. The token set is defined
+   twice: once for "OS is dark and the user hasn't forced light", once for the
+   explicit toggle. Base :root above stays the light theme, so forcing light
+   (data-theme="light") needs no override — it just excludes the media block. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #181714;
+    --panel: #201e1a;
+    --panel-2: #282520;
+    --border: #35312a;
+    --border-strong: #47423a;
+    --text: #ece9e2;
+    --text-2: #a8a399;
+    --text-3: #726d63;
+
+    --accent-blue: #8fa8d1;   --accent-blue-soft: #242a38;
+    --accent-green: #8fb893;  --accent-green-soft: #1f2a20;
+    --accent-amber: #d5a76a;  --accent-amber-soft: #2e2716;
+    --accent-coral: #d68b80;  --accent-coral-soft: #2f1e1b;
+    --accent-purple: #b09bc8; --accent-purple-soft: #272031;
+
+    --badge-blue-fg: #a9bde0;
+    --badge-green-fg: #9ecfa3;
+    --badge-amber-fg: #e0bd82;
+    --badge-coral-fg: #e0a49a;
+    --badge-purple-fg: #c6b3dc;
+    --link: #8fa8d1;
+    --link-hover: #b3c6e6;
+    --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #181714;
+  --panel: #201e1a;
+  --panel-2: #282520;
+  --border: #35312a;
+  --border-strong: #47423a;
+  --text: #ece9e2;
+  --text-2: #a8a399;
+  --text-3: #726d63;
+
+  --accent-blue: #8fa8d1;   --accent-blue-soft: #242a38;
+  --accent-green: #8fb893;  --accent-green-soft: #1f2a20;
+  --accent-amber: #d5a76a;  --accent-amber-soft: #2e2716;
+  --accent-coral: #d68b80;  --accent-coral-soft: #2f1e1b;
+  --accent-purple: #b09bc8; --accent-purple-soft: #272031;
+
+  --badge-blue-fg: #a9bde0;
+  --badge-green-fg: #9ecfa3;
+  --badge-amber-fg: #e0bd82;
+  --badge-coral-fg: #e0a49a;
+  --badge-purple-fg: #c6b3dc;
+  --link: #8fa8d1;
+  --link-hover: #b3c6e6;
+  --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+}
+
 * {
   box-sizing: border-box;
 }
+
+html { color-scheme: light dark; }
 
 body {
   margin: 0;
@@ -47,12 +118,12 @@ body {
 }
 
 a {
-  color: var(--accent-blue);
+  color: var(--link);
   text-decoration: none;
   transition: color 120ms ease;
 }
 a:hover {
-  color: #6e8ec0;
+  color: var(--link-hover);
 }
 
 code, pre, .mono {
@@ -90,8 +161,9 @@ input[type="range"] {
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 1rem 1.1rem;
+  box-shadow: var(--shadow);
 }
 
 /* The agent's written voice — the briefing sentence and the "why it moved"
@@ -127,9 +199,9 @@ input[type="range"] {
   letter-spacing: 0.02em;
   text-transform: lowercase;
 }
-.badge-blue   { background: var(--accent-blue-soft);   color: #4f6da3; }
-.badge-green  { background: var(--accent-green-soft);  color: #5a7e5f; }
-.badge-amber  { background: var(--accent-amber-soft);  color: #8d6429; }
-.badge-coral  { background: var(--accent-coral-soft);  color: #a14d44; }
-.badge-purple { background: var(--accent-purple-soft); color: #6f5c8a; }
+.badge-blue   { background: var(--accent-blue-soft);   color: var(--badge-blue-fg); }
+.badge-green  { background: var(--accent-green-soft);  color: var(--badge-green-fg); }
+.badge-amber  { background: var(--accent-amber-soft);  color: var(--badge-amber-fg); }
+.badge-coral  { background: var(--accent-coral-soft);  color: var(--badge-coral-fg); }
+.badge-purple { background: var(--accent-purple-soft); color: var(--badge-purple-fg); }
 .badge-mute   { background: var(--panel-2);            color: var(--text-2); }

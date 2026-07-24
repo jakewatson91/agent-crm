@@ -79,7 +79,7 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
         style={{
           padding: '2px 8px',
           background: open ? 'var(--accent-blue)' : 'var(--accent-blue-soft)',
-          color: open ? 'white' : '#4f6da3',
+          color: open ? 'white' : 'var(--badge-blue-fg)',
           border: 'none',
           borderRadius: 999,
           fontSize: '.7rem',
@@ -114,7 +114,7 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
                   paddingBottom: i < chain.hops.length - 1 ? '.6rem' : 0,
                   borderBottom: i < chain.hops.length - 1 ? '1px dashed var(--border)' : 'none'
                 }}>
-                  <div style={{ color: '#5a7e5f' }}>
+                  <div style={{ color: 'var(--badge-green-fg)' }}>
                     <span style={{ color: 'var(--text)' }}>{h.fact ? humanizePredicate(h.fact.predicate) : '?'} = {h.fact?.object_text ?? '?'}</span>
                     {h.fact && lowConfLabel(h.fact.confidence) && (
                       <span style={{ color: 'var(--accent-coral)' }}> · {lowConfLabel(h.fact.confidence)}</span>
@@ -126,8 +126,8 @@ export function CiteChain({ fact_id, label }: { fact_id: string; label?: string 
                     </div>
                   )}
                   {h.signal && (
-                    <div style={{ marginTop: '.4rem', padding: '.45rem .6rem', background: 'var(--panel)', borderLeft: '2px solid #5a7e5f', borderRadius: 4 }}>
-                      <div className="mono" style={{ fontSize: '.7rem', color: '#5a7e5f', marginBottom: '.2rem' }}>
+                    <div style={{ marginTop: '.4rem', padding: '.45rem .6rem', background: 'var(--panel)', borderLeft: '2px solid var(--badge-green-fg)', borderRadius: 4 }}>
+                      <div className="mono" style={{ fontSize: '.7rem', color: 'var(--badge-green-fg)', marginBottom: '.2rem' }}>
                         ↳ from signal
                       </div>
                       {h.signal.body_excerpt && (
