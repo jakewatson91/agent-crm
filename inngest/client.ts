@@ -48,6 +48,11 @@ export type Events = {
       subscription_id?: string;
       signal_id?: string;
       fact_id?: string;
+      // The entity this run is about. Drives the per-entity concurrency key on
+      // agentRun (limit 1) so a burst of signals about the SAME account enriches
+      // one-at-a-time instead of racing — which is what let the coalescer and
+      // cooldown guards be skipped and produced duplicate facts + feed posts.
+      entity_id?: string;
       parent_event_id?: string;
     };
   };
