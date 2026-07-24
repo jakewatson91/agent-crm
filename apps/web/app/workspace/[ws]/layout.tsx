@@ -21,6 +21,7 @@ export default async function WorkspaceLayout({
   const { user } = await requireRole(ws, 'viewer');
 
   const workspace = [
+    { href: `/workspace/${ws}`,          label: 'Today',     hint: 'what the agent did · what needs you',               prefetchUrl: `/api/today?workspace_id=${ws}` },
     { href: `/workspace/${ws}/feed`,     label: 'Feed',      hint: 'every action the agent took · approvals live here', prefetchUrl: `/api/feed/list?workspace_id=${ws}` },
     { href: `/workspace/${ws}/entities`, label: 'Entities',  hint: 'everything in the system, by kind',                 prefetchUrl: `/api/entities/index?workspace_id=${ws}` },
   ];
