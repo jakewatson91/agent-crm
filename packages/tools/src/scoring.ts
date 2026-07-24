@@ -26,6 +26,22 @@ const SCORE_MODEL = 'deepseek-v4-flash';
 const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 
+/**
+ * Age weight in (0,1] for a source published at `publishedAt`, halving every
+ * `halfLifeDays`. Unknown/unparseable date returns 1 (an undated evergreen page
+ * isn't penalized). Floored at 0.05 so a very old source that slips a hard gate
+ * still carries a trace of weight rather than exactly zero. Used to decay a
+ * research signal's magnitude by how old the underlying article is.
+ */
+export function ageDecay(publishedAt: string | null | undefined, halfLifeDays: number): number {
+  if (!publishedAt || !(halfLifeDays > 0)) return 1;
+  const t = Date.parse(publishedAt);
+  if (!Number.isFinite(t)) return 1;
+  const ageDays = (Date.now() - t) / 86400_000;
+  if (ageDays <= 0) return 1;
+  return Math.max(0.05, Math.pow(2, -ageDays / halfLifeDays));
+}
+
 // Bookkeeping facts that are NOT substantive evidence about the account — score
 // outputs, lifecycle flags, cooldown timers. Excluded from evidence_depth and
 // recency. This is the single canonical list: sweep.ts imports it too, so the

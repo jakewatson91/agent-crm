@@ -17,7 +17,7 @@ import { createServerClient } from '@agent-crm/db';
 import {
   callTool, recordActivityMarker, latestMarkerAt, ACTIVITY_MARKERS,
   getPolicy, resolveEnvVar, resolveStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
-  dedupeResearchCandidates, DUP_LOOKBACK_DAYS,
+  dedupeResearchCandidates, DUP_LOOKBACK_DAYS, ageDecay,
   resolveDomainViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
@@ -25,6 +25,21 @@ import { isHaltingError } from './advance_accounts.js';
 import { inngest } from '../client.js';
 
 const SEEN_WINDOW_DAYS = 30;
+// Freshness defaults for the research path (policy.research.max_age_days /
+// decay_half_life_days override). A non-own_site source older than the floor
+// never becomes a signal; magnitude halves every half-life days of source age.
+const DEFAULT_MAX_AGE_DAYS = 365;
+const DEFAULT_DECAY_HALF_LIFE_DAYS = 90;
+
+/** Normalize a URL for exact same-source collapse: drop protocol, www, query, trailing slash. */
+function normalizeUrl(u: string): string {
+  try {
+    const url = new URL(u);
+    return `${url.hostname.replace(/^www\./, '')}${url.pathname.replace(/\/+$/, '')}`.toLowerCase();
+  } catch {
+    return u.trim().toLowerCase();
+  }
+}
 // A failed domain resolution cools the entity down this long before another
 // search is spent on it (the name simply may not resolve to a safe host).
 const RESOLVE_RETRY_DAYS = 30;
@@ -268,11 +283,19 @@ export async function runEntityResearch(
         if (id) seenIds.add(id);
       }
 
+      // Freshness controls (policy override, else defaults). own_site is exempt
+      // from the age gate below — a company's own pages are timeless and often
+      // undated — so this only bounds news/open_web/social.
+      const maxAgeDays = policy.research?.max_age_days ?? DEFAULT_MAX_AGE_DAYS;
+      const halfLifeDays = policy.research?.decay_half_life_days ?? DEFAULT_DECAY_HALF_LIFE_DAYS;
+      const staleCutoffMs = Date.now() - maxAgeDays * 86400 * 1000;
+
       // --- Fetch phase: collect candidates, separating own-site (collision-proof,
       // domain-scoped) from news/open_web (searched by name -> must be disambiguated). ---
       interface Candidate { angleId: string; scope: ResearchAngle['domain_scope']; er: ExaResult }
       const candidates: Candidate[] = [];
       const ownSiteSnippets: string[] = [];
+      let filtered_stale = 0;
       for (const angle of toRun) {
         const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains);
         if (!built) continue;
@@ -284,6 +307,13 @@ export async function runEntityResearch(
         }
         for (const er of res.results) {
           if (!er.id || seenIds.has(er.id)) continue;
+          // Age gate: drop a non-own_site result whose source is older than the
+          // floor (a 2013 news article is not an outreach hook). A missing or
+          // unparseable date is kept — undated evergreen pages are legitimate.
+          if (angle.domain_scope !== 'own_site' && er.publishedDate) {
+            const pub = Date.parse(er.publishedDate);
+            if (Number.isFinite(pub) && pub < staleCutoffMs) { filtered_stale++; continue; }
+          }
           seenIds.add(er.id); // dedup within this run too
           candidates.push({ angleId: angle.id, scope: angle.domain_scope, er });
           if (angle.domain_scope === 'own_site') {
@@ -319,9 +349,20 @@ export async function runEntityResearch(
       // by embedding cosine — BEFORE any signal is created, so the enricher never runs
       // twice on the same story and no duplicate facts land. Own-site first = highest
       // trust kept when a same-event own page and a news page collide. ---
+      // Exact same-URL collapse first (deterministic, free): Exa can surface one
+      // page under two ids via two angles, and the embedding dedup below can miss
+      // it when the two excerpts differ. Keep the own_site-first one.
+      const seenUrls = new Set<string>();
+      let same_url_dropped = 0;
       const acceptedOrdered = candidates
         .filter((c) => acceptedIds.has(c.er.id))
         .sort((a, b) => (a.scope === 'own_site' ? 0 : 1) - (b.scope === 'own_site' ? 0 : 1))
+        .filter((c) => {
+          const key = normalizeUrl(c.er.url);
+          if (seenUrls.has(key)) { same_url_dropped++; return false; }
+          seenUrls.add(key);
+          return true;
+        })
         .map((c) => ({ id: c.er.id, body: [c.er.title, c.er.text].filter(Boolean).join('\n') }));
       const dupSince = new Date(Date.now() - DUP_LOOKBACK_DAYS * 86400 * 1000).toISOString();
       const priorSig = await supabase
@@ -350,7 +391,10 @@ export async function runEntityResearch(
           const sig = await callTool(supabase, actor, 'create_signal', {
             entity_id,
             type: 'research_result',
-            magnitude: 0.6,
+            // Base 0.6, decayed by how old the source is (halves every
+            // half-life days). A fresh launch keeps ~0.6; an older-but-passing
+            // article is visibly weaker so it can't outrank current news.
+            magnitude: Number((0.6 * ageDecay(c.er.publishedDate, halfLifeDays)).toFixed(3)),
             body_for_embedding: body,
             structured_tags: {
               signal_source: 'research',
@@ -445,13 +489,15 @@ export async function runEntityResearch(
         results_created: created,
         searches,
         filtered_out,
+        filtered_stale,
+        same_url_dropped,
         duplicates_dropped,
         per_angle: perAngle,
         ...(resolver_spent ? { domain_resolved: domain || null } : {}),
-        summary: `${created} results from ${searches} search(es)${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${duplicates_dropped ? `, ${duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
+        summary: `${created} results from ${searches} search(es)${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${filtered_stale ? `, ${filtered_stale} stale dropped` : ''}${(same_url_dropped + duplicates_dropped) ? `, ${same_url_dropped + duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
       });
 
-      return { ok: true, searches, signals_created: created, filtered_out, duplicates_dropped, per_angle: perAngle, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
+      return { ok: true, searches, signals_created: created, filtered_out, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
     }
   }
 }

@@ -364,7 +364,11 @@ Return JSON only: {"matches":["<id>", ...]} — the ids of pages that pass ${pas
 // pass the identity + relevance check and would each become a research_result signal —
 // the enricher then writes overlapping facts and the feed shows "duplicates." Collapse
 // them by embedding cosine before any signal is created.
-const DUP_SIM_THRESHOLD = 0.88;
+// 0.83, not 0.88: three articles about one launch, each framed differently
+// ("launched X" / "points-based payment model" / "diverse content"), embed far
+// enough apart to clear 0.88 and all became separate signals. 0.83 collapses
+// same-event-different-framing while staying above unrelated same-company news.
+const DUP_SIM_THRESHOLD = 0.83;
 export const DUP_LOOKBACK_DAYS = 90;
 const DUP_MAX_PRIORS = 60;
 

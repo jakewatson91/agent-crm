@@ -20,8 +20,16 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
+import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.js';
+
+/** Cosine of two equal-length vectors. Local to keep the fact-dedup guard self-contained. */
+function cosineSim(a: number[], b: number[]): number {
+  let d = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { d += a[i]! * b[i]!; na += a[i]! * a[i]!; nb += b[i]! * b[i]!; }
+  return na && nb ? d / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+}
 
 // Default routing: every behavior except drafter uses Flash. Drafter is the
 // user-visible output — pay for Pro quality. Both go to DeepSeek direct
@@ -863,10 +871,55 @@ export async function runAgent(
     let asserted = 0;
     let assertedSubstantive = false;
     const assertedIds: string[] = [];
+
+    // Fact-level near-dup guard. content_hash catches only byte-identical facts;
+    // this skips a reworded restatement of a fact the entity already holds under
+    // the SAME predicate (e.g. "Director... (Igor)" vs "Director... Igor"). The
+    // threshold is derived, not guessed: on a real book the highest cosine between
+    // two GENUINELY-DISTINCT same-predicate facts was 0.9697, so the 0.975 default
+    // sits above every distinct pair and cannot drop a real fact. Compares only
+    // against pre-existing active facts (never siblings in this batch), so multiple
+    // distinct facts from one article are untouched. Fail-open: any embed error
+    // asserts normally, since losing a real fact is worse than one duplicate.
+    const factDedupSim = policy.enrichment?.fact_dedup_sim ?? 0.975;
+    const activeByPredicate = new Map<string, string[]>();
+    if (factDedupSim > 0) {
+      for (const af of activeFacts) {
+        if (!af.object_text || af.predicate.startsWith('score_')) continue;
+        const arr = activeByPredicate.get(af.predicate) ?? [];
+        arr.push(af.object_text);
+        activeByPredicate.set(af.predicate, arr);
+      }
+    }
+    const embedCache = new Map<string, number[]>();
+    const embedCached = async (t: string): Promise<number[]> => {
+      let v = embedCache.get(t);
+      if (!v) { v = await embed(t.slice(0, 500)); embedCache.set(t, v); }
+      return v;
+    };
+    let factDupsSkipped = 0;
+
     for (const f of facts) {
       if (!f.predicate || !f.object_text) continue;
       const conf = typeof f.confidence === 'number' ? Math.max(0, Math.min(1, f.confidence)) : 0.7;
       const predicate = f.predicate.toLowerCase().replace(/\s+/g, '_');
+
+      // Skip a reworded restatement of an existing same-predicate fact (see above).
+      if (factDedupSim > 0) {
+        const priors = activeByPredicate.get(predicate);
+        if (priors?.length) {
+          try {
+            const v = await embedCached(f.object_text);
+            let maxSim = 0;
+            for (const p of priors) {
+              const s = cosineSim(v, await embedCached(p));
+              if (s > maxSim) maxSim = s;
+              if (maxSim >= factDedupSim) break;
+            }
+            if (maxSim >= factDedupSim) { factDupsSkipped++; continue; }
+          } catch { /* fail open: fall through and assert */ }
+        }
+      }
 
       // Edge path: when enabled and the LLM tagged the object as a modeled entity
       // kind, resolve it to a real entity and write object_entity instead of text.
@@ -1027,6 +1080,7 @@ export async function runAgent(
       ok: true, action: 'enrich',
       channel_post_id: post.ok ? post.target_id : undefined,
       facts_asserted: asserted,
+      ...(factDupsSkipped > 0 ? { fact_dups_skipped: factDupsSkipped } : {}),
       behavior,
       ...tokens,
     };
@@ -1195,7 +1249,7 @@ IDENTITY CHECK (do this first) — companies and people can share a name. Cross-
 
 DO NOT extract:
 - Anything already present in the entity's ATTRIBUTES (the JSON object in the user message). The values there are authoritative; re-asserting them as facts is noise.
-- Anything already present in the ACTIVE FACTS list. Those exist; don't duplicate.
+- Anything already present in the ACTIVE FACTS list — including a REWORDED version of it. If an active fact already states this, even in different words, order, or punctuation, do NOT emit it again. Only emit a fact about the same thing when it changes a SPECIFIC value (a corrected number, a new named detail) — and then state the new value explicitly so it reads as an update, not a paraphrase.
 - Generic descriptors that are obvious from the entity name or category.${bannedLine}
 
 DO extract specific claims grounded in the signal. The kinds of facts that matter for THIS workspace look like:

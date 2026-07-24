@@ -47,7 +47,7 @@ export type { PullContactsResult, DrainResult } from './contacts.ts';
 export { scoreEntity, scoreAndAssert, combineSubScores, scoreContact };
 export { buildContactWeights, DEFAULT_CONTACT_WEIGHTS, decisionPower, personaMatch } from './scoring.ts';
 export { selectAction, loadActionContext, loadBestContactScore, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.ts';
-export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights, isSubstantiveFact, ADMIN_PREDICATES, type ScoreBreakdown } from './scoring.ts';
+export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights, isSubstantiveFact, ADMIN_PREDICATES, type ScoreBreakdown, ageDecay } from './scoring.ts';
 export { graphProximity, type GraphProximityResult } from './graph.ts';
 export { resolveOrCreateEntity, normalizeEntityName, trigramSim, looksLikeEntityName, type ResolveResult } from './resolve.ts';
 export { findMergeCandidatesForEntity, mergeAccounts, dismissMergeCandidate, type MergeCandidate, type MergeResult } from './merge.ts';

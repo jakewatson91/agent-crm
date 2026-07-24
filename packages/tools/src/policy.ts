@@ -52,6 +52,18 @@ export interface EnrichmentPolicy {
    */
   coalesce_window_min?: number;
   /**
+   * Fact-level near-dup threshold. When the enricher proposes a fact, its
+   * object_text is embedded and compared (cosine) against the entity's active
+   * facts with the SAME predicate; a match at or above this value is a reworded
+   * restatement and is skipped (content_hash only catches byte-identical). 0.975
+   * is derived from real data: the highest cosine between two GENUINELY-DISTINCT
+   * same-predicate facts observed on a live book was 0.9697 ("50,000+" vs
+   * "55,000+ live events"), so 0.975 sits above every distinct pair and never
+   * drops a real fact. Same-predicate only; fail-open on embed error. Default
+   * 0.975. Set 0 to disable.
+   */
+  fact_dedup_sim?: number;
+  /**
    * Per-entity enrichment cooldown in hours. When an enricher run successfully
    * asserted facts for an entity within this window, new signals for that same
    * entity are skipped — the entity is already up to date. Prevents high-volume
@@ -423,6 +435,16 @@ export interface ResearchPolicy {
   resolve_domains?: boolean;
   domain_backfill_per_day?: number;
   social_domains?: string[];
+  // Freshness controls for the per-account research path (news/open_web/social;
+  // own_site is exempt — a company's own pages are timeless and often undated).
+  //   max_age_days         : hard floor. A non-own_site result whose source
+  //                          published_at is older than this is dropped before it
+  //                          becomes a signal. Default 365.
+  //   decay_half_life_days : signal magnitude halves every N days of source age,
+  //                          so an older-but-passing source scores lower than a
+  //                          fresh one. Default 90.
+  max_age_days?: number;
+  decay_half_life_days?: number;
 }
 
 /**
