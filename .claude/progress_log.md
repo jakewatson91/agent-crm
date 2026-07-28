@@ -1996,3 +1996,15 @@ New sweep check `llm_failures` measures them against runs that completed (share 
 
 ### Sweep state improving
 Sudden now **RED=2 YELLOW=0 GREEN=3** (was RED=2 YELLOW=1 GREEN=2 at session start, and RED=3 mid-session). `cost_per_claim` went **RED → GREEN** (15531 vs 10987 median). `score_signal_coupling` green at 100% — 8/8 entities rescored after new facts. Remaining: `cost_per_unique_signal` (still working through the outage's 7d median) and `score_distribution` (the book, not the scorer — weights are Jake's call).
+
+### End of the funnel: the approval trail didn't record who approved (`b683da8`)
+Checked what happens to drafts after they're written — the part I hadn't looked at. Drafts themselves are fine: 19 written, real dated triggers, right voice ("saw M6+ hit 1M simultaneous streams during a live match…").
+
+Gate outcomes: **11 reject, 5 approve, 3 pending** (oldest 4.2d). The 07-18/19 reject batch of 8 lines up exactly with the known `ceba879`→`f101935` template bug window, so those are explained. All 5 approvals were **edited before sending** — the drafter has never yet produced something approved as-is, which is what the edits-as-corrections learning loop is there to consume, and it now has 19 decisions of material rather than the 3 it had on 07-17.
+
+**`gates.decided_by` is null on all 19, including the human ones.** The decide route hardcoded `actor_id` to the literal `'web'`, and `record_event` only copies it into `decided_by` when it matches a uuid — migration 0041 guards the cast, which is why this failed quietly instead of erroring. So the trail recorded which agent *requested* an irreversible outbound send and never which human let it out. That is the single fact an approval gate exists to capture. Route now reads the signed-in user and passes their uuid; email rides along in the resolution as `decided_by_email` so it reads without a join.
+
+### A bug I shipped earlier today and caught here
+The two `agent_llm_failed` writes in `bdfb752` used `.insert({...}).catch(...)`. A PostgREST query builder is a **thenable, not a Promise** — no `.catch` — so those calls would have thrown `TypeError` at runtime, inside the very error paths meant to make failures visible. Both are now try/catch, and a repo-wide sweep found no other instance.
+
+**How it slipped through:** I ran `pnpm --filter agent-crm-inngest typecheck`, saw it clean, and moved on. The web project compiles the same file with stricter settings and caught it immediately. *Clean in the package you edited is not the same as clean* — for shared files under `inngest/` or `packages/`, run the web typecheck too.
