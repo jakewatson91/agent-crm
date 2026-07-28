@@ -202,10 +202,21 @@ export async function runEntityResearch(
         const st = (wsRow.data?.icp as { signal_type?: unknown } | null)?.signal_type;
         return Array.isArray(st) ? st.filter((s): s is string => typeof s === 'string') : [];
       })();
+      // policy.research.guidance is deliberately NOT passed here. It is planner
+      // input — "what should the agent dig up about prospects?", folded into the
+      // prompt that WRITES the search queries (see ResearchPolicy in policy.ts).
+      // It is phrased as a priority ("the best trigger is an exec interview about
+      // delivery costs... prioritize finding that"), and a priority is not a
+      // threshold. Feeding it to the relevance gate turned "rank this first" into
+      // "reject everything else": on Sudden the gate went from accepting 252
+      // results on 07-22 to dropping 89% of them (149 filtered, 18 kept) on 07-28,
+      // because almost no page is an executive interview about CDN spend.
+      //
+      // What the seller cares about is already carried by pains + signal_types,
+      // which describe the problem area rather than the ideal single result.
       const relevance = {
         pains: (policy.drafter?.pain_points ?? []).filter(Boolean),
         signal_types: icpSignalTypes,
-        guidance: (policy.research?.guidance ?? '').trim() || undefined,
       };
 
       // Entity domain drives the own_site angle + collision guards.
