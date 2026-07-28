@@ -49,14 +49,65 @@ export function domainFromEmail(email: string | null | undefined): string | null
   return host;
 }
 
+/**
+ * The parts of a host that could carry the company's name, most specific first.
+ *
+ * `host.split('.')[0]` only works when there is no subdomain. Plenty of real
+ * corporate sites have one, and taking the first label then compares the wrong
+ * string: `tv.movistar.com.ar` yields "tv", `m.ixigua.com` yields "m". Both got
+ * their accounts rejected as name_mismatch against companies they genuinely
+ * belong to.
+ *
+ * There is no public-suffix list here, so the trailing 1-2 labels are dropped
+ * heuristically: the last label is always a TLD, and the one before it too when
+ * it is a short registry label like the "com" in "com.ar" or "co" in "co.uk".
+ * What remains is every label that could plausibly be the brand, plus the whole
+ * thing concatenated, so callers can test against all of them.
+ */
+/**
+ * The registrable domain — what a contact provider can actually be queried
+ * with. `jobs.lionsgate.com` becomes `lionsgate.com`, `tv.movistar.com.ar`
+ * becomes `movistar.com.ar`.
+ *
+ * Search results for a company routinely land on a subdomain (careers, investor
+ * relations, a regional site). Storing that as the account's domain is worse
+ * than storing nothing: Hunter finds no addresses under it, and the account now
+ * looks resolved so the backfill stops retrying it.
+ *
+ * Same registry-label heuristic as hostNameLabels — no public-suffix list here.
+ */
+export function registrableDomain(host: string): string {
+  const parts = host.toLowerCase().split('.').filter(Boolean);
+  if (parts.length <= 2) return parts.join('.');
+  const REGISTRY_LABELS = new Set(['com', 'co', 'net', 'org', 'gov', 'edu', 'ac', 'or', 'ne', 'go']);
+  const keep = REGISTRY_LABELS.has(parts[parts.length - 2]!) ? 3 : 2;
+  return parts.slice(-keep).join('.');
+}
+
+export function hostNameLabels(host: string): string[] {
+  const parts = host.toLowerCase().split('.').filter(Boolean);
+  if (parts.length < 2) return parts;
+  // Drop the TLD, and a second-level registry label when it looks like one.
+  const REGISTRY_LABELS = new Set(['com', 'co', 'net', 'org', 'gov', 'edu', 'ac', 'or', 'ne', 'go']);
+  let end = parts.length - 1;
+  if (end > 1 && REGISTRY_LABELS.has(parts[end - 1]!)) end -= 1;
+  const kept = parts.slice(0, end).map((p) => p.replace(/[^a-z0-9]/g, '')).filter(Boolean);
+  if (!kept.length) return [];
+  // The concatenation is built from the ORIGINAL order ("moviesandtv" + "myvi"),
+  // then the individual labels are listed brand-first.
+  const concatenated = kept.join('');
+  return [...new Set([...[...kept].reverse(), concatenated])];
+}
+
 /** Does the entity name plausibly own this host? See module comment. */
 export function nameMatchesHost(name: string, host: string): boolean {
-  const label = (host.split('.')[0] ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const labels = hostNameLabels(host);
   const joined = name.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (!label || !joined) return false;
-  if (joined.includes(label) || label.includes(joined)) return true;
+  if (!labels.length || !joined) return false;
   const tokens = name.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
-  return tokens.some((t) => label.includes(t));
+  return labels.some((label) =>
+    joined.includes(label) || label.includes(joined) || tokens.some((t) => label.includes(t)),
+  );
 }
 
 export interface DomainBackfillResult {
@@ -225,8 +276,15 @@ export async function resolveDomainViaSearch(
   }
 
   const hosts = res.results.map((r) => normalizeDomain(r.url));
+  // Count by REGISTRABLE domain, not by full host. Two results on
+  // investors.acme.com and about.acme.com are two pieces of evidence for
+  // acme.com; counting them as one each left real companies stuck on
+  // weak_evidence.
   const countByHost = new Map<string, number>();
-  for (const h of hosts) if (h) countByHost.set(h, (countByHost.get(h) ?? 0) + 1);
+  for (const h of hosts) if (h) {
+    const reg = registrableDomain(h);
+    countByHost.set(reg, (countByHost.get(reg) ?? 0) + 1);
+  }
 
   const rejections: DomainResolveRejection[] = [];
   const joinedName = entity_name.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -236,11 +294,29 @@ export async function resolveDomainViaSearch(
     const host = hosts[rank] ?? null;
     if (!host) { rejections.push({ url, host, reason: 'not_a_company_domain' }); continue; }
     if (!nameMatchesHost(entity_name, host)) { rejections.push({ url, host, reason: 'name_mismatch' }); continue; }
-    if ((countByHost.get(host) ?? 0) < 2) {
-      const label = (host.split('.')[0] ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (rank !== 0 || label !== joinedName) { rejections.push({ url, host, reason: 'weak_evidence' }); continue; }
+    if ((countByHost.get(registrableDomain(host)) ?? 0) < 2) {
+      // A host that appears once still counts when it is the top hit for
+      // `"<name>" official website` AND one of its name-bearing labels is the
+      // company name. Testing only host.split('.')[0] compared the subdomain:
+      // "tv" for tv.movistar.com.ar, against a joined name of "movistartv".
+      const labels = hostNameLabels(host);
+      if (rank !== 0 || !labels.includes(joinedName)) { rejections.push({ url, host, reason: 'weak_evidence' }); continue; }
     }
-    domain = host;
+    // Store the registrable domain, never the subdomain the search happened to
+    // land on. A contact provider queried with jobs.lionsgate.com returns
+    // nothing, and the account would still be marked resolved so the backfill
+    // would stop retrying it — strictly worse than leaving it blank.
+    const registrable = registrableDomain(host);
+    // ...but only if the company owns THAT, not just the subdomain. A brand
+    // hosted on someone else's platform matches the subdomain label while the
+    // registrable domain belongs to the platform: widekhaliji.blueonline.tv
+    // would otherwise file "WideKhaliji" under blueonline.tv and send every
+    // contact lookup to the wrong company.
+    if (!nameMatchesHost(entity_name, registrable)) {
+      rejections.push({ url, host, reason: 'name_mismatch' });
+      continue;
+    }
+    domain = registrable;
     break;
   }
 
@@ -255,7 +331,11 @@ export async function resolveDomainViaSearch(
     return { status: 'no_match', domain: null, evidence_urls: [], rejections };
   }
 
-  const evidence_urls = res.results.filter((r, i) => hosts[i] === domain).map((r) => r.url).slice(0, 5);
+  // Evidence is every result under the same registrable domain, so a subdomain
+  // hit still cites the page it actually came from.
+  const evidence_urls = res.results
+    .filter((r, i) => hosts[i] && registrableDomain(hosts[i]!) === domain)
+    .map((r) => r.url).slice(0, 5);
   if (apply) {
     const { error } = await supabase.from('entities')
       .update({ attributes: { ...attributes, domain } })
