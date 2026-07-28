@@ -2236,3 +2236,21 @@ The reason both are empty is the chicken-and-egg at the top of the chain: **doma
 **So the projection is firm.** 1396 accounts need a domain. `research.domain_backfill_per_day` is 75, one Exa search each, and post-fix recovery is ~33% on previously-failed accounts (higher on never-attempted ones). Roughly 19 days to attempt them all; realistically a few hundred resolve. Every one that does becomes researchable at ~30 entities/day, which is what eventually lifts `signal_strength` past the draft gate.
 
 `domain_backfill_per_day` is therefore **the single highest-leverage knob in the workspace**, and it is a straight Exa-credit trade. Left at 75 — that is Jake's call, and the reason for saying so this precisely is so the decision can be made on arithmetic rather than feel.
+
+### The resolver budget was being spent in uuid order (`9e33a4a`)
+Last free win at the top of the chain. `scanDomainBackfillCandidates` ordered its queue with `missing.sort((a, b) => a.id.localeCompare(b.id))` — stable, which was the intent, but arbitrary. With 1396 accounts queued against 75 lookups/day, that order decides which accounts become reachable this month and which wait until next.
+
+Now ordered by current `icp_fit`, uuid as tiebreak so it stays stable within a score. Unscored accounts sort **last**, not first — an unscored account is usually one nothing is known about. Score read as latest `observed_at`, not `.is('supersedes', null)`, which would have reintroduced the first-ever-score bug from `9cf491b`.
+
+Measured on the live queue, first 75 picked:
+
+| order | mean icp | scoring >= 0.8 |
+|---|---|---|
+| by uuid (before) | 0.722 | 51 / 75 |
+| by score (after) | 0.852 | **75 / 75** |
+
+43 of 75 overlap, so a third of each day's budget was going somewhere different. Same spend, same cadence, no new credits.
+
+It composes with the acronym fix: the new head of the queue is **Warner Brothers Discovery at 0.97** — verified live as resolving to `wbd.com` — which under uuid order would have waited weeks for its turn.
+
+**This is the shape of most of today's wins:** not new capability, just stopping the system spending its scarce resource on the wrong thing. The scarce resources here were Exa searches, contact-provider credits, LLM tokens on already-answered questions, and Postgres reading 43,527 rows to answer a pointer lookup.
