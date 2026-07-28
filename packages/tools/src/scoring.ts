@@ -137,6 +137,15 @@ export interface ScoreBreakdown {
   recency: number;
   graph_proximity: number;
   rrf_prefilter: number;
+  /**
+   * Dimensions that could not be measured for this entity, so combineSubScores
+   * leaves them out of the mean rather than averaging in a placeholder. The
+   * numbers above are still filled in for display, but a dimension named here
+   * contributed nothing to icp_fit. Two cases produce it today: no company
+   * ground truth to judge stage_match from, and an entity with no graph edges
+   * so graph_proximity has no neighbours to average.
+   */
+  unknown_dims?: string[];
 }
 
 export interface EntityScore {
@@ -167,7 +176,26 @@ function evidenceDepth(facts: Array<{ predicate: string }>): number {
   return clamp01(substantive / 6);
 }
 
-function recencyScore(facts: Array<{ predicate: string; created_at?: string; observed_at?: string }>): number {
+/**
+ * How fresh is what we know about this account.
+ *
+ * Dated off the SOURCE's publish date when we have one (`sourceDates`, keyed by
+ * the fact's signal_id and read from signals.structured_tags.published_at), and
+ * only off our own write time as a fallback.
+ *
+ * Our write time on its own does not measure the account at all. `observed_at`
+ * is set when the enricher writes the fact, so an article from eighteen months
+ * ago and one from this morning both land as "today" — measured on the Sudden
+ * book, 1000 of 1000 facts had observed_at within a day of created_at, and
+ * recency came out at 0.98 for essentially every account (p10 0.97, p90 0.98).
+ * A dimension that reports the pipeline's own cron schedule is noise carrying
+ * 10% of the weight. Research reaches back up to a year, so real publish dates
+ * spread this across the full range instead.
+ */
+function recencyScore(
+  facts: Array<{ predicate: string; created_at?: string; observed_at?: string; signal_id?: string | null }>,
+  sourceDates?: Map<string, string>,
+): number {
   // Freshness must mean "when did we last learn something real about the
   // account" — so only substantive facts count. Score outputs are rewritten
   // every scoring run; counting them pinned recency at ~1.0 forever.
@@ -175,12 +203,41 @@ function recencyScore(facts: Array<{ predicate: string; created_at?: string; obs
   if (!real.length) return 0;
   let mostRecent = 0;
   for (const f of real) {
-    const t = Date.parse(f.observed_at ?? f.created_at ?? '');
+    const published = f.signal_id ? sourceDates?.get(f.signal_id) : undefined;
+    const t = Date.parse(published ?? f.observed_at ?? f.created_at ?? '');
     if (Number.isFinite(t) && t > mostRecent) mostRecent = t;
   }
   if (!mostRecent) return 0;
-  const ageDays = (Date.now() - mostRecent) / 86400_000;
+  // A source can carry a publish date in the future (bad metadata, or a
+  // scheduled post). Clamp the age at 0 so it scores as "today", never above 1.
+  const ageDays = Math.max(0, (Date.now() - mostRecent) / 86400_000);
   return clamp01(Math.exp(-ageDays / RECENCY_TAU_DAYS));
+}
+
+/**
+ * Publish dates for the signals behind a set of facts, keyed by signal_id.
+ * Missing / unparseable dates are simply absent, so recencyScore falls back to
+ * our own write time for those facts.
+ */
+async function loadSourceDates(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  facts: Array<{ signal_id?: string | null }>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const ids = [...new Set(facts.map((f) => f.signal_id).filter((x): x is string => !!x))];
+  if (!ids.length) return out;
+  // Chunked at 150 like every other .in() here: a long id list overflows the
+  // PostgREST request URL and silently returns a short page.
+  for (let i = 0; i < ids.length; i += 150) {
+    const res = await supabase.from('signals').select('id, structured_tags')
+      .eq('workspace_id', workspace_id).in('id', ids.slice(i, i + 150));
+    for (const s of (res.data ?? []) as Array<{ id: string; structured_tags: { published_at?: string } | null }>) {
+      const p = s.structured_tags?.published_at;
+      if (p && Number.isFinite(Date.parse(p))) out.set(s.id, p);
+    }
+  }
+  return out;
 }
 
 // Canonical ground-truth attribute keys. Connectors that fetch directory-style
@@ -257,7 +314,7 @@ export async function scoreEntity(
 ): Promise<EntityScore | null> {
   const [entRes, factsRes, wsRes, graphRes, icpVecs] = await Promise.all([
     supabase.from('entities').select('id, name, attributes').eq('id', entity_id).maybeSingle(),
-    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes')
+    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes, signal_id')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .order('observed_at', { ascending: false }),
     supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle(),
@@ -271,7 +328,7 @@ export async function scoreEntity(
   // signals or embedding). Scoring one produces a meaningless number and
   // pollutes the score distribution. Skip until it is promoted to a full entity.
   if ((entity.attributes as { _candidate?: boolean } | null)?._candidate === true) return null;
-  const rawFacts = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null }>;
+  const rawFacts = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null; signal_id: string | null }>;
   // Active = not pointed at by another fact's `supersedes` (subject-direction
   // fetch, so any superseding fact shares this subject and is in the set).
   // Cap at 40 active facts to bound the LLM prompt, same as the prior limit.
@@ -335,8 +392,26 @@ export async function scoreEntity(
 
   // ---- Deterministic sub-scores ----
   const evidence_depth = evidenceDepth(facts);
-  const recency = recencyScore(facts);
+  const recency = recencyScore(facts, await loadSourceDates(supabase, workspace_id, facts));
   const graph = graphRes.score;
+
+  // ---- Which dimensions could we actually measure? ----
+  // Both of these come back as a fixed number that looks like a verdict but is
+  // really "we don't know", so they are named for combineSubScores to drop.
+  //
+  // graph_proximity is the mean icp_fit of linked entities. With no edges there
+  // is nothing to average and graphProximity returns 0 — indistinguishable from
+  // "all its neighbours are terrible fits" in the weighted sum, which quietly
+  // docked every unlinked account. edge_count tells the two apart.
+  //
+  // stage_match is judged from COMPANY GROUND TRUTH (team size, funding stage,
+  // founded year, public/private...). The rubric instructs the model to answer
+  // 0.4 when that section is empty rather than guess from prose, so on a book
+  // whose accounts carry no such attributes it is a constant, not a signal.
+  const groundTruth = renderGroundTruth(entity.attributes ?? {});
+  const unknown_dims: string[] = [];
+  if (graphRes.edge_count === 0) unknown_dims.push('graph_proximity');
+  if (!groundTruth) unknown_dims.push('stage_match');
 
   // ---- Unchanged-inputs reuse ----
   // Past the stale guard but the rubric's inputs are byte-identical to the ones
@@ -366,6 +441,10 @@ export async function scoreEntity(
           recency,
           graph_proximity: graph,
           rrf_prefilter: typeof prior.rrf_prefilter === 'number' ? prior.rrf_prefilter : 0,
+          // Recomputed, not carried over from the stored breakdown: an account
+          // that has since gained a contact or a ground-truth attribute becomes
+          // measurable on that dimension even when the LLM judgment is reused.
+          unknown_dims,
         };
         const icp_total = combineSubScores(breakdown, weights);
         return {
@@ -427,6 +506,9 @@ export async function scoreEntity(
       recency,
       graph_proximity: graph,
       rrf_prefilter,
+      // No unknown_dims here on purpose. The zeros above are this branch's
+      // verdict — three embedding perspectives unanimously disagreed with the
+      // ICP — not gaps in what we know, so they belong in the mean.
     };
     const icp_total = combineSubScores(breakdown, weights);
     return {
@@ -441,7 +523,8 @@ export async function scoreEntity(
   }
 
   // ---- LLM rubric: industry_match, stage_match, signal_strength ----
-  const groundTruth = renderGroundTruth(entity.attributes ?? {});
+  // groundTruth was rendered above, where it decides whether stage_match is
+  // measurable at all.
   const otherAttrs = renderOtherAttributes(entity.attributes ?? {});
 
   // What the workspace sells, pulled from the SAME config the drafter uses
@@ -537,6 +620,7 @@ Score this account on the three rubric dimensions.`;
     recency,
     graph_proximity: graph,
     rrf_prefilter,
+    unknown_dims,
   };
 
   const icp_total = combineSubScores(breakdown, weights);
@@ -573,15 +657,41 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   graph_proximity: 0.10,
 };
 
+/**
+ * Weighted mean over the dimensions we actually measured.
+ *
+ * A dimension listed in `b.unknown_dims` was not measurable for this entity —
+ * we have no company ground truth to judge stage from, or the entity has no
+ * graph edges at all. Those are gaps in what we know, not verdicts of poor fit,
+ * so they are dropped from the mean and the remaining weights are renormalized
+ * to sum to 1 instead of contributing a fabricated constant.
+ *
+ * The old behaviour crushed every score into one band. Worked example from the
+ * Sudden book (1961 accounts, none carrying a ground-truth attribute, 92% with
+ * no graph edge): stage_match came back 0.40 for every account (the rubric's own
+ * "unknown" default) and graph_proximity 0.00 for every account. With weights
+ * 0.20 and 0.10 that pinned 0.30 of the weight at a constant 0.08 contribution
+ * and, with industry_match saturated at ~1.0 on a pre-filtered book, confined
+ * every account to icp_fit 0.60-0.68. 77% landed in one decile and the ranking
+ * carried no information. Renormalizing over the four measured dimensions
+ * reopens the range to roughly 0.52-0.96.
+ */
 export function combineSubScores(b: ScoreBreakdown, weights: ScoreWeights = DEFAULT_WEIGHTS): number {
-  const total =
-    weights.industry_match * b.industry_match +
-    weights.stage_match * b.stage_match +
-    weights.evidence_depth * b.evidence_depth +
-    weights.signal_strength * b.signal_strength +
-    weights.recency * b.recency +
-    weights.graph_proximity * b.graph_proximity;
-  return clamp01(total);
+  const unknown = new Set(b.unknown_dims ?? []);
+  const dims: Array<keyof ScoreWeights> = [
+    'industry_match', 'stage_match', 'signal_strength', 'evidence_depth', 'recency', 'graph_proximity',
+  ];
+  let weighted = 0;
+  let present = 0;
+  for (const d of dims) {
+    if (unknown.has(d)) continue;
+    weighted += weights[d] * b[d];
+    present += weights[d];
+  }
+  // Every dimension unknown, or a weights object that zeroes everything: there
+  // is nothing to average, so say 0 rather than divide by zero.
+  if (present <= 0) return 0;
+  return clamp01(weighted / present);
 }
 
 /**
