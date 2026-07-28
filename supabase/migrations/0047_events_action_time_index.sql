@@ -1,0 +1,21 @@
+-- 0047: index events on (workspace_id, action, created_at desc).
+--
+-- Nearly every operational read of `events` is "this workspace, this action,
+-- this time window": the health sweep's dispatch/coupling/cost checks, the
+-- period report, the Today page's run log, and the llm_failures check. The
+-- existing indexes are (workspace_id, created_at desc) and (workspace_id,
+-- action) — neither serves that shape, so Postgres walks the time index and
+-- discards everything with the wrong action.
+--
+-- Measured on the live table (192k rows, 166 MB) for one such query over a
+-- single day:
+--   Index Scan using events_workspace_time_idx
+--     Rows Removed by Filter: 9612      -- to return 29 rows
+--     Buffers: shared hit=9454
+-- A 330:1 read amplification, and it grows linearly with event volume — this
+-- workspace writes ~3300 events/day and never prunes. The sweep issues several
+-- of these per run.
+--
+-- Pure performance, no behavior change. `if not exists` so it is safe to re-run.
+create index if not exists events_workspace_action_time_idx
+  on events(workspace_id, action, created_at desc);
