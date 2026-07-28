@@ -342,6 +342,11 @@ export async function runEntityResearch(
       // (own_site scope), which the old "trust own-site" path never relevance-checked. ---
       const allForGate = candidates.map((c) => ({ id: c.er.id, title: c.er.title, url: c.er.url, text: c.er.text }));
       let filtered_out = 0;
+      // Which of the gate's three tests did the drops fail. This gate discards
+      // most of what research finds, so when yield moves the first question is
+      // always "which condition changed" — recording only a total meant that
+      // took config archaeology instead of one query.
+      let filtered_by = { identity: 0, substance: 0, relevance: 0, unreported: 0 };
       const acceptedIds = new Set<string>();
       let hookClassById = new Map<string, 'event' | 'direction' | 'profile'>();
       if (allForGate.length) {
@@ -355,6 +360,7 @@ export async function runEntityResearch(
         for (const id of rel.accepted) acceptedIds.add(id);
         hookClassById = rel.classById;
         filtered_out = rel.dropped;
+        filtered_by = rel.droppedBy;
       }
 
       // --- Dedup phase: collapse near-identical accepted results (two articles on the
@@ -524,6 +530,7 @@ export async function runEntityResearch(
         results_created: created,
         searches,
         filtered_out,
+        filtered_by,
         filtered_stale,
         same_url_dropped,
         duplicates_dropped,

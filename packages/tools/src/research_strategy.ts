@@ -267,7 +267,22 @@ export async function fetchEntityGrounding(apiKey: string, name: string, domain:
  */
 export type HookClass = 'event' | 'direction' | 'profile';
 
-export interface RelevanceResult { accepted: Set<string>; classById: Map<string, HookClass>; checked: number; auto: number; dropped: number }
+export interface RelevanceResult {
+  accepted: Set<string>;
+  classById: Map<string, HookClass>;
+  checked: number;
+  auto: number;
+  dropped: number;
+  /**
+   * Which test each dropped page failed, so a collapse in research yield can be
+   * read off the event log instead of reconstructed from config. This gate
+   * discards the majority of everything research finds, and until now it
+   * recorded a single total — diagnosing an 8x yield drop meant guessing which
+   * of the three conditions had moved. `unreported` covers a model that skipped
+   * the rejects list, and the error fallback.
+   */
+  droppedBy: { identity: number; substance: number; relevance: number; unreported: number };
+}
 
 /**
  * Disambiguate open-web results against the target company so a same-name but unrelated
@@ -316,7 +331,7 @@ export async function filterResultsByEntity(
     else toCheck.push({ r, own: onOwnDomain });
   }
   const auto = accepted.size;
-  if (!toCheck.length) return { accepted, classById, checked: 0, auto, dropped: 0 };
+  if (!toCheck.length) return { accepted, classById, checked: 0, auto, dropped: 0, droppedBy: { identity: 0, substance: 0, relevance: 0, unreported: 0 } };
 
   // With real grounding (own-site snippets / descriptive facts) an unsure-but-fitting
   // page is probably right, so lean toward matching. With nothing to test against,
@@ -353,17 +368,27 @@ For each matching page, also classify what kind of hook it carries:
 - "direction": evidence of a current priority or push — what the company keeps working toward or says it is doing next, without one dated event.
 - "profile": describes what the company is or does — confirms it fits a market but reports nothing new happening. These are the least valuable; be honest when a page is only this.
 
-Return JSON only: {"matches":[{"id":"<id>","class":"event"|"direction"|"profile"}, ...]} — one entry per page that passes ${passClause}.`;
+Return JSON only:
+{"matches":[{"id":"<id>","class":"event"|"direction"|"profile"}, ...],
+ "rejects":[{"id":"<id>","failed":"identity"|"substance"${hasRelevance ? '|"relevance"' : ''}}, ...]}
+
+"matches" holds one entry per page that passes ${passClause}. "rejects" holds every other page, naming the FIRST test it failed — "identity" for test 1, "substance" for test 2${hasRelevance ? ', "relevance" for test 3' : ''}. Every page you were given must appear in exactly one of the two lists.`;
 
   const payload = JSON.stringify(toCheck.map(({ r }) => ({ id: r.id, title: r.title, url: r.url, text: (r.text ?? '').slice(0, 500) })));
   try {
     const llm = await chatComplete({
       model: opts?.model ?? RELEVANCE_MODEL,
-      max_tokens: 800,
+      // Room for the rejects list too. A truncated response is unparseable JSON,
+      // which falls through to the catch and drops every off-domain result — far
+      // more costly than the extra output tokens.
+      max_tokens: 1200,
       response_format: { type: 'json_object' },
       messages: [{ role: 'system', content: sys }, { role: 'user', content: payload }],
     });
-    const parsed = JSON.parse(llm.text) as { matches?: Array<string | { id?: string; class?: string }> };
+    const parsed = JSON.parse(llm.text) as {
+      matches?: Array<string | { id?: string; class?: string }>;
+      rejects?: Array<{ id?: string; failed?: string }>;
+    };
     const matchSet = new Set<string>();
     for (const m of parsed.matches ?? []) {
       // Tolerate the old bare-string shape (a cached model / retry could emit it).
@@ -374,7 +399,17 @@ Return JSON only: {"matches":[{"id":"<id>","class":"event"|"direction"|"profile"
     }
     let kept = 0;
     for (const { r } of toCheck) if (matchSet.has(r.id)) { accepted.add(r.id); kept++; }
-    return { accepted, classById, checked: toCheck.length, auto, dropped: toCheck.length - kept };
+
+    const droppedBy = { identity: 0, substance: 0, relevance: 0, unreported: 0 };
+    const reasonById = new Map<string, string>();
+    for (const rj of parsed.rejects ?? []) if (rj?.id) reasonById.set(String(rj.id), String(rj.failed ?? ''));
+    for (const { r } of toCheck) {
+      if (matchSet.has(r.id)) continue;
+      const reason = reasonById.get(r.id);
+      if (reason === 'identity' || reason === 'substance' || reason === 'relevance') droppedBy[reason] += 1;
+      else droppedBy.unreported += 1;
+    }
+    return { accepted, classById, checked: toCheck.length, auto, dropped: toCheck.length - kept, droppedBy };
   } catch {
     // Fail: keep identity-confirmed own-domain results (only their relevance was in
     // question, and losing real own-site context is worse than one off-topic page), but
@@ -382,7 +417,11 @@ Return JSON only: {"matches":[{"id":"<id>","class":"event"|"direction"|"profile"
     // is worse than one thin pass (the dispatcher re-runs on cadence anyway).
     let keptOnErr = 0;
     for (const { r, own } of toCheck) if (own) { accepted.add(r.id); keptOnErr++; }
-    return { accepted, classById, checked: toCheck.length, auto, dropped: toCheck.length - keptOnErr };
+    const dropped = toCheck.length - keptOnErr;
+    // The gate never ran, so no page failed a named test. Counting these as
+    // `unreported` keeps "a gate outage looks like an outage" rather than
+    // manufacturing a spike in one of the three real reasons.
+    return { accepted, classById, checked: toCheck.length, auto, dropped, droppedBy: { identity: 0, substance: 0, relevance: 0, unreported: dropped } };
   }
 }
 
