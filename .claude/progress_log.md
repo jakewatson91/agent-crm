@@ -2089,3 +2089,17 @@ Profiled the sweep's query shapes warm, after 0047/0048/0049: claims-join 0.44 m
 - `pnpm verify` — `pnpm typecheck && pnpm check`, exits 0
 
 `CLAUDE.md` gained a **Before committing** section saying to run `pnpm verify`, and why `pnpm --filter <pkg> typecheck` is not sufficient for anything shared: files under `inngest/` and `packages/` are compiled by more than one project with different settings, and the stricter one catches the real bugs. Documented with the actual example rather than as a principle — the `.catch()` on a PostgREST thenable that passed the inngest typecheck, shipped, and would have thrown inside the error path it was added to.
+
+### Dropping a drafter prompt field is now a compile error (`4e22585`)
+Memory flags this call site as having silently lost a field **twice**: `templates` (`f101935`, shipped three days of value-prop garbage) and `char_budget` (caught pre-commit 07-21). Both times the cause was editing a line in place rather than adding one, and nothing type-errored because `buildSystemPrompt` took a wide object of all-optional fields — omission and "not configured" were indistinguishable.
+
+Fields are now a named `DrafterPromptFields` interface, and the parameter is `ExplicitDrafterPrompt` — a mapped type requiring every **key** while leaving every **value** optional. Deleting a line is a compile error; a workspace with genuinely no value passes `undefined` explicitly, which is visible in review.
+
+**Verified by actually deleting `templates`:** `agent_logic.ts(723,6): error TS2345: ... not assignable to parameter of type 'ExplicitDrafterPrompt'`. Restored after.
+
+### Process error worth recording: my inngest typechecks were no-ops all session
+The package is named **`@agent-crm/inngest`**. I had been running `pnpm --filter agent-crm-inngest typecheck`, which prints *"No projects matched the filters"* and **exits 0**. Empty output read as "clean." Every "inngest typecheck clean" reported during this session was vacuous — including the one right before the `.catch()` bug shipped. That is the real reason it got through, not a looser tsconfig as first assumed.
+
+The shipped code is nonetheless sound: `pnpm verify` / `pnpm -r typecheck` covers inngest properly (the earlier full run surfaced `inngest typecheck: Failed` on `daily_digest.ts`, which is how that got fixed), and it exits 0.
+
+**Lesson: a filter that matches nothing exits 0.** Never read empty output as success — check for `Done`/`Failed`, or just use `pnpm verify`, which cannot silently match nothing.
