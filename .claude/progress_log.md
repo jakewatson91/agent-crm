@@ -2263,3 +2263,14 @@ But the lookup feeding that ordering was `.in('subject_entity', pending)` with *
 Chunked at 150 and paged through `fetchAll`, matching every other `.in()` in the file. Latent today (Sudden has tens of pending requests, not hundreds) but the cap is now 50/month, so the ordering decides more than it used to.
 
 **Third variant of the 1000-row cap found in this repo**, after the archive sweep and the entities index — and I hit it myself twice today in diagnostics. Worth treating `.in()` without `fetchAll` as a defect on sight.
+
+### Swept for the rule, and the first hit was my own code (`39eb02f`)
+Applied "`.in()` without `fetchAll` is a defect on sight" across `packages/tools`, `packages/primitives`, `inngest/functions` and `apps/web`. Most hits are safely bounded — 2-3 element `.in('action', [...])` lists, or id lists capped by a caller `limit` where the read returns one row per id.
+
+**The dangerous shape is: id list scales with workspace size AND the table holds many rows per id.** By that test the standout was `reads.ts` — code I changed a few hours earlier.
+
+`9cf491b` dropped `.is('supersedes', null)` from the projection's icp_fit lookup (that filter returned each entity's first-ever score). Right fix, but it turned a one-row-per-entity read into an every-version read, and the surrounding `.in('subject_entity', entityIds)` was neither chunked nor paged. `limit` comes from the caller and the agent tool passes whatever it asks for, so at a few hundred entities it stops at the 1000-row cap and entities past it report **no score at all** — silently undoing the fix, in the exact projection the advance pass ranks on.
+
+Chunked at 150 and paged. Verified live earlier at 60/60 correct, and the limit there was 60, which is why it never showed.
+
+**Worth internalising: fixing a filter can change a query's cardinality.** Removing `supersedes is null` multiplied the row count per entity by ~2.3 and quietly moved this read into cap range. A correctness fix and a pagination requirement arrived in the same edit, and I only shipped half of it.
