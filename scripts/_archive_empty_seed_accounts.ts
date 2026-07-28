@@ -10,6 +10,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
+import { fetchAll } from '@agent-crm/tools';
 
 async function main() {
   const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
@@ -40,12 +41,18 @@ async function main() {
   }
   console.log(`seed-created accounts: ${seedSet.size}`);
 
-  // Has-facts set.
+  // Has-facts set. Paginated: a plain .select() over a 200-id chunk caps at
+  // PostgREST's 1000-row limit, and an account carrying 10+ facts (CSV import
+  // + enrichment) blows past that with room to spare — the miscount silently
+  // marks real accounts "empty" and archives them (same failure mode fixed in
+  // entityArchiveSweep; this script had it too, undetected because it's a
+  // one-off rather than a daily cron).
   const hasFacts = new Set<string>();
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200);
-    const f = await sb.from('facts').select('subject_entity').eq('workspace_id', WS).in('subject_entity', chunk).is('supersedes', null);
-    for (const r of (f.data ?? []) as Array<{ subject_entity: string }>) hasFacts.add(r.subject_entity);
+    const rows = await fetchAll<{ subject_entity: string }>((from, to) => sb.from('facts')
+      .select('subject_entity').eq('workspace_id', WS).in('subject_entity', chunk).is('supersedes', null).range(from, to));
+    for (const r of rows) hasFacts.add(r.subject_entity);
   }
 
   const toArchive = ids.filter((id) => seedSet.has(id) && !hasFacts.has(id));
