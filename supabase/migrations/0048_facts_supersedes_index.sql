@@ -1,0 +1,28 @@
+-- 0048: index facts.supersedes.
+--
+-- Same defect migration 0045 fixed on events.parent_event_id, on the hotter
+-- table. `supersedes` is a self-referential pointer with no index, and the
+-- single most common question this codebase asks of facts is "which of these
+-- rows has been superseded" — excludeSuperseded() in packages/primitives does
+-- `where supersedes = any($ids)`, and graphProximity() calls it twice for every
+-- entity scored.
+--
+-- Without an index that predicate cannot be satisfied by any existing index
+-- (facts_subject_idx and facts_predicate_idx both lead with workspace_id +
+-- another column), so Postgres walks the whole workspace and filters. Measured
+-- live on 90,741 facts / 56 MB, one call with 50 ids:
+--
+--   Index Scan using facts_predicate_idx on facts
+--     Filter: (supersedes = ANY (...))
+--     Rows Removed by Filter: 43527    -- to return 0 rows
+--     Buffers: shared hit=14398
+--     Execution Time: 263.300 ms
+--
+-- Two of those per scored entity, so a full-book rescore of ~2000 accounts was
+-- spending on the order of quarter-hours purely re-reading every fact in the
+-- workspace to answer a pointer lookup.
+--
+-- Partial, because only superseded rows carry a value: this indexes ~14k rows
+-- rather than 91k. Pure performance, no behavior change, safe to re-run.
+create index if not exists facts_supersedes_idx
+  on facts(supersedes) where supersedes is not null;
