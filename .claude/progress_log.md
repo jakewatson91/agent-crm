@@ -2059,3 +2059,24 @@ Live, on 90,741 facts / 56 MB, one call with 50 ids:
 This is very likely part of why scoring and the sweep felt slow all along, and it went unnoticed because nothing errored — it was just quietly quadratic-ish in workspace size.
 
 **Standing lesson: every self-referential pointer in this schema needs an index.** `events.parent_event_id` (0045) and now `facts.supersedes` (0048) were the same bug found twice, months apart. Worth checking any future one at design time rather than after it hurts.
+
+### Retention was silently unusable — unindexed child FKs made each event delete cost 3 seconds (`6faa8ab`)
+Swept the whole schema for the pointer-index defect rather than waiting to find a fourth by accident. `pg_constraint` join found 16 FKs with no index leading on the referencing column; **most are false alarms** — composite indexes like `facts_object_entity_idx (workspace_id, object_entity)` already serve the real query shapes (verified: 0.048 ms, 3 buffers). Worth stating, because the temptation is to add all 16.
+
+The genuine ones were the child tables pointing at `events`. Before Postgres can delete an event it must prove no child still references it; with no index that is a sequential scan of each child, **per row deleted**:
+
+| child | scan | cost per event deleted |
+|---|---|---|
+| signals | SEQ SCAN | 2611 ms |
+| channel_posts | SEQ SCAN | 436 ms |
+| gates | SEQ SCAN | 25 ms |
+| conversations | SEQ SCAN | 2.6 ms |
+| | | **~3075 ms** |
+
+`prune_events()` removes tens of thousands of rows on a retention run, so **retention would have timed out long before finishing** — the exact failure 0045 was written for. It went unnoticed because only the demo workspace has a retention policy, so the path was never exercised at volume. **Had I set retention on Sudden when I flagged it, it would simply have failed.**
+
+After (warm): signals 0.031 · channel_posts 0.040 · gates 0.024 · conversations 0.027 · touches 0.032 · outcomes 0.029 = **0.183 ms total, ~17,000x**. Partial indexes, 2.9 MB combined.
+
+**Retention is now actually viable on Sudden** if Jake wants it — that was the blocked half of the decision flagged earlier. Still his call, still destructive.
+
+**The pattern, now three times over:** `events.parent_event_id` (0045), `facts.supersedes` (0048), child `source_event_id` (0049). Every FK and self-referential pointer in this schema needs an index on the referencing column, and the cost never shows up as an error — only as something quietly getting slower, or a feature that fails the first time it is used in anger.
