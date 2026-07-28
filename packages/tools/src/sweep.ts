@@ -41,6 +41,14 @@ export const SWEEP_THRESHOLDS = {
 
   cost_ratio_red: 2.0,
 
+  // Share of agent runs in 24h that died in the LLM call — a provider error, a
+  // bad model id, a rate limit, or output truncated into unparseable JSON. Any
+  // of these silently shrinks fact and draft volume, so the bar is low: a
+  // twentieth of runs failing is already worth a look, a fifth is a fault.
+  llm_failure_share_yellow: 0.05,
+  llm_failure_share_red: 0.20,
+  llm_min_runs: 10,
+
   score_decile_red: 0.60,
   score_decile_yellow: 0.40,
   score_min_entities: 20,
@@ -540,6 +548,43 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
           metric: `${errs}/${recent.length} contact pulls errored in 24h (${fmtPct(share)})`,
           threshold: `< ${fmtPct(T.contact_error_share_red)}`,
           action: `contact provider failing — check EXPLORIUM_API_KEY / HUNTER_API_KEY and provider quota`,
+        });
+      }
+    }
+
+    // (a2) LLM failures. agentRun records `agent_llm_failed` when the model call
+    //      throws (provider error / bad model id / rate limit / credit wall) or
+    //      returns JSON it can't parse (almost always truncation). Measured
+    //      against the runs that DID complete, so this reads as "share of agent
+    //      work lost in the model call" rather than a raw count that scales with
+    //      volume. Both failure modes used to return silently, which is how a
+    //      broken model looked like a quiet pipeline.
+    const llmFails = await fetchAll<{ payload: { reason?: string; behavior?: string; model?: string } | null }>((f, t) => sb.from('events')
+      .select('payload')
+      .eq('workspace_id', workspace_id).eq('action', 'agent_llm_failed')
+      .gte('created_at', new Date(now - DAY).toISOString()).order('id').range(f, t));
+    const llmOk = await fetchAll<{ id: number }>((f, t) => sb.from('events')
+      .select('id')
+      .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
+      .gte('created_at', new Date(now - DAY).toISOString()).order('id').range(f, t));
+    const totalRuns = llmFails.length + llmOk.length;
+    if (totalRuns >= T.llm_min_runs && llmFails.length > 0) {
+      const share = llmFails.length / totalRuns;
+      const sev: Severity = share >= T.llm_failure_share_red ? 'red'
+        : share >= T.llm_failure_share_yellow ? 'yellow' : 'green';
+      if (sev !== 'green') {
+        const byReason = new Map<string, number>();
+        for (const f of llmFails) byReason.set(f.payload?.reason ?? 'unknown', (byReason.get(f.payload?.reason ?? 'unknown') ?? 0) + 1);
+        const detail = [...byReason.entries()].sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r}=${n}`).join(' ');
+        const truncating = (byReason.get('unparseable_json') ?? 0) > 0;
+        out.push({
+          id: 'llm_failures',
+          severity: sev,
+          metric: `${llmFails.length}/${totalRuns} agent runs failed in the LLM call (${fmtPct(share)}) — ${detail}`,
+          threshold: `< ${fmtPct(T.llm_failure_share_yellow)}`,
+          action: truncating
+            ? `model output is being truncated — compare output_tokens vs max_tokens on the agent_llm_failed events and raise the budget`
+            : `model call failing — check the provider key, the configured model id, and remaining credit`,
         });
       }
     }
