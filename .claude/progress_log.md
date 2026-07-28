@@ -2254,3 +2254,12 @@ Measured on the live queue, first 75 picked:
 It composes with the acronym fix: the new head of the queue is **Warner Brothers Discovery at 0.97** — verified live as resolving to `wbd.com` — which under uuid order would have waited weeks for its turn.
 
 **This is the shape of most of today's wins:** not new capability, just stopping the system spending its scarce resource on the wrong thing. The scarce resources here were Exa searches, contact-provider credits, LLM tokens on already-answered questions, and Postgres reading 43,527 rows to answer a pointer lookup.
+
+### Checked the next stage down for the same defect (`0d84494`)
+Having value-ordered the domain queue, checked whether the contact-pull queue had the same problem. **It did not** — `drainPendingContactRequests` already orders by account score with the comment "scarce credits go to the best accounts first", and correctly resolves the current score via the not-pointed-to row.
+
+But the lookup feeding that ordering was `.in('subject_entity', pending)` with **no chunking and no pagination**. It reads every `score_total` version per account, superseded rows included, so it hits PostgREST's 1000-row cap at a few hundred pending accounts. The failure would be silent and exactly backwards: accounts whose rows fell off the page score as 0 and sort **last**, so the credits would skip the very accounts the ordering exists to protect. A long `.in()` also overflows the request URL.
+
+Chunked at 150 and paged through `fetchAll`, matching every other `.in()` in the file. Latent today (Sudden has tens of pending requests, not hundreds) but the cap is now 50/month, so the ordering decides more than it used to.
+
+**Third variant of the 1000-row cap found in this repo**, after the archive sweep and the entities index — and I hit it myself twice today in diagnostics. Worth treating `.in()` without `fetchAll` as a defect on sight.
