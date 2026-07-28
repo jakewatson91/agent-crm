@@ -19,6 +19,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchAll } from './paginate.ts';
 import { entityIdsOfType } from './entity_types.ts';
 import { isSubstantiveFact } from './scoring.ts';
+import { sweepWorkspace, type CheckResult } from './sweep.ts';
 
 // ---------- pricing (unchanged from the old daily_report) ----------
 
@@ -138,6 +139,7 @@ export interface EntityMove {
   scoreNew: number;
   scoreDelta: number; // scoreNew - (scorePrev ?? 0)
   topSubMove: { name: string; prev: number; next: number } | null; // biggest sub-score change vs before the window
+  subScores: Record<string, number> | null; // current dimensions, for the first-score cohort
   reasoning: string | null; // scorer's plain-language why, from icp_fit_breakdown
   signals: Array<{ angle: string; magnitude: number | null; body: string; url: string | null; at: string }>;
   newFacts: Array<{ predicate: string; object: string; at: string }>;
@@ -161,6 +163,34 @@ export interface PeriodData {
   prevScoreOf: Record<string, string>; // entity -> last icp_fit before the window (for the movers list)
   approvals: { pending: GateLite[]; decided: GateLite[] };
   domainBackfill: { remaining: number; perDay: number } | null;
+  advance: AdvanceSummary | null;
+  rescoring: Rescoring;
+  health: { checks: CheckResult[]; prevRedIds: string[] | null; checkedAt: string } | null;
+}
+
+/** The advance pass, summed over every run in the window. This is the account
+ *  side of the day: what the pass looked at and why most of it went nowhere. */
+export interface AdvanceSummary {
+  runs: number;
+  scanned: number;
+  contacts_pulled: number;
+  contacts_created: number;
+  drafts_created: number;
+  decisions: Record<string, number>;
+  examples: Record<string, string[]>;
+  paused: string[];
+}
+
+/** Score writes that re-answered a question already answered. A write is
+ *  redundant when its inputs_hash matches the previous write's: same facts,
+ *  same ICP, same about text, so the rubric was asked to re-judge identical
+ *  evidence. Counting these is how you catch a scoring loop burning tokens to
+ *  land on the same number. */
+export interface Rescoring {
+  writes: number;
+  entities: number;
+  redundant: number;
+  offenders: Array<{ name: string; writes: number; redundant: number }>;
 }
 
 const SUB_SCORE_KEYS = ['industry_match', 'stage_match', 'signal_strength', 'evidence_depth', 'recency', 'graph_proximity'] as const;
@@ -252,7 +282,7 @@ export async function collectPeriod(sb: SupabaseClient, wsId: string, wsName: st
     const dp = draftByEntity.get(ent);
     candidates.push({
       entity_id: ent, name: N(ent), scorePrev, scoreNew, scoreDelta,
-      topSubMove: null, reasoning: null, signals: sigs, newFacts: nf,
+      topSubMove: null, subScores: null, reasoning: null, signals: sigs, newFacts: nf,
       drafted: dp ? { body: (dp.body ?? '').replace(/\n/g, ' '), at: dp.created_at } : null,
     });
   }
@@ -264,6 +294,11 @@ export async function collectPeriod(sb: SupabaseClient, wsId: string, wsName: st
   for (const m of moves) {
     const cur = await latestBreakdown(sb, wsId, m.entity_id, until, false);
     m.reasoning = typeof cur?.reasoning === 'string' ? cur.reasoning : null;
+    if (cur) {
+      const dims: Record<string, number> = {};
+      for (const k of SUB_SCORE_KEYS) { const v = num(cur[k]); if (v != null) dims[k] = v; }
+      m.subScores = Object.keys(dims).length ? dims : null;
+    }
     if (m.scorePrev !== null) {
       const prev = await latestBreakdown(sb, wsId, m.entity_id, since, true);
       if (cur && prev) {
@@ -297,6 +332,63 @@ export async function collectPeriod(sb: SupabaseClient, wsId: string, wsName: st
     domainBackfill = { remaining: noDomain, perDay };
   }
 
+  // ---- advance pass: sum every run in the window ----
+  const advanceEvents = events.filter((e) => e.action === 'advance_completed');
+  let advance: AdvanceSummary | null = null;
+  if (advanceEvents.length) {
+    const a: AdvanceSummary = {
+      runs: advanceEvents.length, scanned: 0, contacts_pulled: 0, contacts_created: 0,
+      drafts_created: 0, decisions: {}, examples: {}, paused: [],
+    };
+    for (const e of advanceEvents) {
+      const p = e.payload ?? {};
+      a.scanned += p.scanned ?? 0;
+      a.contacts_pulled += p.contacts_pulled ?? 0;
+      a.contacts_created += p.contacts_created ?? 0;
+      a.drafts_created += p.drafts_created ?? 0;
+      for (const [k, v] of Object.entries(p.decisions ?? {})) a.decisions[k] = (a.decisions[k] ?? 0) + (v as number);
+      for (const [k, names] of Object.entries(p.examples ?? {})) {
+        const list = a.examples[k] ?? (a.examples[k] = []);
+        for (const n of names as string[]) if (list.length < 6 && !list.includes(n)) list.push(n);
+      }
+      if (p.paused) a.paused.push(p.paused);
+    }
+    advance = a;
+  }
+
+  // ---- repeat scoring: writes that re-judged identical evidence ----
+  const breakdowns = facts.filter((f) => f.predicate === 'icp_fit_breakdown');
+  const bdByEntity = new Map<string, FactRow[]>();
+  breakdowns.forEach((f) => { const a = bdByEntity.get(f.subject_entity) ?? []; a.push(f); bdByEntity.set(f.subject_entity, a); });
+  const rescoring: Rescoring = { writes: breakdowns.length, entities: bdByEntity.size, redundant: 0, offenders: [] };
+  for (const [ent, rows] of bdByEntity) {
+    let redundant = 0;
+    let prevHash: string | null = null;
+    for (const r of rows) {
+      let h: string | null = null;
+      try { h = (JSON.parse(r.object_text ?? '{}') as { inputs_hash?: string }).inputs_hash ?? null; } catch { h = null; }
+      if (h != null && prevHash != null && h === prevHash) redundant++;
+      if (h != null) prevHash = h;
+    }
+    rescoring.redundant += redundant;
+    if (redundant > 0) rescoring.offenders.push({ name: N(ent), writes: rows.length, redundant });
+  }
+  rescoring.offenders.sort((a, b) => b.redundant - a.redundant);
+  rescoring.offenders = rescoring.offenders.slice(0, 10);
+
+  // ---- health: current sweep, plus the RED set as of the window start ----
+  let health: PeriodData['health'] = null;
+  try {
+    const checks = await sweepWorkspace(sb, wsId);
+    const { data: lastAlert } = await sb.from('events')
+      .select('payload').eq('workspace_id', wsId).eq('action', 'health_alert')
+      .lt('created_at', since).order('created_at', { ascending: false }).limit(1);
+    const prev = (lastAlert?.[0]?.payload as { red_ids?: string[] } | undefined)?.red_ids;
+    health = { checks, prevRedIds: Array.isArray(prev) ? prev : null, checkedAt: new Date().toISOString() };
+  } catch {
+    health = null; // a broken check shouldn't take the whole digest down
+  }
+
   return {
     workspace: { id: wsId, name: wsName },
     window, policy, pricing, pipelineStatus,
@@ -305,6 +397,7 @@ export async function collectPeriod(sb: SupabaseClient, wsId: string, wsName: st
     moves, movesTruncated, prevScoreOf,
     approvals: { pending: (pending ?? []) as GateLite[], decided: (decided ?? []) as GateLite[] },
     domainBackfill,
+    advance, rescoring, health,
   };
 }
 
@@ -326,6 +419,12 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 const usd = (n: number) => `$${n.toFixed(2)}`;
 const ts = (s: string) => s.slice(5, 16).replace('T', ' ');
 const sgn = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}`;
+const daysAgo = (iso: string, now: number) => Math.floor((now - Date.parse(iso)) / 86400e3);
+/** "3 days" / "1 day" / "today" — pending approvals read as age, not timestamps. */
+const age = (iso: string, now: number) => {
+  const d = daysAgo(iso, now);
+  return d <= 0 ? 'today' : `${d} day${d === 1 ? '' : 's'}`;
+};
 
 export function renderMarkdown(d: PeriodData): string {
   const L: string[] = [];
@@ -359,6 +458,25 @@ export function renderMarkdown(d: PeriodData): string {
     L.push('');
   }
   if (d.movesTruncated) L.push(`…and ${d.movesTruncated} more account(s) with smaller moves.`);
+
+  // ---- first scores: the shape they share is the story, not each row ----
+  const firsts = d.moves.filter((m) => m.scorePrev === null);
+  if (firsts.length >= 2) {
+    const lo = Math.min(...firsts.map((m) => m.scoreNew));
+    const hi = Math.max(...firsts.map((m) => m.scoreNew));
+    H(`First scores: ${firsts.length} accounts, ${lo.toFixed(2)} to ${hi.toFixed(2)}`);
+    L.push(firsts.map((m) => `${m.name} ${m.scoreNew.toFixed(2)}`).join(', '));
+    // Dimensions every one of them landed on the same value: that is what the
+    // cohort is actually telling you (e.g. "industry obvious, no company size
+    // ground truth, no trigger"), and it points at research vs a rubric change.
+    const shared: string[] = [];
+    for (const k of SUB_SCORE_KEYS) {
+      const vals = firsts.map((m) => m.subScores?.[k]).filter((v): v is number => v != null);
+      const first = vals[0];
+      if (first != null && vals.length === firsts.length && vals.every((v) => Math.abs(v - first) < 0.005)) shared.push(`${k} ${first.toFixed(2)}`);
+    }
+    if (shared.length) L.push('', `All ${firsts.length} scored identically on: ${shared.join(', ')}. A shared shape like this moves with new research, not with a scoring tweak.`);
+  }
 
   // ---- Research ----
   const sigCountByEntity = new Map<string, number>();
@@ -396,6 +514,16 @@ export function renderMarkdown(d: PeriodData): string {
   for (const m of movers.slice(0, 15)) L.push(`- ${m.name}: ${m.prev} → ${m.last}`);
   if (movers.length > 15) L.push(`- …and ${movers.length - 15} more (unchanged or small moves)`);
 
+  // ---- repeat scoring ----
+  const r = d.rescoring;
+  if (r.writes) {
+    const pct = r.writes ? Math.round((r.redundant / r.writes) * 100) : 0;
+    L.push('', `Repeat scoring: ${r.redundant} of ${r.writes} breakdown write(s) re-judged evidence that had not changed (${pct}%).`);
+    if (r.redundant === 0) L.push('Every write followed new evidence. That is the healthy state.');
+    for (const o of r.offenders) L.push(`- ${o.name}: ${o.writes} writes, ${o.redundant} on unchanged evidence`);
+    if (r.redundant > 0) L.push('Each repeat is one rubric call plus its embedding calls spent to arrive at a number already on file.');
+  }
+
   // ---- Contacts ----
   const pulls = by('contacts_completed');
   const newContacts = d.facts.filter((f) => f.predicate === 'is_a' && f.object_text === 'contact');
@@ -423,9 +551,24 @@ export function renderMarkdown(d: PeriodData): string {
   for (const p of sends) L.push(`- SENT ${ts(p.created_at)} ${N(d.accountOfChannel[p.channel_id])}: ${p.body}`);
   for (const p of draftFlags) L.push(`- FLAG ${N(d.accountOfChannel[p.channel_id])}: ${(p.body ?? '').replace('Draft checks: ', '')}`);
 
+  // ---- Everything else the advance pass looked at ----
+  if (d.advance) {
+    const a = d.advance;
+    H(`Advance pass: ${fmt(a.scanned)} accounts scanned across ${a.runs} run(s)`);
+    const rows = Object.entries(a.decisions).sort((x, y) => y[1] - x[1]);
+    for (const [reason, count] of rows) {
+      const ex = a.examples[reason] ?? [];
+      const named = ex.length && count <= 8 ? `   ${ex.join(', ')}` : '';
+      L.push(`- ${reason}: ${count}${named}`);
+    }
+    L.push(`Contacts: ${a.contacts_pulled} pull attempt(s), ${a.contacts_created} created. Drafts: ${a.drafts_created}.`);
+    for (const p of a.paused) L.push(`- PAUSED mid-run: ${p}`);
+  }
+
   // ---- Approvals ----
+  const nowMs = Date.parse(d.window.until);
   H(`Approvals: ${d.approvals.pending.length} waiting, ${d.approvals.decided.length} decided in window`);
-  for (const g of d.approvals.pending) L.push(`- WAITING since ${ts(g.requested_at ?? '')} [${g.policy}] ${(g.condition?.body ?? '').replace(/\n/g, ' ').slice(0, 140)}`);
+  for (const g of d.approvals.pending) L.push(`- WAITING ${age(g.requested_at ?? '', nowMs)} (since ${ts(g.requested_at ?? '')}) [${g.policy}] ${(g.condition?.body ?? '').replace(/\n/g, ' ').slice(0, 140)}`);
   for (const g of d.approvals.decided) L.push(`- ${g.decision?.toUpperCase()} ${ts(g.decided_at ?? '')} [${g.policy}]${g.resolution?.edited ? ' (edited before send)' : ''}`);
 
   // ---- Facts ----
@@ -440,10 +583,29 @@ export function renderMarkdown(d: PeriodData): string {
   if (researchFacts.length > 12 + pains.length) L.push(`- …and ${researchFacts.length - 12 - pains.length} more`);
 
   // ---- Health ----
-  const health = events.filter((e) => /health_alert|pause/i.test(e.action));
-  if (health.length) {
-    H('Health');
-    for (const e of health) L.push(`- ${ts(e.created_at)} ${e.action}: ${JSON.stringify(e.payload).slice(0, 160)}`);
+  // The sweep runs against the DB as it is right now, not as of the window end,
+  // so a backdated report shows today's status next to that window's activity.
+  // Said plainly rather than hidden.
+  if (d.health) {
+    const reds = d.health.checks.filter((c) => c.severity === 'red');
+    const yellows = d.health.checks.filter((c) => c.severity === 'yellow');
+    const prev = d.health.prevRedIds;
+    const delta = prev ? ` (was RED=${prev.length} at window start)` : '';
+    H(`Health now: RED=${reds.length} YELLOW=${yellows.length}${delta}`);
+    if (prev) {
+      const cleared = prev.filter((id) => !reds.some((c) => c.id === id));
+      const added = reds.filter((c) => !prev.includes(c.id)).map((c) => c.id);
+      if (cleared.length) L.push(`Cleared: ${cleared.join(', ')}`);
+      if (added.length) L.push(`New: ${added.join(', ')}`);
+    }
+    for (const c of [...reds, ...yellows]) L.push(`- ${c.severity.toUpperCase()} ${c.id}: ${c.metric}${c.threshold ? ` (threshold ${c.threshold})` : ''}`);
+    if (!reds.length && !yellows.length) L.push('All checks green.');
+    if (Date.parse(d.health.checkedAt) - Date.parse(d.window.until) > 3600e3) L.push('', 'Note: checks reflect the database right now, not the end of the reported window.');
+  }
+  const healthEvents = events.filter((e) => /health_alert|pause/i.test(e.action));
+  if (healthEvents.length) {
+    L.push('', 'Health events in window:');
+    for (const e of healthEvents) L.push(`- ${ts(e.created_at)} ${e.action}: ${JSON.stringify(e.payload).slice(0, 160)}`);
   }
 
   // ---- Spend estimate ----
@@ -482,7 +644,11 @@ export function renderMarkdown(d: PeriodData): string {
 
   // ---- What's next ----
   H('What\'s next');
-  if (d.approvals.pending.length) L.push(`- ${d.approvals.pending.length} draft(s) waiting for your approval.`);
+  if (d.approvals.pending.length) {
+    const oldest = d.approvals.pending[0]?.requested_at;
+    L.push(`- ${d.approvals.pending.length} draft(s) waiting for your approval${oldest ? `, oldest sitting ${age(oldest, nowMs)}` : ''}.`);
+  }
+  if (d.rescoring.redundant > 0) L.push(`- ${d.rescoring.redundant} score write(s) re-judged unchanged evidence. That is spend with no new answer behind it.`);
   const lastResearch = research[research.length - 1];
   if (lastResearch) L.push(`- Research keeps cycling (${research.length} runs in the window, last ${ts(lastResearch.created_at)}).`);
   if (d.domainBackfill) L.push(`- Domain backfill: ${fmt(d.domainBackfill.remaining)} accounts still missing a domain, draining ${d.domainBackfill.perDay}/day (~${Math.ceil(d.domainBackfill.remaining / d.domainBackfill.perDay)} days).`);

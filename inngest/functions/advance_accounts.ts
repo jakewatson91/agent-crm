@@ -51,8 +51,14 @@ export interface AdvanceResult {
   contacts_created: number;  // new contact entities created
   drafts_created: number;    // new draft gates (approvals) produced
   decisions: Record<string, number>;
+  /** Up to DECISION_EXAMPLES account names per decision, so a report can name
+   *  the 4 accounts behind "skip:facts_insufficient" instead of just counting. */
+  examples: Record<string, string[]>;
   paused?: PipelineStatus;   // set when we halted on a credit/auth error
 }
+
+/** Names kept per decision. Bounds the event payload; events are read hot. */
+const DECISION_EXAMPLES = 6;
 
 /**
  * A provider/LLM error we should HALT on (out of money / bad key / rate limited),
@@ -172,7 +178,7 @@ export async function advanceAccounts(
   const draftCap = opts.draftCap ?? 12;
   const maxAccounts = opts.maxAccounts ?? 400;
 
-  const out: AdvanceResult = { scanned: 0, contacts_pulled: 0, contacts_created: 0, drafts_created: 0, decisions: {} };
+  const out: AdvanceResult = { scanned: 0, contacts_pulled: 0, contacts_created: 0, drafts_created: 0, decisions: {}, examples: {} };
 
   // Paused = a prior run hit a credit/auth wall and is waiting for the operator
   // to top up and click Continue (which clears the flag). A contacts-scoped pause
@@ -225,7 +231,12 @@ export async function advanceAccounts(
   const pullCooldownMs = T.ENRICH_CONTACTS_COOLDOWN_DAYS * 86400_000;
 
   const log = opts.onEvent ?? (() => {});
-  const tally = (k: string) => { out.decisions[k] = (out.decisions[k] ?? 0) + 1; };
+  const tally = (k: string, name?: string) => {
+    out.decisions[k] = (out.decisions[k] ?? 0) + 1;
+    if (!name) return;
+    const ex = out.examples[k] ?? (out.examples[k] = []);
+    if (ex.length < DECISION_EXAMPLES) ex.push(name);
+  };
   const clearsGates = (s: Scored) =>
     s.tot >= T.DRAFT_ICP_TOTAL && s.sig >= T.DRAFT_SIGNAL_STRENGTH && s.ev >= T.DRAFT_EVIDENCE_DEPTH;
 
@@ -239,9 +250,9 @@ export async function advanceAccounts(
   // account clears the gates and has a reachable contact, to avoid a wasted LLM
   // call. Returns 'paused' to unwind the whole run on an LLM credit/auth wall.
   async function draftAccount(s: Scored, name: string): Promise<'drafted' | 'skip' | 'paused'> {
-    if (out.drafts_created >= draftCap) { tally('draft_cap_reached'); return 'skip'; }
+    if (out.drafts_created >= draftCap) { tally('draft_cap_reached', name); return 'skip'; }
     const factId = await pickTriggerFactId(supabase, workspace_id, s.entity_id);
-    if (!factId) { tally('no_trigger_fact'); return 'skip'; }
+    if (!factId) { tally('no_trigger_fact', name); return 'skip'; }
     const r = await runAgent(supabase, {
       workspace_id, agent: drafterSub!.owner_id, subscription_id: drafterSub!.id, fact_id: factId,
     });
@@ -254,11 +265,11 @@ export async function advanceAccounts(
         out.paused = await pause(supabase, workspace_id, providerFromError(reason ?? ''), reason ?? 'llm error', 'all');
         return 'paused';
       }
-      tally('rate_limited');
+      tally('rate_limited', name);
       return 'skip';
     }
-    if (r.ok && r.action === 'post_touch_draft') { out.drafts_created++; tally('drafted'); log(`  ✎ drafted → ${name}`); return 'drafted'; }
-    tally(`skip:${reason ?? r.action}`);
+    if (r.ok && r.action === 'post_touch_draft') { out.drafts_created++; tally('drafted', name); log(`  ✎ drafted → ${name}`); return 'drafted'; }
+    tally(`skip:${reason ?? r.action}`, name);
     log(`  – ${name}: ${reason ?? r.action}`);
     return 'skip';
   }
@@ -271,7 +282,7 @@ export async function advanceAccounts(
     if (halted) break;
     out.scanned++;
     const name = nameById.get(s.entity_id) ?? s.entity_id.slice(0, 8);
-    if (!clearsGates(s)) { tally('below_draft_gates'); continue; }
+    if (!clearsGates(s)) { tally('below_draft_gates', name); continue; }
     const best = await loadBestContactScore(supabase, workspace_id, s.entity_id);
     if (drafterSub && best !== undefined && best >= T.DRAFT_MIN_CONTACT_SCORE) {
       await draftAccount(s, name);
@@ -288,7 +299,7 @@ export async function advanceAccounts(
     if (halted || contactsPaused || out.paused?.scope === 'contacts') break;
     if (out.contacts_pulled >= contactCap || out.drafts_created >= draftCap) break;
     const lastPull = completed.get(s.entity_id);
-    if (lastPull !== undefined && Date.now() - lastPull < pullCooldownMs) { tally('pull_cooldown'); continue; }
+    if (lastPull !== undefined && Date.now() - lastPull < pullCooldownMs) { tally('pull_cooldown', name); continue; }
     out.contacts_pulled++;
     log(`  ⟳ pulling contacts → ${name}`);
     const pull = await pullContactsForAccount(supabase, { workspace_id, entity_id: s.entity_id });
@@ -314,11 +325,39 @@ export async function advanceAccounts(
     if (pull.created > 0) {
       const best = await loadBestContactScore(supabase, workspace_id, s.entity_id);
       if (best !== undefined && best >= T.DRAFT_MIN_CONTACT_SCORE) await draftAccount(s, name);
-      else { tally('contact_below_bar'); log(`  – ${name}: pulled contact but scored below bar`); }
-    } else { tally('no_contact_found'); log(`  – ${name}: no contact found`); }
+      else { tally('contact_below_bar', name); log(`  – ${name}: pulled contact but scored below bar`); }
+    } else { tally('no_contact_found', name); log(`  – ${name}: no contact found`); }
   }
 
-  if (halted) return out;
+  // The decision tally is the only record of what the pass DIDN'T do and why —
+  // 350 accounts below the gates, 8 with no fresh trigger, 4 short on facts. It
+  // used to live in memory and die with the run, so `pnpm report` could show the
+  // one draft that happened and nothing about the 399 accounts that didn't. The
+  // pipeline status carries only the latest run's counts; a window report needs
+  // one row per run, so it goes to the event log.
+  async function recordRun() {
+    await supabase.from('events').insert({
+      workspace_id,
+      actor_kind: 'system',
+      actor_id: 'advance_accounts',
+      action: 'advance_completed',
+      target_kind: 'workspace',
+      target_id: workspace_id,
+      payload: {
+        scanned: out.scanned,
+        contacts_pulled: out.contacts_pulled,
+        contacts_created: out.contacts_created,
+        drafts_created: out.drafts_created,
+        decisions: out.decisions,
+        examples: out.examples,
+        halted,
+        paused: out.paused ? `${out.paused.scope ?? 'all'}: ${out.paused.reason}` : null,
+      },
+    });
+  }
+
+  if (halted) { await recordRun(); return out; }
+  await recordRun();
 
   const runStats = {
     scanned: out.scanned, contacts_pulled: out.contacts_pulled,
