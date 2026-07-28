@@ -1872,3 +1872,26 @@ Applied to Sudden: **1334 pointers moved, 850 forked pairs → 1**. The single h
 `recombine_scores.ts` is also now idempotent — an entity already recombined under the current formula and hash is skipped, so a re-run or a resume after an interrupt doesn't append a redundant row per entity.
 
 **Standing lesson: never pick a row to supersede with `.is('supersedes', null)`.** Use the not-pointed-to set, or `excludeSuperseded` in `packages/primitives/src/relations.ts`, which exists for exactly this and says so in its docstring. There are still ~25 `.is('supersedes', null)` call sites across `reads.ts`, `entity_types.ts`, `action_selector.ts`, `contacts.ts` and `sweep.ts`; they are reads, so they return stale values rather than forking, but they are all wrong in the same way and worth a sweep.
+
+### CORRECTION (same day): the fork repair above was wrong for content predicates
+I treated "more than one current row for (entity, predicate)" as a fault. That holds for score predicates — `scoreAndAssert` always writes via supersede, so two current rows is a concurrency race — and it is **false for content predicates**. A company genuinely has several `product` rows and several `country` rows, and `evidence_depth` counts exactly those. Chaining them left only the newest visible and shrank the fact base the agent reads.
+
+Real damage: an account with `product` = "DirectAthletics" and `product` = "TFRRS" (two distinct products written the same day) collapsed to one; another with `country` = "United Arab Emirates" and "Iraq" collapsed to one. **917 rows across Sudden.**
+
+Recoverable exactly, because a legitimate supersede goes through `act(... 'supersede_fact')` and records an event carrying the superseded id, while `repair_fact_forks.ts` wrote its pointers with a direct UPDATE and produced no event. Orphan links came to **1334 — matching the "1334 pointers moved" the repair reported**, so the identification is exact, not approximate.
+
+`scripts/revert_fact_fork_repair.ts` (new) restored 917 content links to null and left 417 score-predicate links in place where the repair was right. Verified: current rows **29,073 → 30,142**, re-scan finds 0 left to revert, 0 forks remaining.
+
+`repair_fact_forks.ts` now refuses anything outside an explicit `SINGLE_VALUED` list unless `--predicate` names it — on Sudden it skips 12,002 rows and reports 0 forks.
+
+**Standing lesson: multiple current rows per predicate is the data model working, not a bug.** Only the score predicates are single-valued. Before "repairing" duplicates anywhere, check whether the predicate is meant to hold one value or many.
+
+**Known limitation:** on one three-row chain the whole-chain rewrite reported "moved 0" while still leaving two current rows, and I could not reconcile that with the code. That row was repaired directly. Worth a second look before trusting the tool on a large batch.
+
+### Also fixed: the agent was reading each account's first-ever score (`9cf491b`)
+`reads.ts` — the projection the agent works from — selected `icp_fit` with `.is('supersedes', null)`, which returns the ORIGINAL of a superseded chain. **1825 of 1995 Sudden accounts (91% of the book) were reported to the agent at a score that is not their current one**, mean error 0.125, max 0.22. That is what the advance pass ranked on.
+
+Three more value reads on the same pattern, all on the path to a prospect, also fixed: contact `email` and `role` in `reads.ts` and again in the drafter's own lookup in `agent_logic.ts` (a send to a superseded address, or a template picked off a stale job title), and the `domain` fallback in `agent_logic.ts` (a corrected domain would keep resolving to the broken original, so every contact pull for that account queried the wrong company). All four now take the latest `observed_at`. Presence and linkage reads keep the filter on purpose — a superseded original still carries its predicate and its edge.
+
+### Research confirmed healthy
+The 04:00 / 08:00 / 12:00 UTC ticks all fired: 17 `research_triggered`, 21 `research_completed`, 18 new signals in 14h; dispatcher last active 12:00, enricher 12:03. The "dispatcher may be broken" flag from the morning is closed — it was just the 00:00 tick landing inside the pause window. Deploy verified live: breakdowns written by the cloud pipeline carry `unknown_dims`.
