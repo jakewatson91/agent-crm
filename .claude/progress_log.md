@@ -2177,3 +2177,32 @@ Arithmetic: `research.searches_per_run` is the default **30 per 4h tick = 180 se
 2. A cheaper first-pass mode (fewer angles per entity for accounts never researched, full angles on the second visit) would multiply coverage per unit spend — but that is a design change, not a knob, and wants his call on whether first-touch breadth beats depth.
 
 Also confirmed healthy: only **14 accounts** have a score predating their latest research, so scoring keeps up with research; the backlog is genuinely upstream.
+
+### CORRECTION to the entry above: the 917 are NOT queue backlog — they are blocked on domain
+I claimed the never-researched accounts were "backlog, not exclusions." **Wrong.** `entity_research_dispatcher` has a hard gate:
+
+```ts
+if (!domainByEntity.get(a.id)) { skipped_no_domain++; continue; }
+```
+
+**Research requires a domain.** Splitting the 1336 never-researched accounts properly:
+
+| | count |
+|---|---|
+| have a domain → genuine queue backlog | **227** |
+| no domain → structurally unreachable | **1109** |
+
+And of the 917 never-researched scoring ≥ 0.8: **748 are blocked on the resolver**, only 169 are real backlog. Research can never reach 1109 accounts no matter how much Exa budget is thrown at it.
+
+**So the true constraint chain is:**
+
+`domain → research → signal_strength → contact → draft`
+
+Every stage is gated by the one before it, and **domain is the top of it**. 565 of 1961 accounts (29%) have a domain, so 71% of the book cannot enter the funnel at all. That makes the domain-resolver work the highest-leverage thing done today — the guard fix (`db162e9`), the acronym fix (`d58a617`), and the stored-domain repair (`ad787fd`) all widen the only entrance.
+
+It also **changes the priority of the two levers offered above**: raising `research.searches_per_run` would only help the 227 with domains. The lever that matters is `research.domain_backfill_per_day` (currently 75), because that is what converts blocked accounts into researchable ones.
+
+### Checked and NOT a self-inflicted regression
+`HOT_ICP_THRESHOLD = 0.5`, and hot accounts consume all 5 strategy angles versus 1 for default tier. I suspected the rescore had pushed the book over that line and cut coverage 5x. It had not: the pre-rescore book sat at ~0.66, already above 0.5, so nearly every domained account was hot before and after. The 5-angles-per-entity cost predates today.
+
+Worth noting as a future lever though: with almost the whole book above 0.5, `hot` is not selective, so every first pass buys depth (5 angles) where breadth (1 angle) would cover 5x the accounts. That is a design change with a real trade-off, not a knob.
