@@ -1982,3 +1982,17 @@ Both are shipped at safe defaults; neither changes anything until he picks a num
 **And it was invisible.** The cooldown returned without writing an event, so a workspace could be dropping most of its research there with nothing in the log — which is precisely why the coalescer looked like the whole story. It now writes `enrichment_skipped` with `reason: entity_enrich_cooldown`, same shape as the coalesce skip, so both read off one query. Third time this session that a guard discarding the majority of its input recorded no reason for it (relevance gate, this, and the coalescer's own type breakdown).
 
 **Watch:** enrichment dispatches should climb from ~40/day toward ~165/day, and enrichment is ~80% of token spend. If that lands harder than expected, revert by clearing `coalesce_signal_types` — one setting, no code change.
+
+### Acted on the pattern: silent drops are now recorded and alerted (`bdfb752`, `dbe587f`)
+Four times in one session a guard discarded most of what it saw and recorded no reason: the relevance gate, the coalescer's type breakdown, the per-entity enrichment cooldown, and the LLM failure paths. Swept `agentRun` for the rest.
+
+Six skip paths already wrote an event (`entity_dropped`, `duplicate_signal_body`, `coalesced_recent_enrich`, `suppression_match`, `rate_limit_exceeded`, and now `entity_enrich_cooldown`). **The two LLM failure paths did not** — they returned a reason to the caller and nothing reached the log.
+
+So a workspace whose model was erroring or truncating just produced fewer facts and fewer drafts, with no trace. Credit walls, a bad model id and rate limits all land in the first branch — the exact things this project has lost days to before (DeepSeek 402, Exa 402). The second branch is unparseable JSON, almost always truncation, a known live risk on fact-heavy accounts since 07-21 with no way to tell whether it was happening in production.
+
+Both now write `agent_llm_failed` carrying behavior + model, and for truncation the `output_tokens` against the `max_tokens` actually used plus the leading fragment — which is what tells you to raise the budget rather than chase the prompt. The audit write can never mask the original failure.
+
+New sweep check `llm_failures` measures them against runs that completed (share of agent work lost in the model call, not a raw count): yellow 5%, red 20%, minimum 10 runs. The action splits on reason — truncation says raise the budget, provider error says check key/model/credit. Correctly silent today since the recording only just deployed.
+
+### Sweep state improving
+Sudden now **RED=2 YELLOW=0 GREEN=3** (was RED=2 YELLOW=1 GREEN=2 at session start, and RED=3 mid-session). `cost_per_claim` went **RED → GREEN** (15531 vs 10987 median). `score_signal_coupling` green at 100% — 8/8 entities rescored after new facts. Remaining: `cost_per_unique_signal` (still working through the outage's 7d median) and `score_distribution` (the book, not the scorer — weights are Jake's call).
