@@ -7,6 +7,8 @@
     "dev": "pnpm --filter web dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "check": "tsx scripts/check_score_formula.ts && tsx scripts/check_domain_guard.ts",
+    "verify": "pnpm typecheck && pnpm check",
     "db:migrate": "supabase db push",
     "db:reset": "supabase db reset",
     "db:types": "supabase gen types typescript --local > packages/db/src/generated.ts",

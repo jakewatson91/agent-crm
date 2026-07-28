@@ -48,6 +48,14 @@ Specific bans:
 - No new env vars for behavior toggles (only API keys / secrets are env-acceptable).
 - Wizard / settings defaults must be vertical-neutral. "B2B SaaS" is not a default; "no default" is the default.
 
+## Before committing
+
+Run `pnpm verify` (typecheck across every package + the assertion suites). Not the per-package typecheck.
+
+`pnpm --filter <pkg> typecheck` is **not sufficient for anything shared**. Files under `inngest/` and `packages/` are compiled by more than one project with different settings, and the stricter one is what catches real bugs. This is not hypothetical: a `.catch()` on a PostgREST query builder (a thenable, not a Promise) passed the inngest typecheck, shipped, and would have thrown at runtime inside the error path it was added to. The web project flagged it instantly.
+
+`pnpm typecheck` could not complete at all until 2026-07-28 — it died in `packages/composio` on import-extension noise and never reached tools, inngest or web. It exits 0 now; keep it that way.
+
 ## Competition (snapshot, May 2026)
 
 - **Rox** ($1.2B valuation) — Agent Swarm on top of Salesforce/HubSpot. Reactive monitoring, not proactive.
