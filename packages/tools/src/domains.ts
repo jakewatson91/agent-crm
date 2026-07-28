@@ -99,14 +99,38 @@ export function hostNameLabels(host: string): string[] {
   return [...new Set([...[...kept].reverse(), concatenated])];
 }
 
+/**
+ * The initials of a multi-word name, e.g. "Warner Brothers Discovery" -> "wbd".
+ *
+ * Only from three or more significant words, and only returned at three or more
+ * characters. Two-letter initialisms collide with far too much — "Total Play"
+ * would claim any tp.* host — and the whole point of the guard is to be wrong
+ * rarely rather than to match often.
+ */
+function nameAcronym(name: string): string | null {
+  const words = name.toLowerCase().split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 1 && !['the', 'and', 'for', 'inc', 'llc', 'ltd', 'plc', 'corp', 'group'].includes(w));
+  if (words.length < 3) return null;
+  const acronym = words.map((w) => w[0]).join('');
+  return acronym.length >= 3 ? acronym : null;
+}
+
 /** Does the entity name plausibly own this host? See module comment. */
 export function nameMatchesHost(name: string, host: string): boolean {
   const labels = hostNameLabels(host);
   const joined = name.toLowerCase().replace(/[^a-z0-9]/g, '');
   if (!labels.length || !joined) return false;
   const tokens = name.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+  // Companies routinely trade under their initials, and nothing above can see
+  // it: "Warner Brothers Discovery" shares no substring with wbd.com, so their
+  // real domain was rejected as a name_mismatch and the account sat unreachable
+  // despite clearing both score gates. Exact match on the whole label only — a
+  // substring test would let "wbd" claim anything containing those letters.
+  const acronym = nameAcronym(name);
   return labels.some((label) =>
-    joined.includes(label) || label.includes(joined) || tokens.some((t) => label.includes(t)),
+    joined.includes(label) || label.includes(joined)
+    || tokens.some((t) => label.includes(t))
+    || (acronym !== null && label === acronym),
   );
 }
 

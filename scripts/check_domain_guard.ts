@@ -47,5 +47,15 @@ eq('platform domain rejected for a hosted brand',
 eq('unrelated company rejected', nameMatchesHost('Kaltura', 'netflix.com'), false);
 eq('empty name rejected', nameMatchesHost('', 'kaltura.com'), false);
 
-console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILURES`);
+console.log('\nnameMatchesHost — company trading under its initials:');
+// Warner Brothers Discovery really is wbd.com; nothing substring-based can see
+// that, and the account sat unreachable despite clearing both score gates.
+eq('acronym of 3+ words matches the label', nameMatchesHost('Warner Brothers Discovery', 'wbd.com'), true);
+eq('acronym still works with a subdomain', nameMatchesHost('Warner Brothers Discovery', 'careers.wbd.com'), true);
+// Guards against the acronym rule being too eager.
+eq('two-word initialism does NOT match', nameMatchesHost('Total Play', 'tp.com'), false);
+eq('acronym must equal the whole label', nameMatchesHost('Warner Brothers Discovery', 'wbdxyz.com'), false);
+eq('unrelated 3-letter host still rejected', nameMatchesHost('Warner Brothers Discovery', 'abc.com'), false);
+
+console.log(fail === 0 ? '\nALL PASS (incl. acronyms)' : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);
