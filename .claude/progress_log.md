@@ -2157,3 +2157,23 @@ Of those 40, **33 are eligible to queue** (`everResearched` is required); 7 have
 
 ### A mistake caught in the same commit
 The acronym assertions were appended *after* an existing `process.exit()` in `check_domain_guard.ts` — dead code that never ran, while the suite still printed **ALL PASS**. Identical trap to the `pnpm --filter` that matched nothing: output that reads as success because the new work never executed. Third time today. **When adding a check, confirm the check itself runs before trusting its verdict.**
+
+### The top-of-funnel constraint: 68% of the book has never been researched
+`signal_strength >= 0.7` is the binding draft gate (55 of 1961 accounts). Research is what produces it:
+
+| | accounts | reach signal_strength >= 0.7 |
+|---|---|---|
+| ever researched | 625 (32%) | 47 → **7.9%** |
+| never researched | 1336 (68%) | 8 → **0.65%** |
+
+Never-researched accounts sit at `signal_strength` 0.4 — the rubric's "passive presence" default — for 1148 of them. That is not a scoring fault; it is the honest answer when nothing has been looked up.
+
+**And they are backlog, not exclusions.** Split by score decile, **917 never-researched accounts score ≥ 0.8**; research has covered only 388 of the 1304 accounts in decile 8. Nothing is filtering them out — the queue simply has not reached them.
+
+Arithmetic: `research.searches_per_run` is the default **30 per 4h tick = 180 searches/day**, each entity consuming ~5 (five enabled angles), so **~30 entities/day**. Against 1336 unresearched that is **~45 days** to first-pass the book. Measured throughput matches: 17 `research_triggered` in 14h.
+
+**Levers, both Jake's:**
+1. Raise `research.searches_per_run` — linear trade of Exa credits for coverage speed. Not touched, especially straight after a credit wall.
+2. A cheaper first-pass mode (fewer angles per entity for accounts never researched, full angles on the second visit) would multiply coverage per unit spend — but that is a design change, not a knob, and wants his call on whether first-touch breadth beats depth.
+
+Also confirmed healthy: only **14 accounts** have a score predating their latest research, so scoring keeps up with research; the backlog is genuinely upstream.
