@@ -350,29 +350,32 @@ export async function loadActionContext(
   const recentResearchAt = await latestMarkerAt(supabase, workspace_id, entity_id, [ACTIVITY_MARKERS.RESEARCH_TRIGGERED]);
 
   // dropped_until fact — value is an ISO date string. If present and in the
-  // future, action_selector short-circuits to continue/suppressed.
-  const dropped = await supabase
+  // future, action_selector short-circuits to continue/suppressed. The CURRENT
+  // value is the row no other row's supersedes points at — supersede_fact
+  // writes the new row pointing back at the old one, so `.is('supersedes',
+  // null)` would return the stale original and could leave an entity
+  // suppressed (or clear it) on a date a later fact already overrode. No
+  // writer sets supersedes for this predicate today (drop always calls plain
+  // assert_fact), so this is latent, not live — same class of bug as the
+  // sweep.ts score_distribution read, fixed defensively before something
+  // starts superseding it.
+  const droppedRows = await supabase
     .from('facts')
-    .select('object_text')
+    .select('id, object_text, supersedes')
     .eq('workspace_id', workspace_id)
     .eq('subject_entity', entity_id)
-    .eq('predicate', 'dropped_until')
-    .is('supersedes', null)
-    .order('observed_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .eq('predicate', 'dropped_until');
+  const dropped = currentFact(droppedRows.data as CurrentFactRow[] | null);
 
   // outreach_cooldown_until fact — asserted after a send, blocks re-drafting.
-  const cooldown = await supabase
+  // Same not-pointed-to pattern, same latent risk.
+  const cooldownRows = await supabase
     .from('facts')
-    .select('object_text')
+    .select('id, object_text, supersedes')
     .eq('workspace_id', workspace_id)
     .eq('subject_entity', entity_id)
-    .eq('predicate', 'outreach_cooldown_until')
-    .is('supersedes', null)
-    .order('observed_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .eq('predicate', 'outreach_cooldown_until');
+  const cooldown = currentFact(cooldownRows.data as CurrentFactRow[] | null);
 
   // contacts_requested marker — written to the event log when enrich_contacts
   // fired, so the selector doesn't re-request before the pull lands (cooldown).
@@ -382,9 +385,18 @@ export async function loadActionContext(
     recent_draft_at: (draft.data?.created_at as string) ?? null,
     recent_research_at: recentResearchAt,
     recent_contacts_request_at: recentContactsRequestAt,
-    dropped_until: (dropped.data?.object_text as string) ?? null,
-    cooldown_until: (cooldown.data?.object_text as string) ?? null,
+    dropped_until: dropped?.object_text ?? null,
+    cooldown_until: cooldown?.object_text ?? null,
   };
+}
+
+type CurrentFactRow = { id: string; object_text: string | null; supersedes: string | null };
+
+/** The row no other row's supersedes points at. Same pattern as loadBestContactScore below. */
+function currentFact(rows: CurrentFactRow[] | null): CurrentFactRow | undefined {
+  if (!rows?.length) return undefined;
+  const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  return rows.find((r) => !pointedTo.has(r.id));
 }
 
 /**
