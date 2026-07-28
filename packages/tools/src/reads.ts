@@ -5,6 +5,7 @@
  * Designed to be token-efficient: summaries and counts, not raw row dumps.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchAll } from './paginate.ts';
 
 const STALE_DAYS = 7;
 const STALE_GATE_DAYS = 7;
@@ -207,18 +208,28 @@ export async function listEntities(
   // Same root cause as the sweep's score_distribution read and the coupling
   // check before it — but this one feeds the agent's own projection of the book,
   // so it decided what to work on from numbers that could be weeks out of date.
-  const icpFacts = await supabase.from('facts').select('subject_entity, object_text, observed_at')
-    .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
-    .in('subject_entity', entityIds);
+  // Chunked and paged, because dropping the supersedes filter means this now
+  // reads EVERY version of the score, not one row per entity. `limit` comes from
+  // the caller — the agent tool passes whatever it asks for — so at a few
+  // hundred entities this would silently stop at PostgREST's 1000-row cap and
+  // the entities whose rows fell off the page would report no score at all.
+  // That would undo the fix this block exists for.
   const icpByEntity = new Map<string, number>();
   const icpSeenAt = new Map<string, string>();
-  for (const f of (icpFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>) {
-    const v = parseFloat(f.object_text);
-    if (Number.isNaN(v)) continue;
-    const seen = icpSeenAt.get(f.subject_entity);
-    if (seen && f.observed_at <= seen) continue;
-    icpSeenAt.set(f.subject_entity, f.observed_at);
-    icpByEntity.set(f.subject_entity, v);
+  for (let i = 0; i < entityIds.length; i += 150) {
+    const slice = entityIds.slice(i, i + 150);
+    const icpFacts = await fetchAll<{ subject_entity: string; object_text: string; observed_at: string }>((from, to) =>
+      supabase.from('facts').select('subject_entity, object_text, observed_at')
+        .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
+        .in('subject_entity', slice).order('id').range(from, to));
+    for (const f of icpFacts) {
+      const v = parseFloat(f.object_text);
+      if (Number.isNaN(v)) continue;
+      const seen = icpSeenAt.get(f.subject_entity);
+      if (seen && f.observed_at <= seen) continue;
+      icpSeenAt.set(f.subject_entity, f.observed_at);
+      icpByEntity.set(f.subject_entity, v);
+    }
   }
 
   const summaries: EntitySummary[] = channels.map((c) => {
