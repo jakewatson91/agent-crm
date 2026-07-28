@@ -163,19 +163,34 @@ export async function listEntities(
   if (contactIds.length) {
     const [cEnts, cEmails, cRoles] = await Promise.all([
       supabase.from('entities').select('id, name').in('id', contactIds),
-      supabase.from('facts').select('subject_entity, object_text')
+      // No supersedes filter, for the same reason as icp_fit above: a corrected
+      // email or a re-classified role is written as a NEW row pointing back at
+      // the old one, so filtering on a null supersedes hands back the value that
+      // was replaced. Sending to a superseded address, or picking an outreach
+      // template off a superseded job title, is the kind of error that reaches
+      // the prospect. Latest observed_at wins.
+      supabase.from('facts').select('subject_entity, object_text, observed_at')
         .eq('workspace_id', workspace_id).eq('predicate', 'email')
-        .in('subject_entity', contactIds).is('supersedes', null),
-      supabase.from('facts').select('subject_entity, object_text')
+        .in('subject_entity', contactIds),
+      supabase.from('facts').select('subject_entity, object_text, observed_at')
         .eq('workspace_id', workspace_id).eq('predicate', 'role')
-        .in('subject_entity', contactIds).is('supersedes', null),
+        .in('subject_entity', contactIds),
     ]);
     const nameById = new Map<string, string>();
     const emailById = new Map<string, string>();
     const roleById = new Map<string, string>();
     for (const r of (cEnts.data ?? []) as Array<{ id: string; name: string }>) nameById.set(r.id, r.name);
-    for (const r of (cEmails.data ?? []) as Array<{ subject_entity: string; object_text: string }>) emailById.set(r.subject_entity, r.object_text);
-    for (const r of (cRoles.data ?? []) as Array<{ subject_entity: string; object_text: string }>) roleById.set(r.subject_entity, r.object_text);
+    const latestInto = (rows: Array<{ subject_entity: string; object_text: string; observed_at: string }>, into: Map<string, string>) => {
+      const seenAt = new Map<string, string>();
+      for (const r of rows) {
+        const seen = seenAt.get(r.subject_entity);
+        if (seen && r.observed_at <= seen) continue;
+        seenAt.set(r.subject_entity, r.observed_at);
+        into.set(r.subject_entity, r.object_text);
+      }
+    };
+    latestInto((cEmails.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, emailById);
+    latestInto((cRoles.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, roleById);
     for (const id of contactIds) {
       const email = emailById.get(id);
       if (!email) continue;
@@ -183,14 +198,27 @@ export async function listEntities(
     }
   }
 
-  // Pull current icp_fit fact per entity
-  const icpFacts = await supabase.from('facts').select('subject_entity, object_text')
+  // Current icp_fit per entity = the row with the LATEST observed_at.
+  //
+  // This used to filter on `.is('supersedes', null)`, which returns the ORIGINAL
+  // of a superseded chain: a rescore writes the new row carrying
+  // supersedes=<old id>, so the first-ever score keeps supersedes null forever.
+  // Every rescored account was reported to the agent at its first-ever score.
+  // Same root cause as the sweep's score_distribution read and the coupling
+  // check before it — but this one feeds the agent's own projection of the book,
+  // so it decided what to work on from numbers that could be weeks out of date.
+  const icpFacts = await supabase.from('facts').select('subject_entity, object_text, observed_at')
     .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
-    .in('subject_entity', entityIds).is('supersedes', null);
+    .in('subject_entity', entityIds);
   const icpByEntity = new Map<string, number>();
-  for (const f of (icpFacts.data ?? []) as Array<{ subject_entity: string; object_text: string }>) {
+  const icpSeenAt = new Map<string, string>();
+  for (const f of (icpFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>) {
     const v = parseFloat(f.object_text);
-    if (!Number.isNaN(v)) icpByEntity.set(f.subject_entity, v);
+    if (Number.isNaN(v)) continue;
+    const seen = icpSeenAt.get(f.subject_entity);
+    if (seen && f.observed_at <= seen) continue;
+    icpSeenAt.set(f.subject_entity, f.observed_at);
+    icpByEntity.set(f.subject_entity, v);
   }
 
   const summaries: EntitySummary[] = channels.map((c) => {

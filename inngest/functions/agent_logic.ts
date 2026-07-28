@@ -609,20 +609,33 @@ export async function runAgent(
         .is('supersedes', null).limit(5);
       const contactIds = ((contactRows.data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity);
       if (contactIds.length) {
+        // Newest email / role wins. A null supersedes marks the ORIGINAL of a
+        // chain, not the current value, so filtering on it would hand the
+        // drafter a replaced address or a stale job title — and this is the
+        // path that picks the outreach template and the send address.
         const [emailFacts, roleFacts, contactEnts] = await Promise.all([
-          supabase.from('facts').select('subject_entity, object_text')
+          supabase.from('facts').select('subject_entity, object_text, observed_at')
             .eq('workspace_id', payload.workspace_id).in('subject_entity', contactIds)
-            .eq('predicate', 'email').is('supersedes', null),
-          supabase.from('facts').select('subject_entity, object_text')
+            .eq('predicate', 'email'),
+          supabase.from('facts').select('subject_entity, object_text, observed_at')
             .eq('workspace_id', payload.workspace_id).in('subject_entity', contactIds)
-            .eq('predicate', 'role').is('supersedes', null),
+            .eq('predicate', 'role'),
           supabase.from('entities').select('id, name').in('id', contactIds),
         ]);
         const emailById = new Map<string, string>();
         const roleById = new Map<string, string>();
         const nameById = new Map<string, string>();
-        for (const r of (emailFacts.data ?? []) as Array<{ subject_entity: string; object_text: string }>) emailById.set(r.subject_entity, r.object_text);
-        for (const r of (roleFacts.data ?? []) as Array<{ subject_entity: string; object_text: string }>) roleById.set(r.subject_entity, r.object_text);
+        const latestInto = (rows: Array<{ subject_entity: string; object_text: string; observed_at: string }>, into: Map<string, string>) => {
+          const seenAt = new Map<string, string>();
+          for (const r of rows) {
+            const seen = seenAt.get(r.subject_entity);
+            if (seen && r.observed_at <= seen) continue;
+            seenAt.set(r.subject_entity, r.observed_at);
+            into.set(r.subject_entity, r.object_text);
+          }
+        };
+        latestInto((emailFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, emailById);
+        latestInto((roleFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, roleById);
         for (const r of (contactEnts.data ?? []) as Array<{ id: string; name: string }>) nameById.set(r.id, r.name);
         contacts = contactIds
           .filter((id) => emailById.has(id))
@@ -1611,9 +1624,15 @@ async function maybeLinkContactsForEntity(
     .eq('id', entity_id).maybeSingle();
   let domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
   if (!domain) {
+    // Newest domain wins. Filtering on a null supersedes would return the
+    // FIRST domain ever asserted — a correction is written as a new row
+    // pointing back at the one it replaces — so a fixed domain would keep
+    // resolving to the broken original and every contact pull for the account
+    // would go on querying the wrong company.
     const f = await supabase.from('facts').select('object_text')
       .eq('workspace_id', actor.workspace_id).eq('subject_entity', entity_id)
-      .eq('predicate', 'domain').is('supersedes', null).limit(1).maybeSingle();
+      .eq('predicate', 'domain').order('observed_at', { ascending: false })
+      .limit(1).maybeSingle();
     domain = ((f.data?.object_text as string) ?? '').trim().toLowerCase();
   }
   if (!domain || domain.endsWith('.example')) return 0;  // skip placeholder domains
