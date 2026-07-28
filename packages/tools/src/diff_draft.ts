@@ -37,7 +37,12 @@ export function diffDraftBody(original: string, final: string): ParagraphDiff[] 
 
   const diffs: ParagraphDiff[] = [];
   for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) diffs.push({ from: truncate(a[i]), to: truncate(b[i]) });
+    // Bound-checked reads: noUncheckedIndexedAccess types a[i] as possibly
+    // undefined even inside the loop. Lengths are already known equal above, so
+    // the fallbacks never fire — they exist to make that provable.
+    const from = a[i] ?? '';
+    const to = b[i] ?? '';
+    if (from !== to) diffs.push({ from: truncate(from), to: truncate(to) });
   }
   return diffs;
 }

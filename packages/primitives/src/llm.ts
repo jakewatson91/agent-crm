@@ -74,8 +74,12 @@ export interface ChatCompleteResult {
 // ---------------------------------------------------------------
 
 function extractSystem(messages: ChatMessage[]): { system: string | undefined; rest: ChatMessage[] } {
-  if (messages.length > 0 && messages[0].role === 'system') {
-    return { system: messages[0].content, rest: messages.slice(1) };
+  // Bind the element once instead of indexing twice: under noUncheckedIndexedAccess
+  // a length check does not narrow messages[0], so both reads were errors. Same
+  // behaviour, and it lets `pnpm -r typecheck` get past this package.
+  const first = messages[0];
+  if (first && first.role === 'system') {
+    return { system: first.content, rest: messages.slice(1) };
   }
   return { system: undefined, rest: messages };
 }

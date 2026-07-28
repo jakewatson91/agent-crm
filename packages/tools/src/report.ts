@@ -679,9 +679,11 @@ export function mdToHtml(md: string): string {
     const m = /^(#{1,3}) (.*)$/.exec(line);
     if (m) {
       closeList();
-      const level = m[1].length;
+      // Both groups are guaranteed by the regex that just matched; the locals
+      // are what make that provable under noUncheckedIndexedAccess.
+      const level = (m[1] ?? '').length;
       const size = level === 1 ? 20 : level === 2 ? 16 : 14;
-      out.push(`<h${level} style="font-size:${size}px;margin:${level === 1 ? 16 : 20}px 0 6px">${inline(m[2])}</h${level}>`);
+      out.push(`<h${level} style="font-size:${size}px;margin:${level === 1 ? 16 : 20}px 0 6px">${inline(m[2] ?? '')}</h${level}>`);
       continue;
     }
     if (/^\s*- /.test(line)) {

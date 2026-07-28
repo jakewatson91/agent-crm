@@ -107,6 +107,18 @@ export type Events = {
       reason?: string;
     };
   };
+  // On-demand kick of the daily digest email (same function the 15:15 UTC cron
+  // runs). dailyDigestCron has always listened for this alongside its cron, but
+  // the event was never declared here, so the trigger was a type error and
+  // `pnpm -r typecheck` failed on it. Runtime was fine — Inngest does not
+  // validate against this record — but a sender had no typed contract to write
+  // against.
+  'digest.requested': {
+    data: {
+      reason?: string;
+      workspace_id?: string;
+    };
+  };
 };
 
 export const inngest = new Inngest({

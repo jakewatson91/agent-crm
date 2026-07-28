@@ -21,7 +21,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ source_i
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const rows = (sigRows ?? []) as Array<{
+  // The generated types model an embedded relation as an ARRAY, so asserting it
+  // to a single object here did not overlap and failed the build. Accept both
+  // shapes and normalize once — a to-one embed comes back as an object at
+  // runtime, but the declared type is the array, and the consumer below only
+  // wants the name.
+  const rawRows = (sigRows ?? []) as unknown as Array<{
     id: string;
     type: string;
     body_for_embedding: string | null;
@@ -29,8 +34,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ source_i
     observed_at: string | null;
     created_at: string;
     entity_id: string | null;
-    entities: { name: string } | null;
+    entities: { name: string } | Array<{ name: string }> | null;
   }>;
+  const rows = rawRows.map((r) => ({
+    ...r,
+    entities: (Array.isArray(r.entities) ? r.entities[0] : r.entities) ?? null,
+  }));
 
   if (!rows.length) return NextResponse.json({ signals: [] });
 

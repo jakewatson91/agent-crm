@@ -12,6 +12,15 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    // The packages here are consumed as TypeScript source — package.json main
+    // and types both point at ./src/index.ts, and none of them has a build
+    // script — so the explicit `.ts` on relative imports is correct, not a
+    // mistake. Without this, every one of those imports raised TS5097 and
+    // `pnpm -r typecheck` died in packages/composio before it ever reached
+    // tools, inngest or web, which is how a real error in a shared file could
+    // sit unnoticed. Safe because nothing emits from these configs.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
