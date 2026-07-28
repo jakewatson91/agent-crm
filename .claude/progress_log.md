@@ -2040,3 +2040,22 @@ Live `explain (analyze, buffers)`, one such query over one day:
 `demo · agent-crm` has `{event_ttl_days:30, signal_embedding_ttl_days:30, prunable_event_actions:[subscription.matched, agent_run_metrics, agent_dispatch_result, enrichment_no_facts, action_selector_skip]}`. **Sudden, test and ONBOARDING-TEST have none — they never prune.** Retention runs fire on schedule and prune 0.
 
 Pruning events deletes audit history, so it is a destructive op and Jake's call, not mine. The demo config is a reasonable template: the prunable list is bookkeeping actions only, never the provenance-bearing ones (`assert_fact`, `post_to_channel`). **If he enables it, add `enrichment_skipped` and `agent_llm_failed` to the prunable list** — both are new this session and `enrichment_skipped` runs at high volume now that cooldown skips are recorded.
+
+### `facts.supersedes` had no index — 263ms to 0.17ms on the hottest lookup in the codebase (`a6cf3e7`)
+Looked for the events problem elsewhere and found a far worse one. Exactly the defect migration 0045 fixed on `events.parent_event_id`, on a hotter table.
+
+`supersedes` is a self-referential pointer with no index, and *"which of these rows has been superseded"* is the single most common question this codebase asks of facts — `excludeSuperseded()` runs `where supersedes = any($ids)`, and `graphProximity()` calls it **twice for every entity scored**. Neither existing index serves that predicate: `facts_subject_idx` and `facts_predicate_idx` both lead with `workspace_id` plus another column, so Postgres walked the whole workspace and filtered.
+
+Live, on 90,741 facts / 56 MB, one call with 50 ids:
+
+| | before | after (warm) |
+|---|---|---|
+| buffers | 14,398 | 86 |
+| rows removed by filter | 43,527 (to return 0) | 0 — index cond |
+| execution | 263.3 ms | **0.174 ms** |
+
+167x fewer reads, ~1500x faster. Two per scored entity, so a full-book rescore of ~2000 accounts was burning **on the order of seventeen minutes** purely re-reading every fact in the workspace to answer a pointer lookup. Now under a second. Partial index (only superseded rows carry a value): 14k rows, 1.2 MB.
+
+This is very likely part of why scoring and the sweep felt slow all along, and it went unnoticed because nothing errored — it was just quietly quadratic-ish in workspace size.
+
+**Standing lesson: every self-referential pointer in this schema needs an index.** `events.parent_event_id` (0045) and now `facts.supersedes` (0048) were the same bug found twice, months apart. Worth checking any future one at design time rather than after it hurts.
