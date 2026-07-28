@@ -2223,3 +2223,16 @@ Cumulative on the resolver today: the subdomain-label bug (`db162e9`), registrab
 2. The follow-up move asserted on the wrong anchor, so the constant was **deleted and never re-added** — `pnpm verify` exited 2 with `Cannot find name 'MIN_DISTINCTIVE_NAME_LEN'`. Restored.
 
 Neither reached a commit. This is the third time today the gate has paid for itself, and the argument for running `pnpm verify` rather than a per-package check.
+
+### Free domain sources are exhausted — the Exa resolver is the only entrance
+Having established that domain gates everything, checked whether any account could get one without spending a search. Both cheap paths are dry:
+
+**Contact work-emails** (`backfillAccountDomainsFromContactEmails`, no API cost): 71 accounts have a contact with a corporate email, **61 already have a domain**, 2 have contacts that disagree, 8 correctly rejected by the name guard — `Dell EMC × bissada.net` (a consultant's address), `SOOP × amazon.com` (an agency), `AXN × spe.sony.com`. **Would set 0 new domains.** The guard is doing exactly its job; there is simply nothing left there.
+
+**URLs already sitting in facts**: of 1396 domainless accounts, **2** have any URL-ish fact and **1** passes the name guard (`idilio TV → idilio.tv`). Not worth a tool.
+
+The reason both are empty is the chicken-and-egg at the top of the chain: **domainless accounts have almost no facts, because research requires a domain.** There is no accumulated information to mine — the resolver's Exa search is the only way in.
+
+**So the projection is firm.** 1396 accounts need a domain. `research.domain_backfill_per_day` is 75, one Exa search each, and post-fix recovery is ~33% on previously-failed accounts (higher on never-attempted ones). Roughly 19 days to attempt them all; realistically a few hundred resolve. Every one that does becomes researchable at ~30 entities/day, which is what eventually lifts `signal_strength` past the draft gate.
+
+`domain_backfill_per_day` is therefore **the single highest-leverage knob in the workspace**, and it is a straight Exa-credit trade. Left at 75 — that is Jake's call, and the reason for saying so this precisely is so the decision can be made on arithmetic rather than feel.
