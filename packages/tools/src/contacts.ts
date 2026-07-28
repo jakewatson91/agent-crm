@@ -415,6 +415,31 @@ export async function pullContactsForAccount(
   const order = providerOrder(policy);
   if (!order.length) { await audit('no contact_provider configured'); return { ok: false, reason: 'no contact_provider', found: 0, created: 0 }; }
 
+  // Monthly lookup cap. This path is the one the daily advance pass drives, and
+  // it used to ignore the cap entirely: the check lived only in agent_logic's
+  // maybeLinkContactsForEntity, and the counter it reads (contact_lookup_attempted
+  // facts) was never written here. Measured on Sudden in July: cap 15, counter
+  // reading 0, and 152 pulls actually made — ten times the configured budget,
+  // which is how a paid contact provider quietly runs dry.
+  //
+  // Same predicate and same calendar-month window as the other path, so the two
+  // share one budget instead of each keeping its own.
+  const monthlyCap = policy.enrichment?.hunter_monthly_cap ?? 0;
+  if (monthlyCap > 0) {
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const usage = await supabase.from('facts')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspace_id)
+      .eq('predicate', 'contact_lookup_attempted')
+      .gte('observed_at', monthStart);
+    const used = usage.count ?? 0;
+    if (used >= monthlyCap) {
+      await audit(`monthly lookup cap reached (${used}/${monthlyCap})`);
+      return { ok: true, reason: 'monthly cap reached', found: 0, created: 0 };
+    }
+  }
+
   let pulled: Array<{ name: string; email: string; role: string }> = [];
   let usedProvider = '';
   const errors: string[] = [];
@@ -433,6 +458,19 @@ export async function pullContactsForAccount(
         continue;
       }
       usedProvider = provider;
+      // A call went out and the provider's quota was spent, whatever it
+      // returned. Record it against the shared monthly counter here rather than
+      // only on success — a lookup that finds nobody still costs a credit, and
+      // counting only the hits is how the budget silently overruns.
+      await act(supabase, actor, {
+        tool: 'assert_fact',
+        args: {
+          subject_entity: entity_id,
+          predicate: 'contact_lookup_attempted',
+          object_text: new Date().toISOString(),
+          confidence: 1,
+        },
+      }).catch(() => { /* the pull itself matters more than its bookkeeping */ });
       if (pulled.length) break; // got contacts — don't spend the fallback
     } catch (e) {
       errors.push(`${provider}: ${e instanceof Error ? e.message : String(e)}`);
