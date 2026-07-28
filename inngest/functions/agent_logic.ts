@@ -1224,6 +1224,46 @@ DUPLICATION — the system already runs deterministic checks before invoking you
 
 Now to your specific task.`;
 
+/**
+ * Everything the drafter prompt can be told about the workspace's outreach.
+ * Every field is optional in VALUE — a workspace may not have set it — but see
+ * ExplicitDrafterPrompt below for why the key is not optional at the call site.
+ */
+interface DrafterPromptFields {
+  outreach_channel?: 'email' | 'linkedin';
+  subject_style?: 'one_word' | 'short_phrase' | 'question';
+  paragraph_count?: number;
+  pain_points?: string[];
+  value_props?: string[];
+  tone_keywords?: string[];
+  ask_examples?: string[];
+  forbidden_phrases?: string[];
+  forbidden_field_terms?: string[];
+  market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };
+  templates?: Array<{ id: string; label: string; audience: string; body: string; anatomy?: string; enabled?: boolean }>;
+  message_rules?: string[];
+  char_budget?: number;
+  trigger_max_age_days?: number;
+  trigger_fresh_days?: number;
+}
+
+/**
+ * The same fields, but every KEY must be written out at the call site. Values
+ * may still be undefined.
+ *
+ * This exists because the plain all-optional object has no type safety against
+ * omission, and this exact call site has silently dropped a field twice:
+ * `templates` (f101935 — shipped three days of value-prop garbage before anyone
+ * noticed) and `char_budget` (caught just before commit on 07-21). Both times
+ * the cause was editing a line in place rather than adding one, and nothing
+ * type-errored because every field was optional.
+ *
+ * Requiring the key turns that class of edit into a compile error. Deleting a
+ * line now fails `pnpm typecheck`; the escape hatch when a workspace genuinely
+ * has no value is to pass `undefined` explicitly, which is visible in review.
+ */
+type ExplicitDrafterPrompt = { [K in keyof Required<DrafterPromptFields>]: DrafterPromptFields[K] };
+
 export function buildSystemPrompt(
   behavior: AgentBehavior,
   about: string,
@@ -1231,23 +1271,7 @@ export function buildSystemPrompt(
   persona: unknown,
   icp: unknown,
   enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[]; resolveEntities?: boolean; edgeVocab?: string[]; nodeTypes?: string[] },
-  drafterPolicy?: {
-    outreach_channel?: 'email' | 'linkedin';
-    subject_style?: 'one_word' | 'short_phrase' | 'question';
-    paragraph_count?: number;
-    pain_points?: string[];
-    value_props?: string[];
-    tone_keywords?: string[];
-    ask_examples?: string[];
-    forbidden_phrases?: string[];
-    forbidden_field_terms?: string[];
-    market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };
-    templates?: Array<{ id: string; label: string; audience: string; body: string; anatomy?: string; enabled?: boolean }>;
-    message_rules?: string[];
-    char_budget?: number;
-    trigger_max_age_days?: number;
-    trigger_fresh_days?: number;
-  },
+  drafterPolicy?: ExplicitDrafterPrompt,
 ): string {
   const identity = behavior === 'drafter'
     ? (drafterPolicy?.outreach_channel === 'linkedin'
