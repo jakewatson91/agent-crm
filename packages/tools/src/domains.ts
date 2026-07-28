@@ -39,6 +39,13 @@ const FREEMAIL_HOSTS = new Set([
   'orange.fr', 'free.fr', 'wanadoo.fr', 'sfr.fr', 'laposte.net', 'comcast.net', 'att.net',
 ]);
 
+/**
+ * Below this length a company name is not distinctive enough for an exact label
+ * match to stand on its own. "FTV" exactly matches both ftv.com and ftv.com.tw;
+ * "pops" matches pops.life. See the weak_evidence check in resolveEntityDomain.
+ */
+const MIN_DISTINCTIVE_NAME_LEN = 5;
+
 /** Corporate domain from an email address, or null (invalid / consumer host). */
 export function domainFromEmail(email: string | null | undefined): string | null {
   if (!email) return null;
@@ -49,21 +56,6 @@ export function domainFromEmail(email: string | null | undefined): string | null
   return host;
 }
 
-/**
- * The parts of a host that could carry the company's name, most specific first.
- *
- * `host.split('.')[0]` only works when there is no subdomain. Plenty of real
- * corporate sites have one, and taking the first label then compares the wrong
- * string: `tv.movistar.com.ar` yields "tv", `m.ixigua.com` yields "m". Both got
- * their accounts rejected as name_mismatch against companies they genuinely
- * belong to.
- *
- * There is no public-suffix list here, so the trailing 1-2 labels are dropped
- * heuristically: the last label is always a TLD, and the one before it too when
- * it is a short registry label like the "com" in "com.ar" or "co" in "co.uk".
- * What remains is every label that could plausibly be the brand, plus the whole
- * thing concatenated, so callers can test against all of them.
- */
 /**
  * The registrable domain — what a contact provider can actually be queried
  * with. `jobs.lionsgate.com` becomes `lionsgate.com`, `tv.movistar.com.ar`
@@ -84,6 +76,21 @@ export function registrableDomain(host: string): string {
   return parts.slice(-keep).join('.');
 }
 
+/**
+ * The parts of a host that could carry the company's name, most specific first.
+ *
+ * `host.split('.')[0]` only works when there is no subdomain. Plenty of real
+ * corporate sites have one, and taking the first label then compares the wrong
+ * string: `tv.movistar.com.ar` yields "tv", `m.ixigua.com` yields "m". Both got
+ * their accounts rejected as name_mismatch against companies they genuinely
+ * belong to.
+ *
+ * There is no public-suffix list here, so the trailing 1-2 labels are dropped
+ * heuristically: the last label is always a TLD, and the one before it too when
+ * it is a short registry label like the "com" in "com.ar" or "co" in "co.uk".
+ * What remains is every label that could plausibly be the brand, plus the whole
+ * thing concatenated, so callers can test against all of them.
+ */
 export function hostNameLabels(host: string): string[] {
   const parts = host.toLowerCase().split('.').filter(Boolean);
   if (parts.length < 2) return parts;
@@ -319,12 +326,27 @@ export async function resolveDomainViaSearch(
     if (!host) { rejections.push({ url, host, reason: 'not_a_company_domain' }); continue; }
     if (!nameMatchesHost(entity_name, host)) { rejections.push({ url, host, reason: 'name_mismatch' }); continue; }
     if ((countByHost.get(registrableDomain(host)) ?? 0) < 2) {
-      // A host that appears once still counts when it is the top hit for
-      // `"<name>" official website` AND one of its name-bearing labels is the
-      // company name. Testing only host.split('.')[0] compared the subdomain:
-      // "tv" for tv.movistar.com.ar, against a joined name of "movistartv".
-      const labels = hostNameLabels(host);
-      if (rank !== 0 || !labels.includes(joinedName)) { rejections.push({ url, host, reason: 'weak_evidence' }); continue; }
+      // A host that appears once still counts when one of its name-bearing
+      // labels IS the company name. Testing only host.split('.')[0] compared
+      // the subdomain: "tv" for tv.movistar.com.ar, against "movistartv".
+      const exactName = hostNameLabels(host).includes(joinedName);
+      // Rank 0 is the ordinary case. Beyond it, an exact label match on a
+      // DISTINCTIVE name is still decisive: filmatique.com for "Filmatique" and
+      // amcnetworks.com for "AMC Networks" are not ambiguous just because the
+      // search happened to rank a news article above the company's own site.
+      // Requiring rank 0 alone lost 22 of 189 recorded failures on Sudden for
+      // that reason and nothing else.
+      //
+      // The length floor is the whole safety margin. Short names collide —
+      // "FTV" exactly matches both ftv.com and ftv.com.tw, "pops" matches
+      // pops.life — and a WRONG domain is worse than none: contact lookups go
+      // to the wrong company and the account reads as resolved, so the backfill
+      // stops retrying it. Those stay on the rank-0 rule.
+      const distinctive = joinedName.length >= MIN_DISTINCTIVE_NAME_LEN;
+      if (!exactName || !(rank === 0 || distinctive)) {
+        rejections.push({ url, host, reason: 'weak_evidence' });
+        continue;
+      }
     }
     // Store the registrable domain, never the subdomain the search happened to
     // land on. A contact provider queried with jobs.lionsgate.com returns
