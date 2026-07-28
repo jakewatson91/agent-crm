@@ -2020,3 +2020,23 @@ Six fixes, none behavioural:
 - **`sources/[source_id]/signals`** — the generated types model an embedded relation as an ARRAY, so asserting it to a single object didn't overlap. Accept both shapes, normalize once.
 
 **`pnpm -r typecheck` exits 0.** Use it as the pre-commit gate from here — the per-package one is not sufficient for anything shared.
+
+### Events table: indexed the access pattern everything actually uses (`05c964b`)
+Chased a statement timeout I hit while querying `events` earlier in the session. Table is **192,830 rows / 166 MB**, Sudden holds 60,705, growing **~3,300/day**.
+
+Nearly every operational read is "this workspace, this action, this time window" — the sweep's dispatch/coupling/cost checks, the period report, the Today run log, the new `llm_failures` check. Existing indexes were `(workspace_id, created_at desc)` and `(workspace_id, action)`; neither serves that shape, so Postgres walked the time index and discarded everything with the wrong action.
+
+Live `explain (analyze, buffers)`, one such query over one day:
+
+| | before | after |
+|---|---|---|
+| buffers | 9,457 | 32 |
+| rows removed by filter | 9,612 (to return 29) | 0 — index cond covers all three predicates |
+| execution | 16.9 ms | 4.3 ms |
+
+295x fewer buffer reads. The old form's cost grew linearly with event volume. Index costs 11 MB against 166 MB. Migration `0047` written *and applied live*, so it is already in effect; the file exists so a fresh environment gets it. **Not claiming a sweep-runtime win** — I did not time the sweep beforehand, and end-to-end it is dominated by round-trip latency, not index scans.
+
+### Open, and deliberately not acted on: Sudden has no retention policy
+`demo · agent-crm` has `{event_ttl_days:30, signal_embedding_ttl_days:30, prunable_event_actions:[subscription.matched, agent_run_metrics, agent_dispatch_result, enrichment_no_facts, action_selector_skip]}`. **Sudden, test and ONBOARDING-TEST have none — they never prune.** Retention runs fire on schedule and prune 0.
+
+Pruning events deletes audit history, so it is a destructive op and Jake's call, not mine. The demo config is a reasonable template: the prunable list is bookkeeping actions only, never the provenance-bearing ones (`assert_fact`, `post_to_channel`). **If he enables it, add `enrichment_skipped` and `agent_llm_failed` to the prunable list** — both are new this session and `enrichment_skipped` runs at high volume now that cooldown skips are recorded.
