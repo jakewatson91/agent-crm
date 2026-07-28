@@ -1895,3 +1895,46 @@ Three more value reads on the same pattern, all on the path to a prospect, also 
 
 ### Research confirmed healthy
 The 04:00 / 08:00 / 12:00 UTC ticks all fired: 17 `research_triggered`, 21 `research_completed`, 18 new signals in 14h; dispatcher last active 12:00, enricher 12:03. The "dispatcher may be broken" flag from the morning is closed — it was just the 00:00 tick landing inside the pause window. Deploy verified live: breakdowns written by the cloud pipeline carry `unknown_dims`.
+
+## 2026-07-28 (later) — the two things actually stopping Sudden from producing outreach
+
+Both are guards added for good reasons that are now rejecting the large majority of good input. Same shape as each other, and neither was visible from the sweep.
+
+### 1. 71% of the book has no domain, and the resolver was throwing away correct answers (`db162e9`)
+**1393 of 1961 accounts have no domain.** Without one `enrichContacts` returns "no domain on account" — no contact, no draft, ever. Bigger than anything in the scoring work.
+
+The failures were not unfindable companies. The guard identified the company and then discarded it, because both name checks used `host.split('.')[0]` — the SUBDOMAIN, not the label carrying the brand:
+- "Movistar TV" rejected `tv.movistar.com.ar` (compared `"tv"` against `"movistartv"`)
+- "Xigua Video" rejected `m.ixigua.com` (compared `"m"`)
+- "Vi Movies and TV" rejected `moviesandtv.myvi.in`
+
+`hostNameLabels()` now offers every label that could hold the brand; the name test and the rank-0 tiebreak consider all of them; evidence is counted per registrable domain so `investors.acme.com` and `about.acme.com` reinforce `acme.com`.
+
+**Two things had to ship with it or the change would have done harm:**
+- **Store the registrable domain.** The first version accepted `jobs.lionsgate.com`, `investors.amcnetworks.com`, `about.rogers.com`. Filing those is worse than filing nothing: Hunter finds no addresses under a careers subdomain and the account then looks resolved, so the backfill stops retrying. Caught in measurement, before shipping.
+- **Re-test the name against the domain being STORED.** `widekhaliji.blueonline.tv` matches on the subdomain while the registrable domain belongs to the hosting platform — it would have filed "WideKhaliji" under `blueonline.tv` and pointed every contact lookup at the wrong company. Now refused.
+
+Measured by replaying the fixed guard over 189 accounts with recorded failures, **zero Exa spend** (the rejection payloads are already in the event log): 40 resolve, all to clean domains — lionsgate.com, rogers.com, kaltura.com, orf.at, globo.com, movistar.com.ar, ixigua.com. They retry themselves: `DOMAIN_BACKFILL_REPROBE_DAYS = 7`.
+
+`scripts/check_domain_guard.ts` covers all of the above including what must still be rejected.
+
+**Left for Jake:** throughput. `domain_backfill_per_day: 75`, one Exa search each, so ~40 days to drain 1393 even at a better hit rate. Raising it trades Exa credits for speed — his call, not mine, especially right after a credit wall.
+
+### 2. Research yield collapsed 8x because search guidance was used as an acceptance threshold (`2525da7`)
+| day | searches | created | filtered |
+|---|---|---|---|
+| 07-22 | 185 | 252 | 0 |
+| 07-23 | 180 | 98 | 192 |
+| 07-24 | 125 | 54 | 244 |
+| 07-28 | 105 | 18 | 149 |
+
+89% of everything found is discarded, and the drafter's standing "no fresh trigger" refusal follows directly.
+
+`policy.research.guidance` is **planner** input — `ResearchPolicy` documents it as "what should the agent dig up about prospects?, folded into the planner prompt", i.e. it shapes the queries that get written. Sudden's reads *"The best outreach trigger is something a specific person said recently... about delivery costs, CDN spend... Prioritize finding that."*
+
+That is a ranking instruction. `research.ts` passed it to `filterResultsByEntity` as "What to dig for:" inside an acceptance test, so **"prioritize this" became "reject everything that is not this"** — and almost no page is an executive interview about CDN spend. Removed. The gate keeps its relevance condition via `pains` + `signal_types`, which describe a problem area rather than one ideal result; identity and substance are untouched.
+
+**Watch:** compare `created` vs `filtered_out` on tomorrow's runs. If the drop is still severe, the next suspect is the `pains` clause, not the guidance.
+
+### Observability gap worth closing
+The relevance gate records only a total `filtered_out`. It drops the large majority of research and stores no reason, which is why diagnosing this needed config archaeology rather than one query. Per-condition counts (identity / substance / relevance) would make the next regression a single read.
