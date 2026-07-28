@@ -115,7 +115,6 @@ async function main() {
         draft_evidence_depth: 0.5,
         draft_suppression_days: 14,
         research_icp_total: 0.5,
-        research_evidence_depth_max: 0.4,
         research_cooldown_days: 7,
         drop_icp_total: 0.35,
         drop_evidence_depth_min: 0.5,

@@ -67,7 +67,6 @@ export default function SettingsWorkspacePage() {
   const [draftEvidence, setDraftEvidence] = useState(0.5);
   const [draftSuppress, setDraftSuppress] = useState(14);
   const [researchIcp, setResearchIcp] = useState(0.5);
-  const [researchEvidenceMax, setResearchEvidenceMax] = useState(0.4);
   const [researchCooldown, setResearchCooldown] = useState(7);
   const [dropIcp, setDropIcp] = useState(0.35);
   const [dropEvidenceMin, setDropEvidenceMin] = useState(0.5);
@@ -128,7 +127,6 @@ export default function SettingsWorkspacePage() {
     setDraftEvidence(num(rt.draft_evidence_depth, 0.5));
     setDraftSuppress(num(rt.draft_suppression_days, 14));
     setResearchIcp(num(rt.research_icp_total, 0.5));
-    setResearchEvidenceMax(num(rt.research_evidence_depth_max, 0.4));
     setResearchCooldown(num(rt.research_cooldown_days, 7));
     setDropIcp(num(rt.drop_icp_total, 0.35));
     setDropEvidenceMin(num(rt.drop_evidence_depth_min, 0.5));
@@ -190,7 +188,6 @@ export default function SettingsWorkspacePage() {
         draft_evidence_depth: draftEvidence,
         draft_suppression_days: draftSuppress,
         research_icp_total: researchIcp,
-        research_evidence_depth_max: researchEvidenceMax,
         research_cooldown_days: researchCooldown,
         drop_icp_total: dropIcp,
         drop_evidence_depth_min: dropEvidenceMin,
@@ -228,7 +225,7 @@ export default function SettingsWorkspacePage() {
     outreachChannel, overrideTo, fromEmail, bannedPhrases,
     searchesPerRun, draftsPerRun,
     draftIcp, draftSignal, draftEvidence, draftSuppress,
-    researchIcp, researchEvidenceMax, researchCooldown,
+    researchIcp, researchCooldown,
     dropIcp, dropEvidenceMin, dropSuppress, watchIcp,
     wIndustry, wStage, wSignal, wEvidence, wRecency, wGraph, rrfGate,
     hireIncludeFamilies, hireIncludeSeniorities, hireExcludeFamilies, hireAlwaysExec,
@@ -463,9 +460,6 @@ export default function SettingsWorkspacePage() {
 
           <HelpRow label="Score needed to spend on research" help="Above this score the agent will run deeper research on the account.">
             <NumInput value={researchIcp} onChange={setResearchIcp} step={0.05} />
-          </HelpRow>
-          <HelpRow label="Evidence depth ceiling for research" help="Don't research accounts that already have this much evidence.">
-            <NumInput value={researchEvidenceMax} onChange={setResearchEvidenceMax} step={0.05} />
           </HelpRow>
           <HelpRow label="Days between research runs" help="Per-entity research cooldown.">
             <NumInput value={researchCooldown} onChange={setResearchCooldown} step={1} />

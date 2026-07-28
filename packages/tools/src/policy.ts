@@ -239,7 +239,14 @@ export interface RoutingPolicy {
   draft_suppression_days?: number;
 
   research_icp_total?: number;
-  research_evidence_depth_max?: number;
+  /**
+   * REMOVED. Was an evidence_depth ceiling above which research stopped firing.
+   * It counted facts that arrived with the record (CSV import columns) as if we
+   * had researched them, so any workspace importing 3+ columns per account
+   * switched its own research off on day one. The research cooldown is the
+   * limiter now. Left here as a comment so a stale value in a stored policy
+   * reads as intentionally ignored rather than a dropped field.
+   */
   research_cooldown_days?: number;
 
   drop_icp_total?: number;

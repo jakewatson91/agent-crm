@@ -43,7 +43,6 @@ export interface ActionThresholds {
   DRAFT_EVIDENCE_DEPTH: number;
   DRAFT_SUPPRESSION_DAYS: number;
   RESEARCH_ICP_TOTAL: number;
-  RESEARCH_EVIDENCE_DEPTH: number;
   RESEARCH_COOLDOWN_DAYS: number;
   DROP_ICP_TOTAL: number;
   DROP_EVIDENCE_DEPTH: number;
@@ -62,7 +61,6 @@ export const DEFAULT_THRESHOLDS: ActionThresholds = {
   DRAFT_SUPPRESSION_DAYS: 14,
 
   RESEARCH_ICP_TOTAL: 0.5,
-  RESEARCH_EVIDENCE_DEPTH: 0.4,
   RESEARCH_COOLDOWN_DAYS: 7,
 
   DROP_ICP_TOTAL: 0.35,
@@ -86,7 +84,6 @@ export function buildThresholds(policy?: {
   draft_evidence_depth?: number;
   draft_suppression_days?: number;
   research_icp_total?: number;
-  research_evidence_depth_max?: number;
   research_cooldown_days?: number;
   drop_icp_total?: number;
   drop_evidence_depth_min?: number;
@@ -102,7 +99,6 @@ export function buildThresholds(policy?: {
     DRAFT_EVIDENCE_DEPTH: policy?.draft_evidence_depth ?? DEFAULT_THRESHOLDS.DRAFT_EVIDENCE_DEPTH,
     DRAFT_SUPPRESSION_DAYS: policy?.draft_suppression_days ?? DEFAULT_THRESHOLDS.DRAFT_SUPPRESSION_DAYS,
     RESEARCH_ICP_TOTAL: policy?.research_icp_total ?? DEFAULT_THRESHOLDS.RESEARCH_ICP_TOTAL,
-    RESEARCH_EVIDENCE_DEPTH: policy?.research_evidence_depth_max ?? DEFAULT_THRESHOLDS.RESEARCH_EVIDENCE_DEPTH,
     RESEARCH_COOLDOWN_DAYS: policy?.research_cooldown_days ?? DEFAULT_THRESHOLDS.RESEARCH_COOLDOWN_DAYS,
     DROP_ICP_TOTAL: policy?.drop_icp_total ?? DEFAULT_THRESHOLDS.DROP_ICP_TOTAL,
     DROP_EVIDENCE_DEPTH: policy?.drop_evidence_depth_min ?? DEFAULT_THRESHOLDS.DROP_EVIDENCE_DEPTH,
@@ -183,7 +179,24 @@ export function selectAction(args: SelectArgs): ActionDecision {
   const noReachableContact =
     args.best_contact_score === undefined ||
     args.best_contact_score < THRESH.DRAFT_MIN_CONTACT_SCORE;
+  // Never buy a contact for an account nobody has looked at yet. This check sits
+  // ahead of draft on purpose, and that also put it ahead of research at step 3,
+  // so an unresearched account with a passable score was routed straight to a
+  // paid contact lookup and never reached research at all. On Sudden that was
+  // 1,621 accounts competing for the contact-provider credits, none of them
+  // researched. recent_research_at is an all-history event marker, so null means
+  // "never", not "not lately" (it would read stale if event retention is ever
+  // switched on for the research-triggered marker).
+  const everResearched = args.recent_research_at !== null;
+  // And don't buy a contact for an account we could not draft to even if the
+  // contact were perfect. enrich_contacts exists to unblock drafting, so if the
+  // draft bar is already failing on signal_strength, the contact is premature and
+  // the credit is better spent on an account that would actually send. Not a
+  // deadlock: signal_strength rises through research, which is now reachable.
+  const couldDraftWithAContact = b.signal_strength >= THRESH.DRAFT_SIGNAL_STRENGTH;
   if (
+    everResearched &&
+    couldDraftWithAContact &&
     noReachableContact &&
     args.icp_total >= THRESH.ENRICH_CONTACTS_ACCOUNT_ICP &&
     contactsReqAge >= THRESH.ENRICH_CONTACTS_COOLDOWN_DAYS
@@ -233,19 +246,36 @@ export function selectAction(args: SelectArgs): ActionDecision {
     };
   }
 
-  // 3. Deep research if there's a hint of fit but not enough evidence.
+  // 3. Deep research if there's a hint of fit and we're off cooldown.
+  //
+  //    This used to also require evidence_depth < RESEARCH_EVIDENCE_DEPTH (0.4),
+  //    i.e. "only research accounts we know almost nothing about". That measured
+  //    the wrong thing and switched research off for whole books. evidence_depth
+  //    is substantive_facts/6, and it counts facts that arrived WITH the record
+  //    as readily as facts we went and found. A CSV import carrying 5 columns
+  //    (country, product, description, ...) puts every imported account at 0.83
+  //    on day one, permanently above the 0.4 ceiling. Measured on Sudden: 1,884
+  //    of 2,013 accounts (94%) were locked out of research from the moment they
+  //    were imported, so signal_strength stayed at 0.40 ("passive presence") and
+  //    nothing ever cleared the draft bar.
+  //
+  //    Knowing what a company IS was never the question research answers. It
+  //    answers "is there a reason to reach out right now", which is time-bound
+  //    and goes stale. So the cooldown is the correct and only limiter, and
+  //    researchAge === Infinity (never researched) is exactly the case we most
+  //    want to fire on. Spend stays bounded by research.searches_per_run.
   const researchAge = args.recent_research_at
     ? (now - Date.parse(args.recent_research_at)) / 86400_000
     : Infinity;
   if (
     args.icp_total >= THRESH.RESEARCH_ICP_TOTAL &&
-    b.evidence_depth < THRESH.RESEARCH_EVIDENCE_DEPTH &&
     researchAge >= THRESH.RESEARCH_COOLDOWN_DAYS
   ) {
+    const age = Number.isFinite(researchAge) ? `last researched ${researchAge.toFixed(0)}d ago` : 'never researched';
     return {
       action: 'deep_research',
       policy: 'fit_but_thin',
-      reason: `Researching: icp_total ${args.icp_total.toFixed(2)} suggests possible fit, but evidence_depth is only ${b.evidence_depth.toFixed(2)}. Pulling more context before deciding.`,
+      reason: `Researching: icp_total ${args.icp_total.toFixed(2)} suggests possible fit and this account was ${age}. Looking for a current reason to reach out.`,
     };
   }
 
