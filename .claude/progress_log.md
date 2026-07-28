@@ -1947,3 +1947,14 @@ The relevance gate records only a total `filtered_out`. It drops the large major
 **Ruled out — the contact "API key missing" errors are historical.** 9 of 73 pulls in 7d, all `explorium: EXPLORIUM_API_KEY not set`, all dated 07-22T14:33, i.e. before Explorium was removed from the policy. Not live, nothing to fix.
 
 Live contact-pull picture (7d, 73 pulls): 29 provider-returned-nobody, **27 no-domain-on-account**, 9 historical Explorium errors, 8 found contacts. Hunter's hit rate on accounts that HAVE a domain is 8/37 ≈ 22% — consistent with what's already known and accepted. The dominant fixable slice was the 37% blocked on no domain, which is fixed at the root.
+
+### The monthly lookup cap never applied to the path that does the lookups (`48455b6`)
+`policy.enrichment.hunter_monthly_cap` was enforced only in `agent_logic`'s `maybeLinkContactsForEntity`. `pullContactsForAccount` — the function the daily advance pass drives, and the one its own module comment calls *"single source of truth for a contact pull"* — never checked it, and never wrote the `contact_lookup_attempted` fact the check counts.
+
+Inert twice over: it did not block, and its counter stayed at zero however many lookups ran.
+
+**Measured on Sudden for July: cap 15, counter reading 0, 152 pulls actually made** by `contacts_runner`. Ten times the configured budget — which is how a paid contact provider runs dry with no warning, and almost certainly why Hunter drained faster than expected.
+
+Fixed: `pullContactsForAccount` checks the same predicate over the same calendar month so both paths share one budget, and records an attempt whenever a provider call goes out — including one that finds nobody, since that still spends a credit. Counting only the hits is exactly how the overrun happened.
+
+**CONSEQUENCE — needs a decision.** The cap has not bound for at least a month, so enforcing it takes Sudden from ~150 lookups/month to 15. Contact pulls gate drafts, so draft volume falls with it. 15 was almost certainly picked against a nearly-empty Hunter balance (memory: ~20 credits on 07-19), not as a real monthly target. Raise `policy.enrichment.hunter_monthly_cap` (Settings → Connectors, "Monthly lookup cap") to whatever the plan actually affords — or the pipeline will throttle itself within days.
