@@ -2206,3 +2206,20 @@ It also **changes the priority of the two levers offered above**: raising `resea
 `HOT_ICP_THRESHOLD = 0.5`, and hot accounts consume all 5 strategy angles versus 1 for default tier. I suspected the rescore had pushed the book over that line and cut coverage 5x. It had not: the pre-rescore book sat at ~0.66, already above 0.5, so nearly every domained account was hot before and after. The 5-angles-per-entity cost predates today.
 
 Worth noting as a future lever though: with almost the whole book above 0.5, `hot` is not selective, so every first pass buys depth (5 angles) where breadth (1 angle) would cover 5x the accounts. That is a design change with a real trade-off, not a knob.
+
+### Attacked the top of the chain: exact-name domains rejected on ranking alone (`c57fa40`)
+Since domain gates research which gates everything else, classified what is still failing after the earlier fixes. Of 148 residual failures: **91 were "the name matched, but the evidence rule refused it"**, well ahead of "no plausible result" (43) and "no results at all" (14).
+
+Cause: a single-occurrence host was accepted only at **rank 0**. So `filmatique.com` for "Filmatique", `serially.it` for "Serially" and `amcnetworks.com` for "AMC Networks" were discarded purely because the search ranked a news article above the company's own site. An exact label match is not made ambiguous by ranking.
+
+Exact label matches are now accepted at any rank **when the name is distinctive (>= 5 characters)**. That floor is the entire safety margin and it earns its keep: "FTV" exactly matches both `ftv.com` and `ftv.com.tw`, "pops" matches `pops.life`, "Yes+" matches `yes.co.il`. A wrong domain is worse than none. Short names stay on rank 0.
+
+Replayed over 189 recorded failures, zero Exa spend: **41 → 63 resolved (+22)**, every addition an exact match on a distinctive name. Dropping the length floor would have added 12 more and taken `ftv.com` and `pops.life` with them — measured both ways before choosing.
+
+Cumulative on the resolver today: the subdomain-label bug (`db162e9`), registrable-domain storage, the ownership re-test, acronyms (`d58a617`), and now the rank rule. Of accounts with a recorded failure, **41 → 63 of 189 (33%) now resolve**, and each one that resolves becomes researchable, which is the only way an account reaches a `signal_strength` that permits a draft.
+
+### Two self-inflicted slips this round, both caught by `pnpm verify`
+1. A python-inserted constant landed **between a doc comment and its function**, orphaning two docstrings. Realigned.
+2. The follow-up move asserted on the wrong anchor, so the constant was **deleted and never re-added** — `pnpm verify` exited 2 with `Cannot find name 'MIN_DISTINCTIVE_NAME_LEN'`. Restored.
+
+Neither reached a commit. This is the third time today the gate has paid for itself, and the argument for running `pnpm verify` rather than a per-package check.
