@@ -114,17 +114,22 @@ export function scoreInputsHash(input: {
   icp: unknown;
   about: string | undefined;
   persona: unknown;
-  weights: ScoreWeights;
-  configChangedAt: string;
 }): string {
+  // Only what the rubric prompt actually contains. Scoring weights and
+  // scoring_config_state.changed_at deliberately do NOT go in here: neither
+  // reaches the model, they only change how the sub-scores are combined
+  // afterwards. Hashing them made every weight tweak or config touch look like
+  // new evidence, so re-tuning one weight re-ran the rubric on the whole book
+  // (1961 accounts on Sudden) to arrive at the same three judgments. Left out,
+  // the staleness guard still lets a config change through — it reads
+  // changed_at directly — and the reuse path then recombines the stored
+  // judgment under the new weights for free.
   const payload = JSON.stringify({
     f: [...input.factIds].sort(),
     a: input.attributes ?? {},
     i: input.icp ?? {},
     b: input.about ?? '',
     p: input.persona ?? {},
-    w: input.weights,
-    c: input.configChangedAt,
   });
   return createHash('sha256').update(payload).digest('hex').slice(0, 32);
 }
@@ -355,15 +360,12 @@ export async function scoreEntity(
   // Fingerprint the rubric's real inputs up front. Used twice: to reuse the
   // stored judgment below, and by scoreAndAssert to drop a write that would
   // re-roll an identical question (see the race note there).
-  const cfgChangedAtRaw = (ws.policy?.scoring_config_state as { changed_at?: string } | undefined)?.changed_at ?? '';
   const inputs_hash = scoreInputsHash({
     factIds: facts.filter((f) => substantive(f.predicate)).map((f) => f.id),
     attributes: entity.attributes ?? null,
     icp: ws.icp,
     about: ws.about,
     persona: ws.persona,
-    weights,
-    configChangedAt: cfgChangedAtRaw,
   });
 
   // Skip-when-stale guard: if a prior score_total exists and no substantive
