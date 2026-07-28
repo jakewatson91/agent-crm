@@ -73,12 +73,20 @@ async function main() {
   const stageFactName = (ws.policy?.lifecycle as { stage_fact_name?: string } | undefined)?.stage_fact_name;
   const substantive = (p: string) => isSubstantiveFact(p, stageFactName);
 
-  // One read of every live fact in the workspace, then everything else is local.
+  // One read of EVERY fact row in the workspace, then everything else is local.
   // Per-entity queries would be ~2000 round trips.
-  const facts = await fetchAll<Fact>((f, t) => sb.from('facts')
-    .select('id, subject_entity, predicate, object_text, object_entity, observed_at, signal_id')
-    .eq('workspace_id', WS).is('supersedes', null).order('id').range(f, t));
-  console.log(`live facts: ${facts.length}`);
+  //
+  // Deliberately not filtered with .is('supersedes', null). supersede_fact
+  // writes the NEW row carrying supersedes=<old id>, so a null supersedes marks
+  // the original at the bottom of the chain, not the current value. Filtering on
+  // it hands back stale rows and, worse, superseding one of them forks the chain
+  // and leaves two live values. Current = the row no other row points at.
+  const allRows = await fetchAll<Fact & { supersedes: string | null }>((f, t) => sb.from('facts')
+    .select('id, subject_entity, predicate, object_text, object_entity, observed_at, signal_id, supersedes')
+    .eq('workspace_id', WS).order('id').range(f, t));
+  const pointedTo = new Set(allRows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const facts = allRows.filter((r) => !pointedTo.has(r.id));
+  console.log(`fact rows: ${allRows.length}   current (not superseded by anything): ${facts.length}`);
 
   const byEnt = new Map<string, Fact[]>();
   const linked = new Set<string>();
@@ -86,6 +94,20 @@ async function main() {
     if (!byEnt.has(f.subject_entity)) byEnt.set(f.subject_entity, []);
     byEnt.get(f.subject_entity)!.push(f);
     if (f.object_entity) { linked.add(f.subject_entity); linked.add(f.object_entity); }
+  }
+  // A forked chain leaves more than one current row for the same predicate. The
+  // recombination would pick one arbitrarily and fork it again, so refuse and
+  // let scripts/repair_fact_forks.ts linearize them first.
+  const forked = [...byEnt.entries()].flatMap(([ent, fs]) => {
+    const seen = new Map<string, number>();
+    for (const f of fs) seen.set(f.predicate, (seen.get(f.predicate) ?? 0) + 1);
+    return [...seen.entries()].filter(([, n]) => n > 1).map(([p]) => `${ent}:${p}`);
+  });
+  const forkedEnts = new Set(forked.map((k) => k.split(':')[0]!));
+  if (forked.length) {
+    console.warn(`\nSKIPPING ${forkedEnts.size} entities: ${forked.length} (entity, predicate) pairs have more than one current row.`);
+    console.warn('Run `tsx scripts/repair_fact_forks.ts <workspace_id> --apply` to linearize them, then re-run.');
+    console.warn('first 5:', forked.slice(0, 5).join('  '));
   }
 
   // Publish dates for the signals behind those facts — the same source the
@@ -101,7 +123,9 @@ async function main() {
   }
   console.log(`signals with a publish date: ${pub.size}/${sigIds.length}`);
 
-  const targets = [...byEnt.keys()].filter((e) => byEnt.get(e)!.some((f) => f.predicate === 'icp_fit_breakdown'));
+  const targets = [...byEnt.keys()]
+    .filter((e) => !forkedEnts.has(e))
+    .filter((e) => byEnt.get(e)!.some((f) => f.predicate === 'icp_fit_breakdown'));
   const entAttrs = new Map<string, Record<string, unknown>>();
   for (let i = 0; i < targets.length; i += 150) {
     const { data } = await sb.from('entities').select('id, name, attributes').in('id', targets.slice(i, i + 150));
@@ -111,6 +135,7 @@ async function main() {
   const now = Date.now();
   const plan: Array<{ ent: string; before: number; after: number; bd: ScoreBreakdown; hash: string; curBdId: string }> = [];
   let skippedUnparseable = 0;
+  let skippedCurrent = 0;
 
   for (const ent of targets) {
     const fs = byEnt.get(ent)!;
@@ -158,6 +183,15 @@ async function main() {
       attributes: attrs,
       icp: ws.icp, about: ws.about, persona: ws.persona,
     });
+    // Already recombined under this formula and the number hasn't moved: skip,
+    // so re-running (or resuming after an interrupted pass) doesn't append a
+    // redundant supersede row per entity.
+    const alreadyDone = Array.isArray(o.unknown_dims)
+      && o.inputs_hash === hash
+      && Number.isFinite(before)
+      && Math.abs(before - after) < 0.005;
+    if (alreadyDone) { skippedCurrent++; continue; }
+
     plan.push({ ent, before, after, bd, hash, curBdId: bdFact.id });
   }
 
@@ -167,7 +201,7 @@ async function main() {
   deciles('AFTER', afters);
   const sd = (xs: number[]) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / xs.length); };
   console.log(`\nstd dev  before=${sd(befores).toFixed(4)}  after=${sd(afters).toFixed(4)}`);
-  console.log(`entities to rewrite: ${plan.length}   unparseable/skipped: ${skippedUnparseable}`);
+  console.log(`entities to rewrite: ${plan.length}   unparseable: ${skippedUnparseable}   already current: ${skippedCurrent}`);
 
   if (!APPLY) {
     const movers = [...plan].filter((p) => Number.isFinite(p.before)).sort((a, b) => Math.abs(b.after - b.before) - Math.abs(a.after - a.before)).slice(0, 8);
