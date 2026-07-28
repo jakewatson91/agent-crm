@@ -2008,3 +2008,15 @@ Gate outcomes: **11 reject, 5 approve, 3 pending** (oldest 4.2d). The 07-18/19 r
 The two `agent_llm_failed` writes in `bdfb752` used `.insert({...}).catch(...)`. A PostgREST query builder is a **thenable, not a Promise** — no `.catch` — so those calls would have thrown `TypeError` at runtime, inside the very error paths meant to make failures visible. Both are now try/catch, and a repo-wide sweep found no other instance.
 
 **How it slipped through:** I ran `pnpm --filter agent-crm-inngest typecheck`, saw it clean, and moved on. The web project compiles the same file with stricter settings and caught it immediately. *Clean in the package you edited is not the same as clean* — for shared files under `inngest/` or `packages/`, run the web typecheck too.
+
+### `pnpm typecheck` now passes workspace-wide — it never has before (`5654704`)
+Direct follow-through on this morning's lesson. `pnpm -r typecheck` died in `packages/composio` on TS5097 and **never reached tools, inngest or web** — which is exactly how the `.catch()` bug survived: I ran the package typecheck for the file I edited, it was clean, and the one project that would have caught it never ran. A gate that cannot run is not a gate.
+
+Six fixes, none behavioural:
+- **`tsconfig.base.json`: `allowImportingTsExtensions` + `noEmit`.** These packages are consumed as TypeScript source — `main` and `types` both point at `./src/index.ts` and not one has a build script — so the explicit `.ts` on relative imports is correct, not a mistake. That was ~103 lines of TS5097 across composio and primitives, all noise hiding real errors behind it. Nothing emits from these configs, so `noEmit` is honest rather than a workaround.
+- **`primitives/llm.ts`** — bind `messages[0]` once instead of indexing twice; a length check does not narrow an index read under `noUncheckedIndexedAccess`.
+- **`tools/diff_draft.ts`, `tools/report.ts`** — same class; lengths and regex groups are already guaranteed above, the locals make it provable.
+- **`inngest/client.ts`** — declare `digest.requested`. `dailyDigestCron` has always listened for it alongside its cron but it was never in the schema record, so the trigger was a type error. Runtime was unaffected (Inngest doesn't validate against this record) but no sender had a typed contract.
+- **`sources/[source_id]/signals`** — the generated types model an embedded relation as an ARRAY, so asserting it to a single object didn't overlap. Accept both shapes, normalize once.
+
+**`pnpm -r typecheck` exits 0.** Use it as the pre-commit gate from here — the per-package one is not sufficient for anything shared.
