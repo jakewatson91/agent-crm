@@ -1859,3 +1859,16 @@ Live result on Sudden (1995 entities): std dev **0.081 → 0.126**, spread 1.55x
 
 ### Also added
 `scripts/check_score_formula.ts` — assertions for `combineSubScores` (unchanged when nothing is unknown, an unmeasured dim never lowers a score, all-unknown returns 0 not NaN, result stays in [0,1] with a lopsided weights object). There is no test runner in the repo, so this stands in as the regression guard.
+
+### Found while backfilling: 850 forked supersede chains, ~445 of them pre-existing (`90800e0`)
+A fact's current value is the row no other row points at. `.is('supersedes', null)` returns the ORIGINAL at the bottom of the chain, because `supersede_fact` writes the NEW row carrying the pointer. Superseding an original forks the chain and leaves **two live values for one predicate**, so which one a reader gets depends on its ordering.
+
+The first run of `recombine_scores.ts` made exactly that mistake — the one `scoring.ts` already documents in a comment and that has bitten this repo before. Killed it at 1200/1995 and repaired. But the repair surfaced something bigger: **about 445 of the 850 forked pairs were already there**, on content predicates the enricher writes — `company_description` 66, `product` 64, `prospect_notes` 58, `country` 44, `business_models` 34, `pain_observed` 20, and a long tail. Those entities have had two competing current values for weeks. The enricher's own read path (`agent_logic.ts:125-130`) resolves heads correctly, so the signature points at two concurrent enrichments superseding the same head — the race `0141391` addressed.
+
+`scripts/repair_fact_forks.ts` (new) linearizes a chain by ordering every row for the pair on `observed_at` and chaining it end to end. It rewrites the WHOLE chain, not just the rows unpointed at that moment: repointing only those leaves a third row dangling and the next pass surfaces it again, which with three rows **oscillates between two states forever** (hit this live, three breakdown rows written 33ms apart). Nothing is deleted and no value changes, only pointers move, so history stays walkable.
+
+Applied to Sudden: **1334 pointers moved, 850 forked pairs → 1**. The single holdout (`43824d9a` / `icp_fit_breakdown`) has a chain pointing outside its own (entity, predicate) group; `recombine_scores.ts` now skips forked entities rather than forking them further, so it is quarantined rather than corrupted. Worth a separate look.
+
+`recombine_scores.ts` is also now idempotent — an entity already recombined under the current formula and hash is skipped, so a re-run or a resume after an interrupt doesn't append a redundant row per entity.
+
+**Standing lesson: never pick a row to supersede with `.is('supersedes', null)`.** Use the not-pointed-to set, or `excludeSuperseded` in `packages/primitives/src/relations.ts`, which exists for exactly this and says so in its docstring. There are still ~25 `.is('supersedes', null)` call sites across `reads.ts`, `entity_types.ts`, `action_selector.ts`, `contacts.ts` and `sweep.ts`; they are reads, so they return stale values rather than forking, but they are all wrong in the same way and worth a sweep.
