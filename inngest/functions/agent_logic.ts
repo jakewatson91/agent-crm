@@ -775,12 +775,47 @@ export async function runAgent(
       ],
     });
   } catch (e) {
-    return { ok: false, action: 'skip', reason: e instanceof Error ? e.message : String(e), behavior };
+    // Record it. Both failure modes here used to return silently, so a workspace
+    // whose model was erroring or truncating produced fewer facts and fewer
+    // drafts with nothing in the event log to say so — it just looked like a
+    // quiet pipeline. A credit wall, a bad model id and a rate limit all land
+    // here, and all three are things an operator has to see.
+    const message = e instanceof Error ? e.message : String(e);
+    await supabase.from('events').insert({
+      workspace_id: payload.workspace_id,
+      actor_kind: 'agent',
+      actor_id: payload.agent,
+      action: 'agent_llm_failed',
+      target_kind: 'entity',
+      target_id: ent.data.id,
+      payload: { reason: 'llm_error', behavior, model, message: message.slice(0, 400) },
+      parent_event_id: payload.parent_event_id ?? null,
+    }).catch(() => { /* never let the audit write mask the original failure */ });
+    return { ok: false, action: 'skip', reason: message, behavior };
   }
   const promptHash = createHash('sha256').update(systemPrompt + '\n' + userPrompt).digest('hex');
 
   let decision: any;
   try { decision = JSON.parse(llm.text); } catch {
+    // Truncation is the usual cause: the model spends its budget on reasoning
+    // and the JSON body is cut mid-object. Known live risk since 2026-07-21 on
+    // fact-heavy accounts, and until now it was invisible — worth seeing the
+    // finish_reason and token counts next to the fragment.
+    await supabase.from('events').insert({
+      workspace_id: payload.workspace_id,
+      actor_kind: 'agent',
+      actor_id: payload.agent,
+      action: 'agent_llm_failed',
+      target_kind: 'entity',
+      target_id: ent.data.id,
+      payload: {
+        reason: 'unparseable_json', behavior, model,
+        output_tokens: llm.output_tokens ?? null,
+        max_tokens: behavior === 'drafter' ? 3000 : 1200,
+        fragment: (llm.text ?? '').slice(0, 300),
+      },
+      parent_event_id: payload.parent_event_id ?? null,
+    }).catch(() => { /* the skip below is what matters */ });
     return { ok: false, action: 'skip', reason: `LLM returned non-JSON: ${llm.text.slice(0, 200)}`, behavior };
   }
 
