@@ -338,12 +338,26 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
 
   // TIER 4 ----------------------------------------------------
 
-  let scoreRows = (await fetchAll<{ subject_entity: string; object_text: string | null; observed_at: string }>((f, t) => sb.from('facts')
+  // Current icp_fit per entity = the row with the LATEST observed_at, exactly as
+  // the coupling check below computes it. This used to filter on
+  // `.is('supersedes', null)`, which returns the ORIGINAL of a superseded chain
+  // (a new score points BACK at the one it replaces, so the original keeps
+  // supersedes null). Every entity scored more than once was therefore measured
+  // at its first-ever score, and on a workspace that rescores daily this check
+  // was reporting the shape of a months-old book. Same root cause as the false
+  // RED the coupling check was fixed for; this one was missed.
+  const icpRows = await fetchAll<{ subject_entity: string; object_text: string | null; observed_at: string }>((f, t) => sb.from('facts')
     .select('subject_entity, object_text, observed_at')
-    .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit').is('supersedes', null)
-    .order('id').range(f, t)))
-    .map((r) => ({ entity: r.subject_entity, score: r.object_text ? parseFloat(r.object_text) : NaN, observed_at: r.observed_at }))
-    .filter((r) => Number.isFinite(r.score));
+    .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
+    .order('id').range(f, t));
+  const latestScore = new Map<string, { score: number; observed_at: string }>();
+  for (const r of icpRows) {
+    const score = r.object_text ? parseFloat(r.object_text) : NaN;
+    if (!Number.isFinite(score)) continue;
+    const cur = latestScore.get(r.subject_entity);
+    if (!cur || r.observed_at > cur.observed_at) latestScore.set(r.subject_entity, { score, observed_at: r.observed_at });
+  }
+  let scoreRows = [...latestScore.entries()].map(([entity, v]) => ({ entity, score: v.score, observed_at: v.observed_at }));
 
   // Exclude entities with zero substantive facts. They land at score=0 by design
   // (no evidence + RRF prefilter floor), and including them in the distribution
