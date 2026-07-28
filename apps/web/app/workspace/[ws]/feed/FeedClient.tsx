@@ -3,8 +3,9 @@
 /**
  * Client-side wrapper around FeedStream that uses SWR with server-supplied
  * fallbackData. On first render, hydration finds the data already populated —
- * no extra API round-trip. SWR still revalidates in the background after 10s
- * (the unstable_cache window in /api/feed/list).
+ * no extra API round-trip. Polls every 60s (matching /api/feed/list's server
+ * cache window) so a feed tab left open picks up new agent activity without
+ * a manual reload.
  */
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { FeedStream } from './FeedStream';
@@ -33,7 +34,7 @@ interface FeedItem {
 export function FeedClient({ ws, initialItems }: { ws: string; initialItems: FeedItem[] }) {
   const { data, mutate } = useSWR<{ items: FeedItem[] }>(
     `/api/feed/list?workspace_id=${ws}`,
-    { ...DEFAULT_SWR, fallbackData: { items: initialItems } },
+    { ...DEFAULT_SWR, fallbackData: { items: initialItems }, refreshInterval: 60_000 },
   );
   const items = data?.items ?? initialItems;
 
