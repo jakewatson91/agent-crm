@@ -2080,3 +2080,12 @@ After (warm): signals 0.031 · channel_posts 0.040 · gates 0.024 · conversatio
 **Retention is now actually viable on Sudden** if Jake wants it — that was the blocked half of the decision flagged earlier. Still his call, still destructive.
 
 **The pattern, now three times over:** `events.parent_event_id` (0045), `facts.supersedes` (0048), child `source_event_id` (0049). Every FK and self-referential pointer in this schema needs an index on the referencing column, and the cost never shows up as an error — only as something quietly getting slower, or a feature that fails the first time it is used in anger.
+
+### Sweep is no longer DB-bound; `pnpm verify` is now the gate (`463abee`)
+Profiled the sweep's query shapes warm, after 0047/0048/0049: claims-join 0.44 ms, icp_fit full read 2.8 ms, all-live-facts 17.9 ms, signals-7d 0.39 ms, events-by-action-7d 0.32 ms. **Nothing left that's database-bound.** The 24 s wall time is network round-trips paginating from a laptop; from Render it will be a fraction of that. Deliberately *not* claiming the indexes made the sweep faster — I never timed it before applying them, so that would be guesswork, though the shapes above are the ones `excludeSuperseded` and the action+time reads used to dominate.
+
+**Gate wired up.** Two assertion suites were written today and nothing ran them; the workspace typecheck only became runnable today.
+- `pnpm check` — the assertion suites (score combination formula, domain guard)
+- `pnpm verify` — `pnpm typecheck && pnpm check`, exits 0
+
+`CLAUDE.md` gained a **Before committing** section saying to run `pnpm verify`, and why `pnpm --filter <pkg> typecheck` is not sufficient for anything shared: files under `inngest/` and `packages/` are compiled by more than one project with different settings, and the stricter one catches the real bugs. Documented with the actual example rather than as a principle — the `.catch()` on a PostgREST thenable that passed the inngest typecheck, shipped, and would have thrown inside the error path it was added to.
