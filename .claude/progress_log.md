@@ -2103,3 +2103,18 @@ The package is named **`@agent-crm/inngest`**. I had been running `pnpm --filter
 The shipped code is nonetheless sound: `pnpm verify` / `pnpm -r typecheck` covers inngest properly (the earlier full run surfaced `inngest typecheck: Failed` on `daily_digest.ts`, which is how that got fixed), and it exits 0.
 
 **Lesson: a filter that matches nothing exits 0.** Never read empty output as success — check for `Done`/`Failed`, or just use `pnpm verify`, which cannot silently match nothing.
+
+### Verified end-to-end: the agent's projection now returns current scores
+Called `listEntities(sb, WS, { limit: 60, sort_by: 'icp_fit' })` — the exact path the advance pass uses to pick the accounts to work — and compared each returned `icp_fit` against the true chain head (max `observed_at`):
+
+```
+projection rows checked: 60
+  matches CURRENT chain head : 60
+  of those, would have been WRONG under the old stale read: 60
+  mismatched: 0    no score: 0
+```
+
+Every one. This was the headline correctness fix (`9cf491b`, 91% of the book reported at its first-ever score) and it is now confirmed on live data through the real function, not by re-deriving the query.
+
+### Filter audit after the no-op discovery
+Checked every `--filter` name used this session: `@agent-crm/tools`, `web`, `@agent-crm/primitives` all match. Only `agent-crm-inngest` was wrong. Importantly `web` typechecks **across the workspace** — it is what surfaced `../../inngest/functions/agent_logic.ts(793,8)` and caught the `.catch()` bug — so inngest files were in fact covered whenever the web check ran. The gap was narrower than first feared, but the reporting was still weaker than presented.
