@@ -4,6 +4,7 @@ import { createServerClient } from '@agent-crm/db';
 import { callTool, getPolicy, setOutreachStage, diffDraftBody } from '@agent-crm/tools';
 import { sendEmail } from '../../_lib/send_email';
 import { sanitizeEmailHtml, htmlToPlainText } from '../../_lib/html_email';
+import { getUser } from '../../../_lib/auth';
 
 export const runtime = 'nodejs';
 
@@ -26,7 +27,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'workspace_id, gate_id, decision required' }, { status: 400 });
   }
   const supabase = createServerClient();
-  const actor = { workspace_id: body.workspace_id, actor_kind: 'user' as const, actor_id: 'web' };
+  // Who is actually clicking. This used to be the literal string 'web' for every
+  // decision, and gates.decided_by was never written at all — so the audit trail
+  // recorded which agent REQUESTED an irreversible outbound send but not which
+  // human let it out. Middleware has already verified the session, so the cookie
+  // read here is a lookup, not a trust decision; if it somehow yields nothing we
+  // fall back to 'web' rather than block a legitimate approval.
+  // The uuid specifically, not the email: record_event only copies actor_id into
+  // gates.decided_by when it matches a uuid (see migration 0041), so a friendly
+  // string lands as null — which is exactly what every decision so far did. The
+  // email rides along in the resolution instead, so the audit reads without a
+  // join.
+  const user = await getUser().catch(() => null);
+  const actor = { workspace_id: body.workspace_id, actor_kind: 'user' as const, actor_id: user?.id ?? 'web' };
 
   // Load gate details up front so we know whether this is an outreach-send
   // approval (special path) or any other gate (legacy path).
@@ -53,7 +66,11 @@ export async function POST(req: Request) {
   // on an edited approval, what actually changed. Persisted on the gate and
   // surfaced to future drafts on similar accounts via pastOutcomes.
   const note = body.reason?.trim() || undefined;
-  let resolution: Record<string, unknown> = note ? { note } : {};
+  let resolution: Record<string, unknown> = {
+    ...(note ? { note } : {}),
+    // Readable alongside gates.decided_by, which stores only the uuid.
+    ...(user?.email ? { decided_by_email: user.email } : {}),
+  };
 
   let sendInfo: { effective_to?: string; override_active?: boolean; message_id?: string; intended_to?: string | null; edited?: boolean } | null = null;
 
