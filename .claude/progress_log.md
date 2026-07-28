@@ -1972,3 +1972,13 @@ New `policy.enrichment.coalesce_signal_types` scopes the window to named types. 
 Both are shipped at safe defaults; neither changes anything until he picks a number.
 1. **`enrichment.hunter_monthly_cap`** — now actually enforced. At 15 it takes contact pulls from ~150/month to 15, and contact pulls gate drafts.
 2. **`enrichment.coalesce_signal_types`** — set `["hiring_post"]` to stop discarding distinct research articles, at higher enrichment spend.
+
+### Jake's calls, applied — and the no-op I nearly shipped (`fd8ec98`)
+- **`enrichment.hunter_monthly_cap` 15 → 50** (his plan allows 50 lookups/month). Caveat: the counter reads 0 for July because nothing recorded until today's fix, while 152 lookups actually went out — so the real July balance is likely below 50. Honest from 1 August.
+- **`enrichment.coalesce_signal_types` → `["hiring_post"]`.** Asked whether distinct research articles should be read into facts; his answer was the obvious one, and he was right to push back on the framing — there is no quality argument for the old behaviour, it never looked at the article, only its type and timing.
+
+**The near-miss worth remembering:** exempting research from the coalesce window would have done *nothing on its own*. A second guard sits directly behind it — the per-entity enrichment cooldown, default 20h, asking the broader "was this entity enriched at all recently". The 1733 freed signals would have been stopped one check later. Both guards carry the same ATS rationale and both fail for the same reason: an entity with six unread articles is not "already up to date". The cooldown is now scoped by the same knob.
+
+**And it was invisible.** The cooldown returned without writing an event, so a workspace could be dropping most of its research there with nothing in the log — which is precisely why the coalescer looked like the whole story. It now writes `enrichment_skipped` with `reason: entity_enrich_cooldown`, same shape as the coalesce skip, so both read off one query. Third time this session that a guard discarding the majority of its input recorded no reason for it (relevance gate, this, and the coalescer's own type breakdown).
+
+**Watch:** enrichment dispatches should climb from ~40/day toward ~165/day, and enrichment is ~80% of token spend. If that lands harder than expected, revert by clearing `coalesce_signal_types` — one setting, no code change.
