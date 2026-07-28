@@ -2136,3 +2136,24 @@ Applied: 22 updated, 0 failed. Re-scan clean.
 Same domain or same normalized name: Totalplay/Total Play, Plex Inc./Plex, SonyLIV/Sony Liv, Disney+ Hotstar/HotStar, STARZPLAY Arabia/STARZPLAY, TVNZ+/TVNZ, Sinclair/Sinclair Inc., ViX+/ViX, MLB TV/MLB.TV, iHeart Media/iHeartMedia, and others. Each duplicate pays twice for enrichment and scoring, and risks two touches to one company.
 
 `merge_accounts` (migration 0046) exists and is reversible via `_merged_into`, but merging is a judgment call per pair — some are genuinely distinct products (YouTube vs YouTube Kids) — so this wants the merge-proposal UI on the entity page rather than a bulk script.
+
+### What the funnel can actually produce now, and the last blocker in it (`d58a617`)
+Measured the book against the real draft gates:
+
+| gate | accounts |
+|---|---|
+| `icp_total >= 0.65` | 1641 |
+| **`signal_strength >= 0.7`** | **55** ← the real gate, unchanged by the rescore |
+| both | 54 |
+| has a contact scoring >= 0.5 | 55 |
+| **draft-ready (all three)** | **14** |
+| **passes both score gates, needs only a contact** | **40** |
+
+Of those 40, **33 are eligible to queue** (`everResearched` is required); 7 have never been researched. Roughly two-thirds have a domain — the rest no-op on "no domain on account".
+
+**A risk I created and then found already handled:** raising icp_total put 1641 accounts over `ENRICH_CONTACTS_ACCOUNT_ICP` (0.6) while only 54 could ever draft, which with a 50/month cap could have spent the whole budget on accounts that never send. `action_selector` already gates contact pulls on `couldDraftWithAContact = signal_strength >= DRAFT_SIGNAL_STRENGTH`, with a comment naming this exact scenario on Sudden. No change needed — worth knowing it holds.
+
+**Acronym gap, fixed.** `Warner Brothers Discovery` clears both score gates, had no domain, and the resolver was finding `wbd.com` and rejecting it as `name_mismatch` — nothing substring-based connects "warnerbrothersdiscovery" to "wbd". `nameAcronym()` now builds initials from 3+ significant words, minimum 3 characters, matched against the whole label exactly. Two-letter initialisms excluded on purpose ("Total Play" would claim any `tp.*`). **Verified live: Warner Brothers Discovery -> wbd.com.**
+
+### A mistake caught in the same commit
+The acronym assertions were appended *after* an existing `process.exit()` in `check_domain_guard.ts` — dead code that never ran, while the suite still printed **ALL PASS**. Identical trap to the `pnpm --filter` that matched nothing: output that reads as success because the new work never executed. Third time today. **When adding a check, confirm the check itself runs before trusting its verdict.**
