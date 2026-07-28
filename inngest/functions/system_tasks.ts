@@ -497,9 +497,42 @@ export async function scanDomainBackfillCandidates(
       }
     }
     if (!missing.length) continue;
-    // Stable order so the same accounts aren't re-picked by chance across days;
-    // failures write cooldown markers, so the frontier advances daily.
-    missing.sort((a, b) => a.id.localeCompare(b.id));
+    // Best-scoring accounts first, uuid as the tiebreak.
+    //
+    // This used to sort on uuid alone, which is a stable order but an arbitrary
+    // one — the daily budget went to whichever accounts happened to sort early.
+    // A domain is the top of the whole chain (research skips any account without
+    // one, and research is what lifts signal_strength past the draft gate), and
+    // on Sudden 1396 accounts are queued against 75 lookups a day. Spending that
+    // budget in uuid order means a 0.9-fit account can wait weeks behind a 0.3.
+    // Same spend, same cadence, value-ordered.
+    //
+    // Accounts with no score yet sort last rather than first: an unscored
+    // account is usually one nothing is known about, and the point is to get
+    // the best of the book reachable soonest.
+    const scoreById = new Map<string, number>();
+    for (let i = 0; i < missing.length; i += 200) {
+      const slice = missing.slice(i, i + 200).map((m) => m.id);
+      const rows = await fetchAll<{ subject_entity: string; object_text: string | null; observed_at: string }>((from, to) =>
+        supabase.from('facts').select('subject_entity, object_text, observed_at')
+          .eq('workspace_id', ws.id).eq('predicate', 'icp_fit')
+          .in('subject_entity', slice).order('id').range(from, to));
+      // Current score = latest observed_at. `.is('supersedes', null)` would hand
+      // back each entity's first-ever score, which is the bug fixed in 9cf491b.
+      const seenAt = new Map<string, string>();
+      for (const r of rows) {
+        const v = r.object_text ? parseFloat(r.object_text) : NaN;
+        if (!Number.isFinite(v)) continue;
+        const prev = seenAt.get(r.subject_entity);
+        if (prev && r.observed_at <= prev) continue;
+        seenAt.set(r.subject_entity, r.observed_at);
+        scoreById.set(r.subject_entity, v);
+      }
+    }
+    missing.sort((a, b) => {
+      const d = (scoreById.get(b.id) ?? -1) - (scoreById.get(a.id) ?? -1);
+      return d !== 0 ? d : a.id.localeCompare(b.id);
+    });
 
     const failedAt = await latestMarkerByEntity(
       supabase, ws.id, missing.map((m) => m.id), [ACTIVITY_MARKERS.DOMAIN_RESOLVE_FAILED],
