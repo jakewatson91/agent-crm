@@ -1938,3 +1938,12 @@ That is a ranking instruction. `research.ts` passed it to `filterResultsByEntity
 
 ### Observability gap worth closing
 The relevance gate records only a total `filtered_out`. It drops the large majority of research and stores no reason, which is why diagnosing this needed config archaeology rather than one query. Per-condition counts (identity / substance / relevance) would make the next regression a single read.
+
+### Verified live, and two things ruled OUT
+**Domain fix proven on real accounts** (`resolveDomainViaSearch` with `apply:false`, 5 Exa searches, nothing written): **Rogers Communications Inc. → rogers.com**, previously rejected. The other four correctly held: "Madelen" (results are people with that name), "Tasty TV" (`tasty.co` is BuzzFeed's Tasty), "ZBullet" (app-store / registry pages), "Televizia Osem" (`tv8.sk` — probably right, but no string method links Slovak "Osem" to "8"; refusing is the safe failure). 1 in 5 recovered, matching the ~21% replay estimate, with no over-acceptance.
+
+**Ruled out — `icp.signal_type` is fine.** Suspected it was being silently dropped by `Array.isArray` in research.ts. It is a proper array (`["CDN cost increases", "video infrastructure optimization searches", "scaling streaming platform"]`) and reaches the relevance gate intact. Note these are narrow, so if yield is still poor after the guidance fix, this plus `pains` is where to look — `filtered_by` will now say so directly.
+
+**Ruled out — the contact "API key missing" errors are historical.** 9 of 73 pulls in 7d, all `explorium: EXPLORIUM_API_KEY not set`, all dated 07-22T14:33, i.e. before Explorium was removed from the policy. Not live, nothing to fix.
+
+Live contact-pull picture (7d, 73 pulls): 29 provider-returned-nobody, **27 no-domain-on-account**, 9 historical Explorium errors, 8 found contacts. Hunter's hit rate on accounts that HAVE a domain is 8/37 ≈ 22% — consistent with what's already known and accepted. The dominant fixable slice was the 37% blocked on no domain, which is fixed at the root.
