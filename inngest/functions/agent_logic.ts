@@ -298,7 +298,13 @@ export async function runAgent(
   // entities always run.
   // Config: policy.enrichment.coalesce_window_min (default 60, 0 disables).
   const coalesceMin = policy.enrichment?.coalesce_window_min ?? 60;
-  if (behavior === 'enricher' && coalesceMin > 0 && sigData?.type && payload.signal_id && sigData.observed_at) {
+  // Which signal types this collapsing is allowed to touch. Unset = all types,
+  // which is the historical behaviour. See coalesce_signal_types in policy.ts:
+  // the "one burst, one trend" logic is right for N job posts and wrong for N
+  // distinct articles, and on Sudden 98% of what it dropped was research.
+  const coalesceTypes = policy.enrichment?.coalesce_signal_types;
+  const typeIsCoalescible = !Array.isArray(coalesceTypes) || coalesceTypes.includes(sigData?.type ?? '');
+  if (behavior === 'enricher' && coalesceMin > 0 && typeIsCoalescible && sigData?.type && payload.signal_id && sigData.observed_at) {
     const windowStart = new Date(Date.parse(sigData.observed_at) - coalesceMin * 60_000).toISOString();
     const priors = await supabase.from('signals')
       .select('id')

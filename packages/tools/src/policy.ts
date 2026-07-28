@@ -52,6 +52,28 @@ export interface EnrichmentPolicy {
    */
   coalesce_window_min?: number;
   /**
+   * Signal types the coalesce window applies to. Unset = every type, which is
+   * the behaviour this knob was carved out of.
+   *
+   * The rationale above only holds for a burst of near-identical items: N job
+   * posts really are one hiring trend, so reading the first is enough. It does
+   * NOT hold for a burst of distinct documents. Measured on Sudden over 14 days:
+   * 1765 signals were coalesced away and 1733 of them (98%) were
+   * `research_result`, not `hiring_post` — and 196 of 272 sampled carried a
+   * DISTINCT source url. Those are different articles, already past the
+   * embedding near-dup check that runs before a signal is created, and only the
+   * first of each research burst is ever read into facts. The rest are dropped
+   * unread, which starves evidence_depth and leaves the drafter without a
+   * trigger.
+   *
+   * Left defaulting to today's behaviour on purpose: enriching every article in
+   * a burst instead of one is a real multiple on enrichment spend (that path is
+   * already the largest token consumer), so it is a budget decision, not a bug
+   * fix to apply silently. Set e.g. ["hiring_post"] to keep collapsing ATS
+   * bursts while letting every distinct research document through.
+   */
+  coalesce_signal_types?: string[];
+  /**
    * Fact-level near-dup threshold. When the enricher proposes a fact, its
    * object_text is embedded and compared (cosine) against the entity's active
    * facts with the SAME predicate; a match at or above this value is a reworded
