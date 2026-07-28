@@ -2118,3 +2118,21 @@ Every one. This was the headline correctness fix (`9cf491b`, 91% of the book rep
 
 ### Filter audit after the no-op discovery
 Checked every `--filter` name used this session: `@agent-crm/tools`, `web`, `@agent-crm/primitives` all match. Only `agent-crm-inngest` was wrong. Importantly `web` typechecks **across the workspace** — it is what surfaced `../../inngest/functions/agent_logic.ts(793,8)` and caught the `.catch()` bug — so inngest files were in fact covered whenever the web check ran. The gap was narrower than first feared, but the reporting was still weaker than presented.
+
+### Stored domains a contact provider can't use (`ad787fd`)
+Of the 568 domains Sudden had on file, two faults:
+
+**Aggregator hosts.** `play.google.com` was the stored domain for three separate broadcasters (JOJ Play, EuroSport Player, Hungama Play) — every contact lookup for them queried Google. Cleared so the fixed resolver re-runs within `DOMAIN_BACKFILL_REPROBE_DAYS`.
+
+**Subdomains.** 33 accounts stored e.g. `globoplay.globo.com` where `globo.com` is what Hunter needs. Deliberately not normalized blindly — `24flix.vhx.tv` would have filed "24 Flix" under a hosting platform it doesn't own, the same error as collapsing multi-valued facts. Each re-tested with `nameMatchesHost()` against the registrable domain: **19 rewritten** (globo.com, apple.com, roku.com, abc.net.au…), **14 held for a human** (24 Flix→vhx.tv, Picl→sourceforge.net, TV Peru→gob.pe — a government TLD).
+
+Applied: 22 updated, 0 failed. Re-scan clean.
+
+**Two heuristics were wrong in dry run and fixed before applying** — the reason the script defaults to dry run, and the direct payoff of the fork-repair lesson:
+1. *"3+ entities share a host"* alone would have **wiped youtube.com from YouTube, YouTube Kids and YouTube Premium**. Three products of one company on their own domain, not three companies on someone else's.
+2. Gating that on `nameMatchesHost` against the full **host** then cleared nothing — "JOJ Play" matches `play.google.com` on the subdomain label "play". Testing against the **registrable** domain separates them: "jojplay" doesn't match `google.com`, "youtube" does match `youtube.com`.
+
+### Also found, not acted on: ~14 duplicate account pairs
+Same domain or same normalized name: Totalplay/Total Play, Plex Inc./Plex, SonyLIV/Sony Liv, Disney+ Hotstar/HotStar, STARZPLAY Arabia/STARZPLAY, TVNZ+/TVNZ, Sinclair/Sinclair Inc., ViX+/ViX, MLB TV/MLB.TV, iHeart Media/iHeartMedia, and others. Each duplicate pays twice for enrichment and scoring, and risks two touches to one company.
+
+`merge_accounts` (migration 0046) exists and is reversible via `_merged_into`, but merging is a judgment call per pair — some are genuinely distinct products (YouTube vs YouTube Kids) — so this wants the merge-proposal UI on the entity page rather than a bulk script.
