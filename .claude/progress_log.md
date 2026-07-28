@@ -1958,3 +1958,17 @@ Inert twice over: it did not block, and its counter stayed at zero however many 
 Fixed: `pullContactsForAccount` checks the same predicate over the same calendar month so both paths share one budget, and records an attempt whenever a provider call goes out — including one that finds nobody, since that still spends a credit. Counting only the hits is exactly how the overrun happened.
 
 **CONSEQUENCE — needs a decision.** The cap has not bound for at least a month, so enforcing it takes Sudden from ~150 lookups/month to 15. Contact pulls gate drafts, so draft volume falls with it. 15 was almost certainly picked against a nearly-empty Hunter balance (memory: ~20 credits on 07-19), not as a real monthly target. Raise `policy.enrichment.hunter_monthly_cap` (Settings → Connectors, "Monthly lookup cap") to whatever the plan actually affords — or the pipeline will throttle itself within days.
+
+### 98% of what the enricher skips is research, not the ATS bursts it was built for (`722427d`)
+Funnel over 14 days: 1374 signals → 559 enricher dispatches (**1792 skipped**) → 376 produced facts (67%) → 99 `fit_weak_trigger` skips → 16 drafts.
+
+The skip pile is the story. `enrichment_skipped` = 1792, of which `coalesced_recent_enrich` = 1765. Its stated rationale is the ATS case — a company with N open roles emits N `hiring_post` signals, reading the first captures the trend. But **1733 of the 1765 (98%) were `research_result`, only 32 `hiring_post`** — and of 272 sampled coalesced research signals, **196 carried a distinct source url**.
+
+Those are separate articles, already past the embedding near-dup check that runs *before* a signal is created. So only the first article of each research pull is ever read into facts; the rest are dropped unread. That starves `evidence_depth`, and it starves the drafter of a trigger — which is the funnel's dominant skip reason (`fit_weak_trigger` 99 of 144).
+
+New `policy.enrichment.coalesce_signal_types` scopes the window to named types. **Defaulted to unset = today's behaviour, so the commit changes nothing on its own.** Enriching every article in a burst instead of one is a real multiple on enrichment spend, and that path is already the workspace's largest token consumer — a budget call, not something to apply to someone's bill silently. `["hiring_post"]` keeps ATS bursts collapsed while letting each distinct research document through.
+
+### Two budget decisions now sitting with Jake
+Both are shipped at safe defaults; neither changes anything until he picks a number.
+1. **`enrichment.hunter_monthly_cap`** — now actually enforced. At 15 it takes contact pulls from ~150/month to 15, and contact pulls gate drafts.
+2. **`enrichment.coalesce_signal_types`** — set `["hiring_post"]` to stop discarding distinct research articles, at higher enrichment spend.
