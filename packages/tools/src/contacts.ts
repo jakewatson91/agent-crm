@@ -551,12 +551,24 @@ export async function drainPendingContactRequests(
 
   // Order by current account score_total desc — scarce credits go to the best
   // accounts first. (The current score is the row no other row supersedes.)
-  const scoreRows = await supabase.from('facts')
-    .select('id, subject_entity, object_text, supersedes')
-    .eq('workspace_id', workspace_id)
-    .eq('predicate', 'score_total')
-    .in('subject_entity', pending);
-  const rows = (scoreRows.data ?? []) as Array<{ id: string; subject_entity: string; object_text: string | null; supersedes: string | null }>;
+  // Chunked at 150 and paged, like every other .in() here. An unchunked list
+  // overflows the request URL, and an unpaged read stops at PostgREST's 1000-row
+  // cap — this pulls EVERY score_total version for each account, superseded ones
+  // included, so it reaches 1000 at a few hundred pending accounts. The failure
+  // would be silent and exactly backwards: accounts whose rows fell off the page
+  // would score as 0 and sort last, so the scarce contact credits would skip the
+  // very accounts this ordering exists to prioritize.
+  const rows: Array<{ id: string; subject_entity: string; object_text: string | null; supersedes: string | null }> = [];
+  for (let i = 0; i < pending.length; i += 150) {
+    const slice = pending.slice(i, i + 150);
+    rows.push(...await fetchAll<{ id: string; subject_entity: string; object_text: string | null; supersedes: string | null }>((from, to) =>
+      supabase.from('facts')
+        .select('id, subject_entity, object_text, supersedes')
+        .eq('workspace_id', workspace_id)
+        .eq('predicate', 'score_total')
+        .in('subject_entity', slice)
+        .order('id').range(from, to)));
+  }
   const pointed = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
   const scoreByEnt = new Map<string, number>();
   for (const r of rows) {
