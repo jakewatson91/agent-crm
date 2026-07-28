@@ -356,8 +356,16 @@ export async function runAgent(
   // succeeded (ok=true, facts asserted) within the cooldown window, skip —
   // the entity is already up to date. Prevents a high-volume ATS source from
   // re-enriching the same account on every new job posting.
+  // Scoped by the SAME knob as the coalesce window, and it has to be: this
+  // cooldown sits directly behind it and asks a broader question ("was this
+  // entity enriched at all in the last 20h"), so a type exempted from burst
+  // collapsing would just be stopped here instead and the exemption would do
+  // nothing. Its rationale is the same ATS one — "prevents a high-volume ATS
+  // source from re-enriching the same account on every new job posting" — and
+  // it holds for the same reason and fails for the same reason: an entity with
+  // six unread articles is not "already up to date".
   const entityCooldownHours = policy.enrichment?.entity_enrich_cooldown_hours ?? 20;
-  if (behavior === 'enricher' && entityCooldownHours > 0) {
+  if (behavior === 'enricher' && entityCooldownHours > 0 && typeIsCoalescible) {
     const cooldownSince = new Date(Date.now() - entityCooldownHours * 3600_000).toISOString();
     const recentEnrich = await supabase.from('events')
       .select('id', { count: 'exact', head: true })
@@ -368,6 +376,26 @@ export async function runAgent(
       .eq('payload->>behavior', 'enricher')
       .gte('created_at', cooldownSince);
     if ((recentEnrich.count ?? 0) > 0) {
+      // Record it. This used to return silently, so cooldown skips left no trace
+      // anywhere — a workspace could be dropping most of its research here and
+      // the event log would show nothing at all. Same shape as the coalesce skip
+      // so both read off one query.
+      await supabase.from('events').insert({
+        workspace_id: payload.workspace_id,
+        actor_kind: 'agent',
+        actor_id: payload.agent,
+        action: 'enrichment_skipped',
+        target_kind: 'entity',
+        target_id: ent.data.id,
+        payload: {
+          reason: 'entity_enrich_cooldown',
+          entity_id: ent.data.id,
+          signal_id: payload.signal_id ?? null,
+          signal_type: sigData?.type ?? null,
+          cooldown_hours: entityCooldownHours,
+        },
+        parent_event_id: payload.parent_event_id ?? null,
+      });
       return { ok: true, action: 'skip', reason: 'entity_enrich_cooldown', behavior };
     }
   }
