@@ -1807,3 +1807,55 @@ The workspace home was a short briefing plus a "moved today" list. Jake asked fo
 
 ### New standing tool
 - **`scripts/_mint_session.ts`** — mints a real browser session cookie (admin `generateLink` → `verifyOtp` → `@supabase/ssr` base64url cookie) so curl and headless Chrome can hit authed routes. Not a bypass: middleware still verifies the token signature remotely. The equivalent lived in a scratchpad and was lost; committed this time. Gotcha: the cookie is **base64url**, not base64 — standard base64 produces a 400.
+
+## 2026-07-28 — Sudden structural review: the score was ranking on things it never measured
+
+Session goal was to find and fix what stops the Sudden workspace working as intended. Three code fixes, one live backfill, and two findings that are not bugs and should stop being treated as ones.
+
+### The 3-day outage (already fixed before this session, confirmed here)
+Research died completely from 2026-07-24 16:00 to 2026-07-28 01:14. Zero `research_triggered`, zero `create_signal`, zero enricher dispatches for three full days. Cause: `research_error: own_site_scaling: Exa 402 "You have exceeded your credits limit"` at 07-24 16:00 latched a `scope='research'` pause, and the dispatcher returns early on a standing pause, so it never called Exa again and the pause could never clear itself. The daily advance kept running the whole time, drafting off stale facts. `70b9993` (pushed 07-27 21:56) added `probeResearchProvider` — one cheap search per tick, clear the pause if it answers. That is the right fix and it is deployed. Jake's manual `exa-topup-verify` kick cleared this particular one at 01:14 before the probe got a chance.
+
+Watch item: as of 02:27 UTC on 07-28 there had been **zero `research_triggered` in 30 hours**. The three research runs since the restart were all Jake's manual kick. `RESEARCH_DISPATCH_CRON` is `0 */4 * * *` and the 00:00 tick fired while the pause was still on, so the first real test is the 04:00 UTC tick. If that one is also silent, the dispatcher — not the pause — is the problem.
+
+### Fix 1: dimensions we never measured were being scored as bad fit (`b284379`)
+`score_distribution` has been RED on Sudden for weeks (77% of 1823 accounts in decile 6). It is not the scorer collapsing. Pulling all 1996 stored breakdowns:
+
+| dimension | weight | mean | p10 | p90 |
+|---|---|---|---|---|
+| industry_match | 0.30 | 0.918 | 0.70 | 1.00 |
+| stage_match | 0.20 | 0.424 | 0.40 | 0.40 |
+| signal_strength | 0.10 | 0.374 | 0.20 | 0.40 |
+| evidence_depth | 0.20 | 0.777 | 0.50 | 0.83 |
+| recency | 0.10 | 0.976 | 0.97 | 0.98 |
+| graph_proximity | 0.10 | 0.054 | 0.00 | 0.00 |
+
+Two of those are not measurements at all:
+- **`stage_match` is a constant 0.40.** The rubric tells the model to answer 0.4 when the COMPANY GROUND TRUTH section is empty rather than guess from prose. **0 of 1961 Sudden accounts carry any ground-truth attribute** (their only attributes are `ats`, `ingested_at`, `ingested_via`, `_watched_by_source`, `domain`). So a fifth of the weight was a fixed number.
+- **`graph_proximity` is 0.00 for 92% of accounts.** It is the mean icp_fit of linked entities, and with no edges there is nothing to average, so it returns 0 — indistinguishable in a weighted sum from "all its neighbours are terrible fits." Only 173 relationship facts exist in the whole workspace, all `works_at`.
+
+Arithmetic: `0.30(0.92) + 0.20(0.40) + 0.10(sig) + 0.20(ed) + 0.10(0.98) + 0.10(0)` = `0.478 + 0.10·sig + 0.20·ed`, which with the observed ranges of sig and ed **confines the entire book to 0.60-0.68**. Exactly the observed decile 6.
+
+Fix: `ScoreBreakdown.unknown_dims` names the dimensions that could not be measured; `combineSubScores` drops them and renormalizes the remaining weights. Behaviour is unchanged when nothing is unknown. An unmeasured dimension can no longer lower a score.
+
+The ranking consequence is bigger than the distribution one: **0 of the old top 20 accounts survive**. The old top of book was ranked by "already has a contact attached", because graph_proximity was the only dimension with variance. Contactability belongs to the contact score in the two-tier model, not to the account score — it was being double-counted.
+
+### Fix 2: recency measured our own cron, not the account (`b284379`)
+`recencyScore` decayed from `observed_at`, which is when the enricher wrote the fact. **1000 of 1000 Sudden facts have `observed_at` within a day of `created_at`** — an article from eighteen months ago and one from this morning both scored as "today", and recency sat at 0.98 for every account. It now decays from `signals.structured_tags.published_at` (present on 240 of 323 signals) and falls back to our write time only when there is no dated source. Also clamps future publish dates to age 0.
+
+### Fix 3: a weights change forced a full-book LLM re-roll (`30a89e3`)
+`scoreInputsHash` hashed the scoring weights and `scoring_config_state.changed_at` alongside the facts/attributes/icp/about/persona that actually go in the prompt. Neither reaches the model — they only change how sub-scores are combined afterwards — so touching one weight made every stored score look like new evidence and re-ran the rubric on all 1961 accounts to produce the same three judgments. Now only the prompt's own inputs are hashed. The staleness guard is untouched (it reads `changed_at` directly), so a config change still gets through, and the reuse path then recombines the stored judgment under the new weights for free.
+
+### Backfill: `scripts/recombine_scores.ts` (new, committed)
+Applies a scoring-formula change to an existing book with **zero model calls**: reads each stored breakdown, reuses the three judged dimensions verbatim, recomputes the deterministic ones, rewrites `icp_fit` / `score_total` / `score_recency` / `icp_fit_breakdown` through the normal supersede chain, and restamps `inputs_hash` under the current scheme so the live scorer recognises the result instead of re-rolling on its next tick. Dry run by default; `--apply`, `--limit N`. Verified on 25 entities first: exactly one live row per predicate, chain intact.
+
+Live result on Sudden (1995 entities): std dev **0.081 → 0.126**, spread 1.55x.
+
+### What is NOT a bug — stop re-diagnosing these
+- **`score_distribution` will stay RED.** After both fixes the peak decile is still 66%, it just moved from 6 to 8. The remaining clustering is a property of the book, not the scorer: 1961 companies from one CSV, one vertical, all enriched with the same six `example_facts` predicates in the same batch. `industry_match` is 1.00 for nearly everyone because the book was pre-filtered to the ICP, and it carries 43% of the renormalized weight. **If Jake wants real separation the lever is `policy.scoring.weights`** — a workspace whose book is already filtered to one vertical should not spend 30% of its score re-asking "is this the right vertical". That is a config decision about Sudden's book, not a code change, so it was left for him.
+- **`cost_per_claim` RED and `enricher_silence` YELLOW are both artifacts of the outage.** The sweep ran ~1h after research restarted; today had 3 claims against a 7d median built from healthy days. Self-corrects.
+- **The drafter's constant `[facts_insufficient_for_draft] need a technical contact` is honest.** It reads roles fine (sample decision: "Tristan Lemoîne as Deputy Managing Director is the most senior contact"). Hunter simply returns whoever it has — 174 contacts, all name+email, roles like "Account Executive" and "Chief Data Protection Officer". Known and accepted; the contact-source answer is Explorium/Apollo, not a drafter change.
+- **Drafting is gated on `signal_strength >= 0.7` AND `icp_total >= 0.65`.** signal_strength has median 0.40 and p90 0.40, so it — not the account score — is what holds drafts back. This is why raising icp_total across the book does not flood the approval queue.
+- **The ATS source producing `skipped=498, signals_created=0` daily is working as designed.** 1961 companies were probed on 07-15/16, only 7 had a discoverable board, the rest are marked `provider: "none"` with `reprobe_days: 30`. Big media companies use Workday/Taleo, not Greenhouse/Lever/Ashby/Workable. Low yield for this book, not a fault.
+
+### Also added
+`scripts/check_score_formula.ts` — assertions for `combineSubScores` (unchanged when nothing is unknown, an unmeasured dim never lowers a score, all-unknown returns 0 not NaN, result stays in [0,1] with a lopsided weights object). There is no test runner in the repo, so this stands in as the regression guard.
