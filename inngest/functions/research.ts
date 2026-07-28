@@ -21,7 +21,7 @@ import {
   resolveDomainViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
-import { isHaltingError } from './advance_accounts.js';
+import { isPersistentWall } from './advance_accounts.js';
 import { inngest } from '../client.js';
 
 const SEEN_WINDOW_DAYS = 30;
@@ -494,7 +494,7 @@ export async function runEntityResearch(
         // the operator sees it instead of the loop silently burning ticks for
         // days. Scope 'research' — scoring, contact pulls, and drafting keep
         // running. This ran unnoticed for 7 days when Exa first ran dry.
-        if (errors.length === searches && errors.some((e) => isHaltingError(e))) {
+        if (errors.length === searches && errors.some((e) => isPersistentWall(e))) {
           const credit = errors.some((e) => /credit|402|payment/i.test(e));
           await setPipelineStatus(supabase, workspace_id, {
             state: 'paused',

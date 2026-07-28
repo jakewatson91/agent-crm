@@ -37,8 +37,8 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   entityIdsOfType, recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS,
-  getPolicy, getPipelineStatus, ensureResearchStrategy, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
-  RESEARCH_DISPATCH_CRON,
+  getPolicy, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
+  RESEARCH_DISPATCH_CRON, runExaSearch, resolveEnvVar,
 } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
@@ -157,6 +157,31 @@ interface DispatchItem { workspace_id: string; entity_id: string; entity_name: s
  * now" button and the Continue-after-pause flow both call this directly
  * instead of waiting for the next tick.
  */
+/**
+ * One cheap call to see whether a paused research provider is actually still
+ * walled. Returns true when the provider answers, meaning the pause is stale.
+ *
+ * Deliberately conservative: only a provider we know how to probe can auto-clear.
+ * An unknown provider, a manual pause (no provider set), or a missing key stays
+ * paused for a human, because we have no way to test it.
+ */
+async function probeResearchProvider(
+  supabase: ReturnType<typeof createServerClient>,
+  workspace_id: string,
+  provider: string | undefined,
+): Promise<boolean> {
+  if (provider !== 'exa') return false;
+  try {
+    const policy = await getPolicy(supabase, workspace_id);
+    const key = resolveEnvVar(policy, 'EXA_API_KEY');
+    if (!key) return false;
+    const r = await runExaSearch(key, { query: 'test', num_results: 1, text_chars: 1 });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function runResearchDispatch(
   supabase: ReturnType<typeof createServerClient>,
   opts?: { workspaceIds?: string[] },
@@ -175,13 +200,48 @@ export async function runResearchDispatch(
   let due_total = 0;
   let skipped_capped = 0;
   let skipped_no_domain = 0;
+  let skipped_paused = 0;
+  let auto_cleared_pauses = 0;
 
   for (const ws of workspaces) {
     // A standing pause that covers research (scope 'research' or 'all')
     // means the runner would refuse every dispatch — skip the workspace
     // instead of queueing runs that no-op.
     const pipeStatus = await getPipelineStatus(supabase, ws.id);
-    if (pipeStatus?.state === 'paused' && (pipeStatus.scope ?? 'all') !== 'contacts') continue;
+    if (pipeStatus?.state === 'paused' && (pipeStatus.scope ?? 'all') !== 'contacts') {
+      // A provider-triggered pause is a guess about the future: "this wall will
+      // still be there." Test the guess instead of trusting it forever. One cheap
+      // search per tick; if it succeeds the wall is gone, so clear the pause and
+      // carry on with this workspace in the same run.
+      //
+      // Without this the pause can never clear itself: the runner returns early
+      // on a standing pause, so it never calls the provider, so no error or
+      // success is ever recorded. Topping up credit did nothing until someone
+      // clicked Continue. Auto-clearing is the reversible-change path (act and
+      // notify); the operator still sees the banner history.
+      const cleared = await probeResearchProvider(supabase, ws.id, pipeStatus.provider);
+      if (!cleared) { skipped_paused++; continue; }
+      await setPipelineStatus(supabase, ws.id, {
+        state: 'ok', last_run_at: pipeStatus.last_run_at, last_run: pipeStatus.last_run,
+      });
+      // Workspace-level, not entity-level, so this goes straight to the event log
+      // rather than through recordActivityMarker (which is keyed to an entity).
+      await supabase.from('events').insert({
+        workspace_id: ws.id,
+        actor_kind: 'system',
+        actor_id: 'research_dispatcher',
+        action: 'pipeline_auto_resumed',
+        target_kind: 'workspace',
+        target_id: ws.id,
+        payload: {
+          provider: pipeStatus.provider ?? null,
+          prior_reason: pipeStatus.reason ?? null,
+          paused_at: pipeStatus.paused_at ?? null,
+          summary: `${pipeStatus.provider ?? 'provider'} answered a probe search, so the research pause was cleared automatically`,
+        },
+      });
+      auto_cleared_pauses++;
+    }
 
     const allAcctIds = (await entityIdsOfType(supabase, ws.id, 'account')).slice(0, 5000);
     const accounts = await chunkedIn<{ id: string; name: string; attributes: Record<string, unknown> | null }>(allAcctIds, (chunk) =>
@@ -380,6 +440,8 @@ export async function runResearchDispatch(
     skipped_capped,
     skipped_suppressed,
     skipped_no_domain,
+    skipped_paused,
+    auto_cleared_pauses,
     dispatch_errors,
   };
 }

@@ -78,6 +78,28 @@ export function isHaltingError(msg: string | undefined): boolean {
   );
 }
 
+/**
+ * A halting error that will STILL be there on the next tick: out of money, bad
+ * key, revoked access. These are worth latching a pause for, because the operator
+ * has to go do something before anything can work again.
+ *
+ * Rate limits are deliberately excluded. A 429 means "you asked too fast", which
+ * clears itself in seconds. Latching a pipeline pause on one turned a burst limit
+ * into an indefinite outage: the runner returns early on a standing pause without
+ * ever calling the provider again, so no error is recorded, nothing re-tests it,
+ * and research stays dark until a human clicks Continue. That is exactly how
+ * Sudden sat paused for three days against a completely healthy Exa key.
+ *
+ * Callers should still STOP the current run on any isHaltingError (backing off is
+ * correct); only the pause latch needs this stricter test.
+ */
+export function isPersistentWall(msg: string | undefined): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  if (m.includes('rate limit') || m.includes('too many requests') || /\b429\b/.test(m)) return false;
+  return isHaltingError(msg);
+}
+
 /** Which provider a halting error came from, for the paused message. */
 function providerFromError(msg: string): string | undefined {
   const m = msg.toLowerCase();
@@ -225,9 +247,15 @@ export async function advanceAccounts(
     });
     const reason = (r as { reason?: string }).reason;
     if (!r.ok && isHaltingError(reason)) {
-      out.paused = await pause(supabase, workspace_id, providerFromError(reason ?? ''), reason ?? 'llm error', 'all');
+      // Stop the run either way (hammering a rate-limited provider helps nobody),
+      // but only latch a pause for a wall that will still be there next tick.
       halted = true;
-      return 'paused';
+      if (isPersistentWall(reason)) {
+        out.paused = await pause(supabase, workspace_id, providerFromError(reason ?? ''), reason ?? 'llm error', 'all');
+        return 'paused';
+      }
+      tally('rate_limited');
+      return 'skip';
     }
     if (r.ok && r.action === 'post_touch_draft') { out.drafts_created++; tally('drafted'); log(`  ✎ drafted → ${name}`); return 'drafted'; }
     tally(`skip:${reason ?? r.action}`);
@@ -272,7 +300,14 @@ export async function advanceAccounts(
       const errText = pull.error_detail ?? pull.reason ?? 'provider error';
       const who = pull.provider ?? providerFromError(errText);
       const llmWall = who === 'deepseek' || who === 'llm';
-      out.paused = await pause(supabase, workspace_id, who, errText, llmWall ? 'all' : 'contacts');
+      // Same split as drafting: back off this run on any halting error, but only
+      // latch a pause when the wall will outlast the tick. A rate-limited contact
+      // provider used to pause contact pulls until someone noticed and clicked.
+      if (isPersistentWall(errText)) {
+        out.paused = await pause(supabase, workspace_id, who, errText, llmWall ? 'all' : 'contacts');
+      } else {
+        tally('rate_limited');
+      }
       if (llmWall) halted = true;
       break;
     }

@@ -15,6 +15,7 @@
  * Backward compat: keeps writing `icp_fit` = icp_total as the rolling total
  * fact, so the drafter prompt and UI badges that read `icp_fit` keep working.
  */
+import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed } from '@agent-crm/primitives';
 import { act } from '@agent-crm/primitives';
@@ -75,14 +76,57 @@ export const ADMIN_PREDICATES = new Set([
   'score_graph_proximity',
   'score_total',
   'contact_score',
+  // Outreach lifecycle marker (DEFAULT_STAGE_FACT_NAME in lifecycle.ts — kept as
+  // a literal here because importing lifecycle.ts would cycle through index.ts).
+  // The enricher writes this ~1s AFTER it writes the score, so treating it as
+  // evidence made every researched account permanently look like it had newer
+  // evidence than its own score, which re-armed the stale-guard forever.
+  // A workspace that renames the fact passes the custom name to
+  // isSubstantiveFact / scoreEntity instead.
+  'outreach_stage',
 ]);
 
 // True when a fact is real evidence about the account (not bookkeeping, not a
 // score output). The score_ prefix guard catches any future score_* sub-score
 // without enumerating it. Use this everywhere "does the account have evidence"
 // is asked, so the definition stays in one place.
-export function isSubstantiveFact(predicate: string): boolean {
+export function isSubstantiveFact(predicate: string, stageFactName?: string): boolean {
+  if (stageFactName && predicate === stageFactName) return false;
   return !ADMIN_PREDICATES.has(predicate) && !predicate.startsWith('score_');
+}
+
+/**
+ * Fingerprint of everything the LLM rubric actually reads. Two scoring runs with
+ * the same fingerprint MUST produce the same judgment, so the second one is pure
+ * spend plus a chance to overwrite a good score with a re-rolled one.
+ *
+ * The scorer is a reasoning model and ignores `temperature` (measured: 8 runs on
+ * identical input at unset vs 0 gave identical spread), so it cannot be pinned
+ * by sampling settings. The only way to stop the number moving on unchanged
+ * evidence is to not ask the question twice.
+ *
+ * Fact IDs are enough on their own: facts are immutable and a correction lands
+ * as a new row with a new id via the supersede chain.
+ */
+export function scoreInputsHash(input: {
+  factIds: string[];
+  attributes: Record<string, unknown> | null;
+  icp: unknown;
+  about: string | undefined;
+  persona: unknown;
+  weights: ScoreWeights;
+  configChangedAt: string;
+}): string {
+  const payload = JSON.stringify({
+    f: [...input.factIds].sort(),
+    a: input.attributes ?? {},
+    i: input.icp ?? {},
+    b: input.about ?? '',
+    p: input.persona ?? {},
+    w: input.weights,
+    c: input.configChangedAt,
+  });
+  return createHash('sha256').update(payload).digest('hex').slice(0, 32);
 }
 
 export interface ScoreBreakdown {
@@ -101,6 +145,16 @@ export interface EntityScore {
   breakdown: ScoreBreakdown;
   reasoning: string;
   llm_called: boolean;          // false if RRF pre-filter shortcut fired
+  /** Fingerprint of the evidence + config this score was computed from. Stored
+   *  on the breakdown fact so a later run can tell "same inputs" from "new
+   *  evidence" without re-running the rubric. See scoreInputsHash. */
+  inputs_hash: string;
+  /** True when this result reflects the standing stored judgment rather than a
+   *  fresh one: either the LLM dimensions were reused because the inputs were
+   *  unchanged, or scoreAndAssert dropped the write because a concurrent run had
+   *  already recorded a score from identical inputs. Callers can read it as
+   *  "nothing was written this run". */
+  reused: boolean;
 }
 
 // ---------- helpers ----------
@@ -235,6 +289,26 @@ export async function scoreEntity(
   const weights = buildScoreWeights(scoringPol.weights);
   const rrfGate = typeof scoringPol.rrf_gate === 'number' ? scoringPol.rrf_gate : DEFAULT_RRF_GATE;
 
+  // A workspace can rename the outreach lifecycle fact (policy.lifecycle
+  // .stage_fact_name). The default name is already in ADMIN_PREDICATES; this
+  // covers a renamed one so it is never mistaken for evidence.
+  const stageFactName = (ws.policy?.lifecycle as { stage_fact_name?: string } | undefined)?.stage_fact_name;
+  const substantive = (p: string) => isSubstantiveFact(p, stageFactName);
+
+  // Fingerprint the rubric's real inputs up front. Used twice: to reuse the
+  // stored judgment below, and by scoreAndAssert to drop a write that would
+  // re-roll an identical question (see the race note there).
+  const cfgChangedAtRaw = (ws.policy?.scoring_config_state as { changed_at?: string } | undefined)?.changed_at ?? '';
+  const inputs_hash = scoreInputsHash({
+    factIds: facts.filter((f) => substantive(f.predicate)).map((f) => f.id),
+    attributes: entity.attributes ?? null,
+    icp: ws.icp,
+    about: ws.about,
+    persona: ws.persona,
+    weights,
+    configChangedAt: cfgChangedAtRaw,
+  });
+
   // Skip-when-stale guard: if a prior score_total exists and no substantive
   // fact is newer than it, the score can't have changed — bail before the
   // LLM + 4 embedding calls. Defense-in-depth; callers should already gate
@@ -243,7 +317,7 @@ export async function scoreEntity(
   if (scoreTotalFact) {
     const scoreTs = Date.parse(scoreTotalFact.observed_at ?? scoreTotalFact.created_at ?? '');
     const hasNewerSubstantive = facts.some((f) =>
-      !ADMIN_PREDICATES.has(f.predicate) &&
+      substantive(f.predicate) &&
       Date.parse(f.observed_at ?? f.created_at ?? '') > scoreTs,
     );
     // Also re-score when the scoring config (icp/about/persona/scoring policy)
@@ -263,6 +337,49 @@ export async function scoreEntity(
   const evidence_depth = evidenceDepth(facts);
   const recency = recencyScore(facts);
   const graph = graphRes.score;
+
+  // ---- Unchanged-inputs reuse ----
+  // Past the stale guard but the rubric's inputs are byte-identical to the ones
+  // behind the current score: reuse the stored judgment instead of asking again.
+  // This is what stops one account being scored five times in 85 seconds when a
+  // burst of signals, the 30-min rescore cron, and the enricher all land at once
+  // (measured on Sudden: M6+ scored 5x with zero new evidence between any pair).
+  //
+  // Only the three LLM dimensions are reused. evidence_depth / recency / graph
+  // are recomputed above because they are deterministic and free, so time decay
+  // still moves the total without re-rolling the judgment. Those derived numbers
+  // are deliberately NOT in the hash: recency changes every second, so including
+  // it would make every run a cache miss and defeat the whole guard.
+  const priorBreakdown = facts.find((f) => f.predicate === 'icp_fit_breakdown');
+  if (priorBreakdown?.object_text) {
+    try {
+      const prior = JSON.parse(priorBreakdown.object_text) as Partial<ScoreBreakdown> & { inputs_hash?: string; reasoning?: string };
+      if (prior.inputs_hash && prior.inputs_hash === inputs_hash
+        && typeof prior.industry_match === 'number'
+        && typeof prior.stage_match === 'number'
+        && typeof prior.signal_strength === 'number') {
+        const breakdown: ScoreBreakdown = {
+          industry_match: prior.industry_match,
+          stage_match: prior.stage_match,
+          signal_strength: prior.signal_strength,
+          evidence_depth,
+          recency,
+          graph_proximity: graph,
+          rrf_prefilter: typeof prior.rrf_prefilter === 'number' ? prior.rrf_prefilter : 0,
+        };
+        const icp_total = combineSubScores(breakdown, weights);
+        return {
+          icp_total,
+          icp_fit: icp_total,
+          breakdown,
+          reasoning: prior.reasoning ?? '',
+          llm_called: false,
+          inputs_hash,
+          reused: true,
+        };
+      }
+    } catch { /* unparseable stored breakdown: fall through and score normally */ }
+  }
 
   // ---- RRF pre-filter via multi-perspective embeddings ----
   // prefilterComputed distinguishes "we measured a low cosine" (a real verdict —
@@ -318,6 +435,8 @@ export async function scoreEntity(
       breakdown,
       reasoning: `Pre-filter shortcut: multi-perspective cosine ${rrf_prefilter.toFixed(2)} is below the LLM-rubric gate and evidence is thin. No LLM call.`,
       llm_called: false,
+      inputs_hash,
+      reused: false,
     };
   }
 
@@ -427,6 +546,8 @@ Score this account on the three rubric dimensions.`;
     breakdown,
     reasoning: (parsed.reasoning ?? '').toString().slice(0, 400),
     llm_called: true,
+    inputs_hash,
+    reused: false,
   };
 }
 
@@ -624,6 +745,10 @@ export async function scoreContact(
     breakdown,
     reasoning: `Contact score ${total.toFixed(2)}: persona ${persona.toFixed(2)}, decision_power ${dp.toFixed(2)} (${roleText || 'no role'}), signal ${signal_strength.toFixed(2)}${llm_called ? ' (llm)' : ''}, account_fit ${account_fit.toFixed(2)}.`,
     llm_called,
+    // Contacts are scored on a different rubric and are not part of the
+    // unchanged-inputs guard; an empty hash opts them out of it.
+    inputs_hash: '',
+    reused: false,
   };
 }
 
@@ -723,6 +848,73 @@ export async function scoreAndAssert(
     : await scoreEntity(supabase, actor.workspace_id, entity_id);
   if (!score) return null;
 
+  // ---- Write-time race check ----
+  // Two runs can both pass scoreEntity's read-time guards: each loads facts
+  // before the other writes its score, so neither sees the other. Re-read the
+  // CURRENT breakdown here, after the scoring work, and drop this write if a
+  // concurrent run already recorded a score from identical inputs. Whoever
+  // finishes first wins and the loser discards a duplicate answer instead of
+  // overwriting a good score with a re-rolled one.
+  //
+  // This is the part that does not need a lock: both runs compute the same
+  // fingerprint, so it also covers callers outside agentRun's per-entity
+  // serialization (the 30-min rescore cron, the score_entity tool, contacts.ts).
+  if (score.inputs_hash) {
+    const bdRows = await supabase.from('facts').select('id, object_text, supersedes, observed_at')
+      .eq('workspace_id', actor.workspace_id)
+      .eq('subject_entity', entity_id)
+      .eq('predicate', 'icp_fit_breakdown')
+      .order('observed_at', { ascending: false });
+    const rows = (bdRows.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null }>;
+    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+    const current = rows.find((r) => !pointedTo.has(r.id));
+    if (current?.object_text) {
+      try {
+        const stored = JSON.parse(current.object_text) as { inputs_hash?: string };
+        if (stored.inputs_hash === score.inputs_hash) return { ...score, reused: true };
+      } catch { /* unparseable: fall through and write */ }
+    }
+  }
+
+  // Breakdown JSON as a separate fact for human / UI consumption. Supersede the
+  // prior breakdown instead of asserting fresh — the JSON differs every rescore
+  // (content-hash never matches), so a plain assert_fact leaked a new row per
+  // tick (599 active across ~222 entities before this fix). Same find-current-
+  // then-supersede pattern as the numeric score_* fields below.
+  //
+  // Written BEFORE the sub-scores because it is the row that carries
+  // inputs_hash, and that hash is how a concurrent run knows this evidence has
+  // already been answered. Writing it last left a window nine round trips wide
+  // in which a second run saw no hash and duplicated the whole write (measured:
+  // 5 simultaneous runs produced 2 score rows). First shrinks it to one.
+  try {
+    // Persist the plain-language reasoning alongside the numeric breakdown so
+    // the entity page can explain the score in words, not just sub-scores.
+    // inputs_hash rides along so the next run can tell "same evidence, don't ask
+    // again" from "new evidence, re-score". Empty for contacts (own rubric).
+    const breakdownText = JSON.stringify({
+      ...score.breakdown,
+      reasoning: score.reasoning,
+      ...(score.inputs_hash ? { inputs_hash: score.inputs_hash } : {}),
+    });
+    const allRows = await supabase.from('facts').select('id, supersedes, observed_at')
+      .eq('workspace_id', actor.workspace_id)
+      .eq('subject_entity', entity_id)
+      .eq('predicate', 'icp_fit_breakdown')
+      .order('observed_at', { ascending: false });
+    const rows = (allRows.data ?? []) as Array<{ id: string; supersedes: string | null; observed_at: string }>;
+    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+    const current = rows.find((r) => !pointedTo.has(r.id)) ?? null;
+    await act(supabase, actor, {
+      tool: current ? 'supersede_fact' : 'assert_fact',
+      args: {
+        subject_entity: entity_id, predicate: 'icp_fit_breakdown',
+        object_text: breakdownText, confidence: 0.85,
+        ...(current ? { supersedes: current.id } : {}),
+      },
+    });
+  } catch { /* non-fatal */ }
+
   // Sub-scores asserted as their own facts for audit + future calibration.
   // Each one supersedes the prior version. We do this in a loop so a write
   // failure on one doesn't abort the rest. Contacts reuse the score_* sub
@@ -776,33 +968,6 @@ export async function scoreAndAssert(
       // skip; next rescore tick retries
     }
   }
-
-  // Breakdown JSON as a separate fact for human / UI consumption. Supersede the
-  // prior breakdown instead of asserting fresh — the JSON differs every rescore
-  // (content-hash never matches), so a plain assert_fact leaked a new row per
-  // tick (599 active across ~222 entities before this fix). Same find-current-
-  // then-supersede pattern as the numeric score_* fields above.
-  try {
-    // Persist the plain-language reasoning alongside the numeric breakdown so
-    // the entity page can explain the score in words, not just sub-scores.
-    const breakdownText = JSON.stringify({ ...score.breakdown, reasoning: score.reasoning });
-    const allRows = await supabase.from('facts').select('id, supersedes, observed_at')
-      .eq('workspace_id', actor.workspace_id)
-      .eq('subject_entity', entity_id)
-      .eq('predicate', 'icp_fit_breakdown')
-      .order('observed_at', { ascending: false });
-    const rows = (allRows.data ?? []) as Array<{ id: string; supersedes: string | null; observed_at: string }>;
-    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
-    const current = rows.find((r) => !pointedTo.has(r.id)) ?? null;
-    await act(supabase, actor, {
-      tool: current ? 'supersede_fact' : 'assert_fact',
-      args: {
-        subject_entity: entity_id, predicate: 'icp_fit_breakdown',
-        object_text: breakdownText, confidence: 0.85,
-        ...(current ? { supersedes: current.id } : {}),
-      },
-    });
-  } catch { /* non-fatal */ }
 
   return score;
 }
