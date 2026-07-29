@@ -2274,3 +2274,11 @@ Applied "`.in()` without `fetchAll` is a defect on sight" across `packages/tools
 Chunked at 150 and paged. Verified live earlier at 60/60 correct, and the limit there was 60, which is why it never showed.
 
 **Worth internalising: fixing a filter can change a query's cardinality.** Removing `supersedes is null` multiplied the row count per entity by ~2.3 and quietly moved this read into cap range. A correctness fix and a pagination requirement arrived in the same edit, and I only shipped half of it.
+
+
+### Same edit, same defect: the contact identity lookup had the same cardinality change
+Applying the cardinality lesson from the icp_fit fix to the other place today's session dropped a `supersedes` filter. `listEntities`'s top-contact resolution reads `email` and `role` facts per contact for the same reason — a corrected email or re-classified role writes a new row pointing back at the old one, so `.is('supersedes', null)` was handing back the value that got replaced. Sending to a superseded address or picking an outreach template off a superseded title is the kind of error that reaches the prospect, so that filter was right to drop.
+
+Same bug arrived with it: the `.in('subject_entity', contactIds)` reads went from one row per contact to every version, uncapped. Chunked contact IDs at 150 and paged each chunk through `fetchAll`, same shape as the icp_fit fix.
+
+**Verified live on Sudden through `listEntities` itself**, not by re-deriving the query: at limit 180 (past the old fix's limit-60 blind spot), every `top_contact.email` matched the true latest `email` fact for that contact, 0 mismatches.

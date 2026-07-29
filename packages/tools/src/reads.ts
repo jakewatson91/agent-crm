@@ -162,20 +162,32 @@ export async function listEntities(
   const contactIds = [...new Set(accountToContactId.values())];
   const contactById = new Map<string, { name: string; email: string; role: string | null }>();
   if (contactIds.length) {
+    // No supersedes filter, for the same reason as icp_fit below: a corrected
+    // email or a re-classified role is written as a NEW row pointing back at
+    // the old one, so filtering on a null supersedes hands back the value that
+    // was replaced. Sending to a superseded address, or picking an outreach
+    // template off a superseded job title, is the kind of error that reaches
+    // the prospect. Latest observed_at wins.
+    //
+    // Chunked and paged for the same reason too: dropping that filter changed
+    // these from one row per contact to every version, so the 1000-row cap is
+    // now reachable. A contact whose rows fell off the page would come back
+    // with no email and get silently dropped from the projection.
+    const factsFor = async (predicate: string) => {
+      const out: Array<{ subject_entity: string; object_text: string; observed_at: string }> = [];
+      for (let i = 0; i < contactIds.length; i += 150) {
+        const slice = contactIds.slice(i, i + 150);
+        out.push(...await fetchAll<{ subject_entity: string; object_text: string; observed_at: string }>((from, to) =>
+          supabase.from('facts').select('subject_entity, object_text, observed_at')
+            .eq('workspace_id', workspace_id).eq('predicate', predicate)
+            .in('subject_entity', slice).order('id').range(from, to)));
+      }
+      return out;
+    };
     const [cEnts, cEmails, cRoles] = await Promise.all([
       supabase.from('entities').select('id, name').in('id', contactIds),
-      // No supersedes filter, for the same reason as icp_fit above: a corrected
-      // email or a re-classified role is written as a NEW row pointing back at
-      // the old one, so filtering on a null supersedes hands back the value that
-      // was replaced. Sending to a superseded address, or picking an outreach
-      // template off a superseded job title, is the kind of error that reaches
-      // the prospect. Latest observed_at wins.
-      supabase.from('facts').select('subject_entity, object_text, observed_at')
-        .eq('workspace_id', workspace_id).eq('predicate', 'email')
-        .in('subject_entity', contactIds),
-      supabase.from('facts').select('subject_entity, object_text, observed_at')
-        .eq('workspace_id', workspace_id).eq('predicate', 'role')
-        .in('subject_entity', contactIds),
+      factsFor('email'),
+      factsFor('role'),
     ]);
     const nameById = new Map<string, string>();
     const emailById = new Map<string, string>();
@@ -190,8 +202,8 @@ export async function listEntities(
         into.set(r.subject_entity, r.object_text);
       }
     };
-    latestInto((cEmails.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, emailById);
-    latestInto((cRoles.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, roleById);
+    latestInto(cEmails, emailById);
+    latestInto(cRoles, roleById);
     for (const id of contactIds) {
       const email = emailById.get(id);
       if (!email) continue;
