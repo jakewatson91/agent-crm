@@ -5,6 +5,7 @@ import {
   recordActivityMarker, ACTIVITY_MARKERS, isSubstantiveFact,
   getPolicy, resolveEnvVar, resolveDomainViaSearch,
   getPipelineStatus, setPipelineStatus,
+  backfillAccountDomainsFromContactEmails,
 } from '@agent-crm/tools';
 import { isHaltingError } from './advance_accounts.js';
 import { inngest } from '../client.js';
@@ -600,9 +601,11 @@ export async function runDomainBackfillBatch(
 }
 
 /**
- * domain-backfill-daily: one run per day that works through up to
- * policy.research.domain_backfill_per_day domainless accounts per workspace,
- * resolving attributes.domain via the guarded single-search resolver
+ * domain-backfill-daily: one run per day that first resolves whatever it can
+ * for free from contacts' corporate emails (backfillAccountDomainsFromContactEmails,
+ * every workspace, no spend, no daily cap — it only shrinks what's left), then
+ * works through up to policy.research.domain_backfill_per_day domainless
+ * accounts per workspace via the guarded single-search resolver
  * (resolveDomainViaSearch — same precision rules, cheap snippet params).
  *
  * Why a dedicated pass: resolution otherwise only happens lazily when the
@@ -612,15 +615,34 @@ export async function runDomainBackfillBatch(
  * operator-set pace instead.
  *
  * The internal batching keeps Inngest cost flat: a 75-entity day is ~6
- * executions (1 scan + 5 resolve batches), not 75.
+ * executions (1 free pass + 1 scan + 5 resolve batches), not 75.
  */
 export const domainBackfillDaily = inngest.createFunction(
   { id: 'domain-backfill-daily' },
   { cron: '0 11 * * *' }, // daily at 11:00 UTC, ahead of the noon sweeps and the 14:30 advance pass
   async ({ step }) => {
+    // Free pass first: an account whose contact list has since grown a
+    // corporate email (Hunter pull, CSV re-import, manual add) gets its domain
+    // from that email at zero cost, same precision guard as the paid path.
+    // Runs for every workspace regardless of domain_backfill_per_day — no Exa
+    // key or spend budget involved, so there is no reason to gate it. This
+    // only shrinks what the paid scan below has to spend credits on.
+    const freeResolved = await step.run('free-email-backfill', async () => {
+      const supabase = createServerClient();
+      const { data: workspaces } = await supabase.from('workspaces').select('id');
+      let domains_set = 0;
+      for (const ws of (workspaces ?? []) as Array<{ id: string }>) {
+        try {
+          const r = await backfillAccountDomainsFromContactEmails(supabase, { workspace_id: ws.id });
+          domains_set += r.domains_set;
+        } catch { /* one workspace's failure shouldn't block the rest */ }
+      }
+      return domains_set;
+    });
+
     const candidates = await step.run('scan-missing-domains', async () =>
       scanDomainBackfillCandidates(createServerClient()));
-    if (!candidates.length) return { candidates: 0, resolved: 0, no_match: 0, errors: 0 };
+    if (!candidates.length) return { free_resolved: freeResolved, candidates: 0, resolved: 0, no_match: 0, errors: 0 };
 
     const batchSize = Math.ceil(candidates.length / DOMAIN_BACKFILL_BATCHES);
     const totals = { resolved: 0, no_match: 0, errors: 0 };
@@ -637,7 +659,7 @@ export const domainBackfillDaily = inngest.createFunction(
       totals.errors += r.errors;
       for (const w of r.paused_workspaces) pausedWs.add(w);
     }
-    return { candidates: candidates.length, ...totals };
+    return { free_resolved: freeResolved, candidates: candidates.length, ...totals };
   },
 );
 
