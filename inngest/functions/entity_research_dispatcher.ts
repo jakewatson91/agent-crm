@@ -434,9 +434,7 @@ export async function runResearchDispatch(
         ?? policy.routing?.enrich_contacts_account_icp
         ?? DEFAULT_THRESHOLDS.ENRICH_CONTACTS_ACCOUNT_ICP;
       const cadenceMs = (policy.research?.contact_signal_cadence_days ?? 3) * 86400 * 1000;
-      const contactAngleCount = resolveContactStrategy(
-        policy.research?.social_domains ?? [], policy.research?.contact_signal_max_age_days ?? 60,
-      ).length;
+      const contactAngleCount = resolveContactStrategy(policy.research?.contact_signal_max_age_days ?? 60).length;
 
       const allContactIds = (await entityIdsOfType(supabase, ws.id, 'contact')).slice(0, 5000);
       if (allContactIds.length) {

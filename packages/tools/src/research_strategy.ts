@@ -74,9 +74,19 @@ const VALID_SCOPES = new Set(['own_site', 'news', 'open_web', 'social']);
  * name (see buildAngleRequest in research.ts). maxAgeDays is threaded in so
  * the query-time Exa filter matches policy.research.contact_signal_max_age_days
  * rather than the company default.
+ *
+ * open_web only, deliberately no `social` angle: LinkedIn and X have no API
+ * for reading a third party's posts, and scraping either one is a real ban /
+ * legal risk (LinkedIn has litigated this for years), not something to build
+ * into a product. Exa itself can't reach around that — it crawls public pages,
+ * and almost everything on those platforms sits behind a login wall, so a
+ * social-scoped contact search mostly returns the login-walled profile card,
+ * not a post. What's actually reachable without a login is a person quoted in
+ * an article, writing on their own company's site, or covered from a talk —
+ * exactly what the open_web angle already searches for.
  */
-export function resolveContactStrategy(socialDomains: string[], maxAgeDays: number): ResearchAngle[] {
-  const angles: ResearchAngle[] = [
+export function resolveContactStrategy(maxAgeDays: number): ResearchAngle[] {
+  return [
     {
       id: 'contact_public_posts',
       label: 'What they have posted publicly',
@@ -87,18 +97,6 @@ export function resolveContactStrategy(socialDomains: string[], maxAgeDays: numb
       enabled: true,
     },
   ];
-  if (socialDomains.length) {
-    angles.push({
-      id: 'contact_social_posts',
-      label: 'Their social posts',
-      query_template: '{entity} {company}',
-      domain_scope: 'social',
-      recency_days: maxAgeDays,
-      num_results: 3,
-      enabled: true,
-    });
-  }
-  return angles;
 }
 
 function slugify(s: string, fallback: string): string {

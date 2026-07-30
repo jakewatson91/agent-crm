@@ -319,7 +319,7 @@ export async function runEntityResearch(
       const halfLifeDays = policy.research?.decay_half_life_days ?? DEFAULT_DECAY_HALF_LIFE_DAYS;
 
       const socialDomains = (policy.research?.social_domains ?? []).filter(Boolean);
-      const allAngles = kind === 'contact' ? resolveContactStrategy(socialDomains, maxAgeDays) : resolveStrategy(policy);
+      const allAngles = kind === 'contact' ? resolveContactStrategy(maxAgeDays) : resolveStrategy(policy);
       const runnable = allAngles.filter((a) =>
         (a.domain_scope !== 'own_site' || !!domain) &&
         (a.domain_scope !== 'social' || socialDomains.length > 0));
