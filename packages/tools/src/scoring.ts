@@ -110,6 +110,7 @@ export function isSubstantiveFact(predicate: string, stageFactName?: string): bo
  */
 export function scoreInputsHash(input: {
   factIds: string[];
+  contactFactIds?: string[];
   attributes: Record<string, unknown> | null;
   icp: unknown;
   about: string | undefined;
@@ -126,6 +127,7 @@ export function scoreInputsHash(input: {
   // judgment under the new weights for free.
   const payload = JSON.stringify({
     f: [...input.factIds].sort(),
+    cf: [...(input.contactFactIds ?? [])].sort(),
     a: input.attributes ?? {},
     i: input.icp ?? {},
     b: input.about ?? '',
@@ -326,7 +328,7 @@ export async function scoreEntity(
   workspace_id: string,
   entity_id: string,
 ): Promise<EntityScore | null> {
-  const [entRes, factsRes, wsRes, graphRes, icpVecs] = await Promise.all([
+  const [entRes, factsRes, wsRes, graphRes, icpVecs, worksAtRes] = await Promise.all([
     supabase.from('entities').select('id, name, attributes').eq('id', entity_id).maybeSingle(),
     supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes, signal_id')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
@@ -334,6 +336,12 @@ export async function scoreEntity(
     supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle(),
     graphProximity(supabase, workspace_id, entity_id),
     getIcpPerspectiveVectors(supabase, workspace_id),
+    // Linked contacts (works_at -> this account). Their own content facts
+    // feed signal_strength below via a read across the edge, not a copy onto
+    // this entity -- see contactSignalFacts.
+    supabase.from('facts').select('subject_entity')
+      .eq('workspace_id', workspace_id).eq('predicate', 'works_at').eq('object_entity', entity_id)
+      .is('supersedes', null),
   ]);
 
   if (!entRes.data) return null;
@@ -353,6 +361,31 @@ export async function scoreEntity(
   const entityTypes = facts
     .filter((f) => f.predicate === 'is_a' && f.object_text)
     .map((f) => f.object_text as string);
+
+  // Linked contacts' own content (a post, a quote -- never role/email
+  // bookkeeping), read across the works_at edge rather than duplicated onto
+  // this account. Bounded to the 3 most recent qualifying facts across every
+  // linked contact so a busy account's prompt cost stays flat. Feeds the
+  // staleness guard, inputs_hash, and the rubric prompt below -- never
+  // evidence_depth or graph_proximity, which measure the company itself.
+  const contactIds = ((worksAtRes.data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity);
+  let contactSignalFacts: Array<{ id: string; contact_name: string; object_text: string | null; observed_at: string }> = [];
+  if (contactIds.length) {
+    const [contactFactsRes, contactEntsRes] = await Promise.all([
+      supabase.from('facts').select('id, subject_entity, predicate, object_text, observed_at, supersedes')
+        .eq('workspace_id', workspace_id).in('subject_entity', contactIds),
+      supabase.from('entities').select('id, name').in('id', contactIds),
+    ]);
+    const rawContactFacts = (contactFactsRes.data ?? []) as Array<{ id: string; subject_entity: string; predicate: string; object_text: string | null; observed_at: string; supersedes: string | null }>;
+    const contactSupersededIds = new Set(rawContactFacts.map((f) => f.supersedes).filter((x): x is string => !!x));
+    const activeContactFacts = rawContactFacts.filter((f) => !contactSupersededIds.has(f.id));
+    const nameById = new Map(((contactEntsRes.data ?? []) as Array<{ id: string; name: string }>).map((e) => [e.id, e.name]));
+    contactSignalFacts = contactContentFacts(activeContactFacts)
+      .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))
+      .slice(0, 3)
+      .map((f) => ({ id: f.id, contact_name: nameById.get(f.subject_entity) ?? '(unknown)', object_text: f.object_text, observed_at: f.observed_at }));
+  }
+
   const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown>; policy?: Record<string, any> };
 
   // Policy-driven scoring overrides (Phase 4). Both fall back to code defaults.
@@ -371,6 +404,7 @@ export async function scoreEntity(
   // re-roll an identical question (see the race note there).
   const inputs_hash = scoreInputsHash({
     factIds: facts.filter((f) => substantive(f.predicate)).map((f) => f.id),
+    contactFactIds: contactSignalFacts.map((f) => f.id),
     attributes: entity.attributes ?? null,
     icp: ws.icp,
     about: ws.about,
@@ -387,7 +421,7 @@ export async function scoreEntity(
     const hasNewerSubstantive = facts.some((f) =>
       substantive(f.predicate) &&
       Date.parse(f.observed_at ?? f.created_at ?? '') > scoreTs,
-    );
+    ) || contactSignalFacts.some((f) => Date.parse(f.observed_at) > scoreTs);
     // Also re-score when the scoring config (icp/about/persona/scoring policy)
     // changed after the last score — the scoring INPUTS changed even though no
     // new fact landed. Keyed to scoring_config_state.changed_at, NOT
@@ -551,6 +585,10 @@ export async function scoreEntity(
     ? `\nWHAT WE SELL (judge signal_strength against THIS — a signal is strong only when it connects to a pain we solve or value we deliver, weak when it doesn't):\n${painPoints.length ? `  Pains we solve:\n${painPoints.map((p) => `    - ${p}`).join('\n')}\n` : ''}${valueProps.length ? `  Value we deliver:\n${valueProps.map((v) => `    - ${v}`).join('\n')}\n` : ''}`
     : '';
 
+  const contactSignalBlock = contactSignalFacts.length
+    ? `\nWHAT LINKED CONTACTS HAVE SAID (a real person at this account, not the company itself — weigh as a live signal_strength input, same as company news):\n${contactSignalFacts.map((f) => `  ${f.contact_name}: ${f.object_text}`).join('\n')}\n`
+    : '';
+
   const sysPrompt = `You score how well an account fits the workspace's ICP. You are NOT producing a single overall score; you are producing three orthogonal sub-scores on a strict rubric.
 
 Each sub-score is in [0.0, 1.0]. Be calibrated: do not inflate scores.
@@ -599,7 +637,7 @@ ${otherAttrs || '  (none)'}
 
 FACTS (predicate=value, conf):
 ${facts.length ? facts.filter((f) => !ADMIN_PREDICATES.has(f.predicate)).map((f) => `  ${f.predicate}=${f.object_text} (${f.confidence})`).join('\n') : '  (none)'}
-
+${contactSignalBlock}
 PRE-COMPUTED SIGNALS (for context, not to copy):
   evidence_depth=${evidence_depth.toFixed(2)} (deterministic — count of substantive facts)
   recency=${recency.toFixed(2)} (deterministic — exponential decay on most recent fact)
@@ -784,6 +822,24 @@ export function personaMatch(roleText: string, targetRoles: string[], decisionPw
   return 0.2; // personas configured but this role doesn't match
 }
 
+// Facts every contact carries just from being linked (role/title/seniority,
+// the works_at edge itself, contact-info fields) — never "content" a person
+// said, so never worth judging for buying intent or surfacing to an account.
+const CONTACT_SEED_PREDICATES = new Set(['role', 'title', 'seniority', 'works_at', 'linkedin_url', 'prospect_id', 'email', 'is_a']);
+
+/**
+ * A contact's facts that are real content (a post, a quote, a job-change
+ * blurb) rather than bookkeeping/seed data. Single definition shared by
+ * scoreContact's signal-strength check and scoreEntity's linked-contact read
+ * — one bar for "does this count as something a person actually said,"
+ * not two definitions that can drift apart.
+ */
+export function contactContentFacts<T extends { predicate: string; object_text: string | null }>(facts: T[]): T[] {
+  return facts.filter((f) =>
+    !ADMIN_PREDICATES.has(f.predicate) && !CONTACT_SEED_PREDICATES.has(f.predicate) && (f.object_text ?? '').trim().length >= 40,
+  );
+}
+
 export async function scoreContact(
   supabase: SupabaseClient,
   workspace_id: string,
@@ -841,10 +897,7 @@ export async function scoreContact(
   // When the contact has real content (a social post, a quote, a job-change blurb
   // enriched onto it), a tiny LLM call rates how strongly it signals buying
   // intent for this workspace's pitch. The LLM fires ONLY when content exists.
-  const SEED = new Set(['role', 'title', 'seniority', 'works_at', 'linkedin_url', 'prospect_id', 'email', 'is_a']);
-  const contentFacts = facts.filter((f) =>
-    !ADMIN_PREDICATES.has(f.predicate) && !SEED.has(f.predicate) && (f.object_text ?? '').trim().length >= 40,
-  );
+  const contentFacts = contactContentFacts(facts);
   let signal_strength = 0.2;
   let llm_called = false;
   if (contentFacts.length) {

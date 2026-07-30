@@ -461,6 +461,24 @@ export interface ResearchAngle {
  *                      professional network the workspace's buyers post on).
  *                      Empty/unset = social angles are skipped entirely. The
  *                      contents are workspace config, never code.
+ *   contact_signal_share : share of searches_per_run spent searching what
+ *                      linked PEOPLE (not companies) have posted publicly,
+ *                      taken off the top before the account buckets above run
+ *                      on the remainder — same total spend, just some of it
+ *                      redirected. 0/unset = off (default), so no existing
+ *                      workspace's spend changes until this is turned on.
+ *   contact_signal_account_icp : a contact is only eligible once their account
+ *                      clears this score. Unset = reuse
+ *                      policy.routing.enrich_contacts_account_icp (0.6
+ *                      default), so there's one bar to reason about, not two.
+ *   contact_signal_cadence_days : how often an eligible contact gets
+ *                      re-searched. People post far less often than companies
+ *                      publish, so this runs independently of the account
+ *                      tier cadences above. Default 3.
+ *   contact_signal_max_age_days : freshness floor for a contact's own posts.
+ *                      Default 60 (vs 30 for company research) — same
+ *                      reasoning as the cadence: people post less often, a
+ *                      tighter floor would starve real results.
  */
 export interface ResearchPolicy {
   guidance?: string;
@@ -472,6 +490,10 @@ export interface ResearchPolicy {
   resolve_domains?: boolean;
   domain_backfill_per_day?: number;
   social_domains?: string[];
+  contact_signal_share?: number;
+  contact_signal_account_icp?: number;
+  contact_signal_cadence_days?: number;
+  contact_signal_max_age_days?: number;
   // Freshness controls for the per-account research path, all scopes including
   // own_site (only an UNDATED result is exempt — an evergreen page with no
   // byline; a dated result is held to the floor no matter which domain it's on).

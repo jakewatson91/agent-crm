@@ -38,7 +38,7 @@ import { createServerClient } from '@agent-crm/db';
 import {
   entityIdsOfType, recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS,
   getPolicy, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
-  RESEARCH_DISPATCH_CRON, runExaSearch, resolveEnvVar,
+  RESEARCH_DISPATCH_CRON, runExaSearch, resolveEnvVar, resolveContactStrategy, DEFAULT_THRESHOLDS,
 } from '@agent-crm/tools';
 import { inngest } from '../client.js';
 
@@ -149,7 +149,7 @@ function selectByBuckets(
   return [...chosen.values()];
 }
 
-interface DispatchItem { workspace_id: string; entity_id: string; entity_name: string; tier: Tier; angle_count: number }
+interface DispatchItem { workspace_id: string; entity_id: string; entity_name: string; tier: Tier | 'contact'; angle_count: number; kind?: 'account' | 'contact' }
 
 /**
  * Core selection + dispatch logic, factored out so it can run either on the
@@ -202,6 +202,8 @@ export async function runResearchDispatch(
   let skipped_no_domain = 0;
   let skipped_paused = 0;
   let auto_cleared_pauses = 0;
+  let contacts_eligible = 0;
+  let contacts_dispatched = 0;
 
   for (const ws of workspaces) {
     // A standing pause that covers research (scope 'research' or 'all')
@@ -394,7 +396,14 @@ export async function runResearchDispatch(
     const hotAngleCount = Math.min(Math.max(angles.length, 1), MAX_HOT_ANGLES);
 
     const policy = await getPolicy(supabase, ws.id);
-    const budget = policy.research?.searches_per_run ?? DEFAULT_RESEARCH_SEARCHES_PER_RUN;
+    const totalBudget = policy.research?.searches_per_run ?? DEFAULT_RESEARCH_SEARCHES_PER_RUN;
+    // Contact-signal search (what linked PEOPLE have posted, not the company)
+    // is carved off the top of this SAME budget, not a second pool -- total
+    // spend per tick is unchanged, some of it is redirected. 0/unset = off,
+    // so no existing workspace's spend changes until this is turned on.
+    const contactShare = Math.max(0, Math.min(1, policy.research?.contact_signal_share ?? 0));
+    const contactBudget = Math.round(contactShare * totalBudget);
+    const budget = totalBudget - contactBudget;
     const mix = normalizeMix(policy.research?.selection_mix);
 
     const chosen = selectByBuckets(candidates, { budget, mix, hotAngleCount });
@@ -407,7 +416,78 @@ export async function runResearchDispatch(
         entity_name: c.cand.entity_name,
         tier: c.cand.tier,
         angle_count: c.angle_count,
+        kind: 'account',
       });
+    }
+
+    // --- Contact-signal candidates: linked people at accounts that already
+    // cleared the score bar, ranked by their account's score (exploit only,
+    // no explore bucket). At today's real contact volumes -- low hundreds
+    // per workspace, capped further by MAX_CONTACTS_PER_ACCOUNT -- a full
+    // bucketed explore/exploit split (like accounts get above) is more
+    // machine than the problem needs: a plain rotation on a fixed cadence
+    // covers every eligible contact with budget to spare. If contact volume
+    // ever outgrows that, extend this with selectByBuckets the same way
+    // accounts already work above.
+    if (contactBudget > 0) {
+      const contactIcpBar = policy.research?.contact_signal_account_icp
+        ?? policy.routing?.enrich_contacts_account_icp
+        ?? DEFAULT_THRESHOLDS.ENRICH_CONTACTS_ACCOUNT_ICP;
+      const cadenceMs = (policy.research?.contact_signal_cadence_days ?? 3) * 86400 * 1000;
+      const contactAngleCount = resolveContactStrategy(
+        policy.research?.social_domains ?? [], policy.research?.contact_signal_max_age_days ?? 60,
+      ).length;
+
+      const allContactIds = (await entityIdsOfType(supabase, ws.id, 'contact')).slice(0, 5000);
+      if (allContactIds.length) {
+        const worksAtRows = await chunkedIn<{ subject_entity: string; object_entity: string | null }>(allContactIds, (chunk) =>
+          supabase.from('facts').select('subject_entity, object_entity')
+            .eq('workspace_id', ws.id).eq('predicate', 'works_at').is('supersedes', null)
+            .in('subject_entity', chunk));
+        const accountByContact = new Map<string, string>();
+        for (const r of worksAtRows) if (r.object_entity) accountByContact.set(r.subject_entity, r.object_entity);
+        const linkedContactIds = [...accountByContact.keys()];
+
+        if (linkedContactIds.length) {
+          const [contactEnts, lastContactResearch] = await Promise.all([
+            chunkedIn<{ id: string; name: string }>(linkedContactIds, (chunk) =>
+              supabase.from('entities').select('id, name').in('id', chunk)),
+            latestMarkerByEntity(supabase, ws.id, linkedContactIds, [
+              ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ACTIVITY_MARKERS.RESEARCH_COMPLETED,
+            ]),
+          ]);
+          const nameById = new Map(contactEnts.map((e) => [e.id, e.name]));
+
+          const eligible = linkedContactIds
+            .map((cid) => {
+              const accountId = accountByContact.get(cid)!;
+              return {
+                entity_id: cid,
+                entity_name: nameById.get(cid) ?? '(unknown)',
+                account_score: stateByEntity.get(accountId)?.score_total ?? 0,
+                last_research_at: lastContactResearch.get(cid) ?? 0,
+              };
+            })
+            .filter((c) => c.account_score >= contactIcpBar && now - c.last_research_at >= cadenceMs)
+            .sort((a, b) => b.account_score - a.account_score);
+          contacts_eligible += eligible.length;
+
+          let contactSpent = 0;
+          for (const c of eligible) {
+            if (contactSpent + contactAngleCount > contactBudget) break;
+            contactSpent += contactAngleCount;
+            contacts_dispatched++;
+            dispatch.push({
+              workspace_id: ws.id,
+              entity_id: c.entity_id,
+              entity_name: c.entity_name,
+              tier: 'contact',
+              angle_count: contactAngleCount,
+              kind: 'contact',
+            });
+          }
+        }
+      }
     }
   }
 
@@ -425,6 +505,7 @@ export async function runResearchDispatch(
           reason: `dispatcher:${d.tier}`,
           tier: d.tier,
           angle_count: d.angle_count,
+          kind: d.kind ?? 'account',
         },
       });
     } catch {
@@ -443,6 +524,8 @@ export async function runResearchDispatch(
     skipped_paused,
     auto_cleared_pauses,
     dispatch_errors,
+    contacts_eligible,
+    contacts_dispatched,
   };
 }
 

@@ -16,7 +16,7 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   callTool, recordActivityMarker, latestMarkerAt, ACTIVITY_MARKERS,
-  getPolicy, resolveEnvVar, resolveStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
+  getPolicy, resolveEnvVar, resolveStrategy, resolveContactStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
   dedupeResearchCandidates, DUP_LOOKBACK_DAYS, ageDecay,
   resolveDomainViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
@@ -35,6 +35,10 @@ const SEEN_WINDOW_DAYS = 30;
 // current trigger just because it's on the company's own domain.
 const DEFAULT_MAX_AGE_DAYS = 30;
 const DEFAULT_DECAY_HALF_LIFE_DAYS = 90;
+// People post far less often than companies publish, so a contact-kind run
+// gets its own, wider freshness floor by default. See policy.research
+// .contact_signal_max_age_days.
+const DEFAULT_CONTACT_MAX_AGE_DAYS = 60;
 
 /** Normalize a URL for exact same-source collapse: drop protocol, www, query, trailing slash. */
 function normalizeUrl(u: string): string {
@@ -119,11 +123,15 @@ export function buildAngleRequest(
   domain: string,
   keywords: string,
   social_domains: string[],
+  // The linked account's name, for a contact-kind angle's {company} token.
+  // Unused (and harmless to omit) for account-kind angles.
+  company?: string,
 ): { query: string; params: Parameters<typeof runExaSearch>[1] } | null {
   const query = angle.query_template
     .replaceAll('{entity}', entity_name)
     .replaceAll('{domain}', domain)
     .replaceAll('{keywords}', keywords)
+    .replaceAll('{company}', company ?? '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 300);
@@ -174,6 +182,10 @@ export interface EntityResearchParams {
   entity_name: string;
   reason: string;
   angle_count?: number;
+  // 'contact': entity_id names a person, not a company — searches what THEY
+  // have said publicly, scoped to their linked account for context. Default
+  // 'account' keeps every existing dispatch (and every prior behavior) unchanged.
+  kind?: 'account' | 'contact';
 }
 
 /**
@@ -184,7 +196,7 @@ export async function runEntityResearch(
   supabase: ReturnType<typeof createServerClient>,
   params: EntityResearchParams,
 ) {
-  const { workspace_id, entity_id, entity_name, reason, angle_count } = params;
+  const { workspace_id, entity_id, entity_name, reason, angle_count, kind = 'account' } = params;
   {
     {
       const actor = { workspace_id, actor_kind: 'agent' as const, actor_id: 'research_runner' };
@@ -227,9 +239,40 @@ export async function runEntityResearch(
         signal_types: icpSignalTypes,
       };
 
-      // Entity domain drives the own_site angle + collision guards.
-      const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
-      let domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+      // Entity domain drives the own_site angle + collision guards. A contact
+      // has no domain of its own — resolve the linked account instead across
+      // the works_at edge, so its domain scopes the search and its name/role
+      // ground the identity check below. Never duplicated data, just a read
+      // one hop over.
+      let domain = '';
+      let contactAccountName = '';
+      let contactRole = '';
+      if (kind === 'contact') {
+        const worksAt = await supabase.from('facts').select('object_entity')
+          .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
+          .eq('predicate', 'works_at').is('supersedes', null).limit(1).maybeSingle();
+        const accountId = worksAt.data?.object_entity as string | undefined;
+        if (accountId) {
+          const [acct, roleF] = await Promise.all([
+            supabase.from('entities').select('name, attributes').eq('id', accountId).maybeSingle(),
+            supabase.from('facts').select('object_text').eq('workspace_id', workspace_id)
+              .eq('subject_entity', entity_id).eq('predicate', 'role').is('supersedes', null).limit(1).maybeSingle(),
+          ]);
+          contactAccountName = (acct.data?.name as string) ?? '';
+          domain = ((acct.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+          contactRole = (roleF.data?.object_text as string) ?? '';
+        }
+        if (!contactAccountName) {
+          await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_ERROR, entity_id, {
+            message: 'contact has no linked account',
+            summary: 'research produced no searches',
+          });
+          return { ok: false, reason: 'no linked account' };
+        }
+      } else {
+        const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
+        domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+      }
 
       let searches = 0;
       const errors: string[] = [];
@@ -244,7 +287,7 @@ export async function runEntityResearch(
       // no marker and is counted with the angle errors below so the existing
       // pause-on-credit-wall logic still sees a fully-failed run.
       let resolver_spent = 0;
-      if (!domain && policy.research?.resolve_domains !== false) {
+      if (kind === 'account' && !domain && policy.research?.resolve_domains !== false) {
         const failedAt = await latestMarkerAt(supabase, workspace_id, entity_id, [ACTIVITY_MARKERS.DOMAIN_RESOLVE_FAILED]);
         const coolingDown = !!failedAt && Date.now() - Date.parse(failedAt) < RESOLVE_RETRY_DAYS * 86400 * 1000;
         if (!coolingDown) {
@@ -265,8 +308,18 @@ export async function runEntityResearch(
       // slot on zero searches. The resolver's search spends from the same
       // budget: a cold pick with angle_count=1 uses its tick on resolution
       // and researches on the next pick, which is fine and self-healing.
-      const allAngles = resolveStrategy(policy);
+      // Freshness controls (policy override, else defaults). Applies to every
+      // scope, including own_site — only an undated result is exempt (see gate
+      // below); a dated own-site post is bound by the same floor as news.
+      // Computed here (not just below) because a contact-kind strategy needs
+      // it to set the query-time recency filter on its angles.
+      const maxAgeDays = kind === 'contact'
+        ? (policy.research?.contact_signal_max_age_days ?? DEFAULT_CONTACT_MAX_AGE_DAYS)
+        : (policy.research?.max_age_days ?? DEFAULT_MAX_AGE_DAYS);
+      const halfLifeDays = policy.research?.decay_half_life_days ?? DEFAULT_DECAY_HALF_LIFE_DAYS;
+
       const socialDomains = (policy.research?.social_domains ?? []).filter(Boolean);
+      const allAngles = kind === 'contact' ? resolveContactStrategy(socialDomains, maxAgeDays) : resolveStrategy(policy);
       const runnable = allAngles.filter((a) =>
         (a.domain_scope !== 'own_site' || !!domain) &&
         (a.domain_scope !== 'social' || socialDomains.length > 0));
@@ -302,11 +355,8 @@ export async function runEntityResearch(
         if (id) seenIds.add(id);
       }
 
-      // Freshness controls (policy override, else defaults). Applies to every
-      // scope, including own_site — only an undated result is exempt (see gate
-      // below); a dated own-site post is bound by the same floor as news.
-      const maxAgeDays = policy.research?.max_age_days ?? DEFAULT_MAX_AGE_DAYS;
-      const halfLifeDays = policy.research?.decay_half_life_days ?? DEFAULT_DECAY_HALF_LIFE_DAYS;
+      // maxAgeDays/halfLifeDays computed above (kind-aware, needed earlier by
+      // the strategy resolver too).
       const staleCutoffMs = Date.now() - maxAgeDays * 86400 * 1000;
 
       // --- Fetch phase: collect candidates, separating own-site (collision-proof,
@@ -316,7 +366,7 @@ export async function runEntityResearch(
       const ownSiteSnippets: string[] = [];
       let filtered_stale = 0;
       for (const angle of toRun) {
-        const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains);
+        const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains, kind === 'contact' ? contactAccountName : undefined);
         if (!built) continue;
         searches++;
         const res = await runExaSearch(apiKey, built.params);
@@ -365,7 +415,15 @@ export async function runEntityResearch(
         // (no facts, own-site not indexed) still anchors to the right company.
         let grounding = ownSiteSnippets.slice(0, 2).join(' | ');
         if (!grounding && domain) grounding = await fetchEntityGrounding(apiKey, entity_name, domain);
-        const context = await entityContext(supabase, workspace_id, entity_id, grounding ? [grounding] : []);
+        const factsContext = await entityContext(supabase, workspace_id, entity_id, grounding ? [grounding] : []);
+        // A contact's own facts (role/email/seed data) rarely carry the
+        // descriptive predicates entityContext looks for, so lead with the
+        // one line that actually disambiguates a person: their role and
+        // company. factsContext still rides along — a prior research pass may
+        // have already put something useful on this contact.
+        const context = kind === 'contact'
+          ? [`${contactRole ? `${contactRole} at` : 'Works at'} ${contactAccountName}.`, factsContext].filter(Boolean).join(' || ').slice(0, 600)
+          : factsContext;
         const rel = await filterResultsByEntity({ name: entity_name, domain, context, relevance }, allForGate);
         for (const id of rel.accepted) acceptedIds.add(id);
         hookClassById = rel.classById;
@@ -443,6 +501,7 @@ export async function runEntityResearch(
             structured_tags: {
               signal_source: 'research',
               research_angle: c.angleId,
+              research_kind: kind,
               exa_id: c.er.id,
               url: c.er.url,
               published_at: c.er.publishedDate ?? null,

@@ -64,6 +64,43 @@ export const BASELINE_ANGLES: ResearchAngle[] = [
 
 const VALID_SCOPES = new Set(['own_site', 'news', 'open_web', 'social']);
 
+/**
+ * Fixed angle set for searching a linked PERSON rather than the company —
+ * what a real named contact has posted publicly. Unlike the company strategy
+ * above, this is not AI-planned per workspace: "find what this named person
+ * said" is a generic query shape, not something that varies by vertical, so
+ * a fixed template avoids a planner LLM call for a case that doesn't need
+ * one. {entity} substitutes the contact's name, {company} their account's
+ * name (see buildAngleRequest in research.ts). maxAgeDays is threaded in so
+ * the query-time Exa filter matches policy.research.contact_signal_max_age_days
+ * rather than the company default.
+ */
+export function resolveContactStrategy(socialDomains: string[], maxAgeDays: number): ResearchAngle[] {
+  const angles: ResearchAngle[] = [
+    {
+      id: 'contact_public_posts',
+      label: 'What they have posted publicly',
+      query_template: '{entity} {company} post OR interview OR talk OR wrote OR announced',
+      domain_scope: 'open_web',
+      recency_days: maxAgeDays,
+      num_results: 3,
+      enabled: true,
+    },
+  ];
+  if (socialDomains.length) {
+    angles.push({
+      id: 'contact_social_posts',
+      label: 'Their social posts',
+      query_template: '{entity} {company}',
+      domain_scope: 'social',
+      recency_days: maxAgeDays,
+      num_results: 3,
+      enabled: true,
+    });
+  }
+  return angles;
+}
+
 function slugify(s: string, fallback: string): string {
   const out = s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
   return out || fallback;

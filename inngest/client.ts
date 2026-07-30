@@ -72,8 +72,10 @@ export type Events = {
       entity_id: string;
       entity_name: string;
       reason: string;
-      tier?: 'hot' | 'default' | 'cold';
+      tier?: 'hot' | 'default' | 'cold' | 'contact';
       angle_count?: number;
+      // 'contact': entity_id names a person, not a company. Default 'account'.
+      kind?: 'account' | 'contact';
     };
   };
   // Action-selector emits this when an account fits but lacks a strong enough

@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -599,7 +599,7 @@ export async function runAgent(
   // behaviors (claim_poster, enricher) don't need either — they're not making
   // judgment calls about who to send to.
   let pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown>; draft_excerpt: string | null }> = [];
-  let contacts: Array<{ name: string; email: string; role: string }> = [];
+  let contacts: Array<{ name: string; email: string; role: string; recent_signal?: string }> = [];
   if (behavior === 'drafter') {
     // Hunter pre-flight: fetch contacts here, not during enrichment. The
     // enricher fires on every signal; the drafter fires only when the agent
@@ -647,7 +647,11 @@ export async function runAgent(
         // chain, not the current value, so filtering on it would hand the
         // drafter a replaced address or a stale job title — and this is the
         // path that picks the outreach template and the send address.
-        const [emailFacts, roleFacts, contactEnts] = await Promise.all([
+        // contentFactsRes: each linked contact's own facts, filtered down to
+        // real content (a post, a quote -- not role/email bookkeeping) by the
+        // same contactContentFacts() definition scoring.ts uses. Read across
+        // the works_at edge, never duplicated onto the account.
+        const [emailFacts, roleFacts, contactEnts, contentFactsRes] = await Promise.all([
           supabase.from('facts').select('subject_entity, object_text, observed_at')
             .eq('workspace_id', payload.workspace_id).in('subject_entity', contactIds)
             .eq('predicate', 'email'),
@@ -655,6 +659,8 @@ export async function runAgent(
             .eq('workspace_id', payload.workspace_id).in('subject_entity', contactIds)
             .eq('predicate', 'role'),
           supabase.from('entities').select('id, name').in('id', contactIds),
+          supabase.from('facts').select('id, subject_entity, predicate, object_text, observed_at, supersedes')
+            .eq('workspace_id', payload.workspace_id).in('subject_entity', contactIds),
         ]);
         const emailById = new Map<string, string>();
         const roleById = new Map<string, string>();
@@ -671,9 +677,22 @@ export async function runAgent(
         latestInto((emailFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, emailById);
         latestInto((roleFacts.data ?? []) as Array<{ subject_entity: string; object_text: string; observed_at: string }>, roleById);
         for (const r of (contactEnts.data ?? []) as Array<{ id: string; name: string }>) nameById.set(r.id, r.name);
+
+        const rawContentFacts = (contentFactsRes.data ?? []) as Array<{ id: string; subject_entity: string; predicate: string; object_text: string | null; observed_at: string; supersedes: string | null }>;
+        const contentSupersededIds = new Set(rawContentFacts.map((f) => f.supersedes).filter((x): x is string => !!x));
+        const activeContentFacts = contactContentFacts(rawContentFacts.filter((f) => !contentSupersededIds.has(f.id)));
+        // Newest qualifying content per contact wins.
+        const recentSignalById = new Map<string, string>();
+        for (const f of [...activeContentFacts].sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))) {
+          if (!recentSignalById.has(f.subject_entity) && f.object_text) recentSignalById.set(f.subject_entity, f.object_text);
+        }
+
         contacts = contactIds
           .filter((id) => emailById.has(id))
-          .map((id) => ({ name: nameById.get(id) ?? '(unknown)', email: emailById.get(id)!, role: roleById.get(id) ?? '' }))
+          .map((id) => ({
+            name: nameById.get(id) ?? '(unknown)', email: emailById.get(id)!, role: roleById.get(id) ?? '',
+            recent_signal: recentSignalById.get(id),
+          }))
           .slice(0, 3);
       }
     } catch { /* non-fatal */ }
@@ -1426,7 +1445,7 @@ export function buildUserPrompt(
   entity: { id: string; name: string; attributes: unknown },
   activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number; source_date?: string }>,
   pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown>; draft_excerpt?: string | null }> = [],
-  contacts: Array<{ name: string; email: string; role: string }> = [],
+  contacts: Array<{ name: string; email: string; role: string; recent_signal?: string }> = [],
   recommended: FactScore[] = [],
   // Drafters get attributes as readable prose so the email never echoes internal
   // field names ("domain", "stack"). The enricher keeps raw JSON keys — it needs
@@ -1457,7 +1476,7 @@ export function buildUserPrompt(
     : '';
 
   const contactsBlock = contacts.length
-    ? `\nCONTACTS (linked to this account — pick the best fit for the role you're targeting):\n${contacts.map((c) => `  ${c.name} <${c.email}>${c.role ? ` — ${c.role}` : ''}`).join('\n')}\n`
+    ? `\nCONTACTS (linked to this account — pick the best fit for the role you're targeting):\n${contacts.map((c) => `  ${c.name} <${c.email}>${c.role ? ` — ${c.role}` : ''}${c.recent_signal ? `\n    recently said: ${c.recent_signal}` : ''}`).join('\n')}\n`
     : '';
 
   const recommendedBlock = recommended.length
