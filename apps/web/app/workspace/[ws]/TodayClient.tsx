@@ -565,8 +565,20 @@ function DraftRow({ draft, ws }: { draft: TodayDraft; ws: string }) {
         fontSize: '.84rem', color: 'var(--text-2)', whiteSpace: 'pre-wrap', lineHeight: 1.5,
         background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '.6rem .75rem',
       }}>
-        {draft.body}
+        {draft.cites.length > 0 ? <CitedText text={draft.body} cites={draft.cites} /> : draft.body}
       </div>
+      {draft.cites.length > 0 && (
+        <div style={{ marginTop: '.4rem' }}>
+          <WhyThis
+            postId={draft.post_id}
+            workspace_id={ws}
+            entity_id={draft.entity_id}
+            ts={draft.createdAt}
+            reasoning={draft.reasoning}
+            cites={draft.cites}
+          />
+        </div>
+      )}
     </div>
   );
 }

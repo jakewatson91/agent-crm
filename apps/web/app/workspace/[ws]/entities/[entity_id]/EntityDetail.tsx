@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CiteChain } from '../../../../_components/CiteChain';
 import { Timestamp } from '../../../../_components/Timestamp';
 import { WhyThis } from '../../../../_components/WhyThis';
+import { CitedText } from '../../../../_components/CitedText';
 import { DraftActions } from '../../../../_components/DraftActions';
 import { lowConfLabel } from '../../../../_lib/confidence';
 import { bandOf, bandColor, BAND_HEADLINE, BAND_VERDICT } from '../../../../_lib/bands';
@@ -622,7 +623,7 @@ function ActivityRow({
         </span>
       </div>
       <div style={{ fontSize: '.85rem', whiteSpace: 'pre-wrap', lineHeight: 1.55, fontFamily: isDraft ? 'var(--font-mono)' : 'var(--font-sans)', color: 'var(--text)' }}>
-        {display}
+        {isDraft && item.cites.length > 0 ? <CitedText text={display} cites={item.cites} /> : display}
       </div>
       {isDraft && <DraftActions postId={item.id} workspaceId={ws} />}
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.5rem', flexWrap: 'wrap' }}>

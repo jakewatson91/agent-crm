@@ -133,6 +133,8 @@ export interface TodayDraft {
   entity_id: string;
   entity_name: string;
   body: string;
+  cites: string[];
+  reasoning: string | null;
   createdAt: string;
   pending: boolean;
 }
@@ -386,7 +388,7 @@ interface SignalRow { id: string; entity_id: string | null; type: string; magnit
 interface FactRow { id: string; predicate: string; subject_entity: string; object_text: string | null; object_entity: string | null; observed_at: string }
 interface PostRow {
   id: string; kind: string; body: string | null; cites: string[] | null; created_at: string;
-  author_id: string; channels: { account_entity_id: string } | null;
+  author_id: string; parent_post_id: string | null; channels: { account_entity_id: string } | null;
 }
 interface GateRow {
   id: string; policy: string; decision: string | null; requested_at: string; decided_at: string | null;
@@ -427,7 +429,7 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       .eq('workspace_id', ws).gte('observed_at', since).lt('observed_at', until)
       .order('observed_at', { ascending: true }).range(f, t)),
     fetchAll<PostRow>((f, t) => sb.from('channel_posts')
-      .select('id, kind, body, cites, created_at, author_id, channels!inner(workspace_id, account_entity_id)')
+      .select('id, kind, body, cites, created_at, author_id, parent_post_id, channels!inner(workspace_id, account_entity_id)')
       .eq('channels.workspace_id', ws)
       .gte('created_at', since).lt('created_at', until)
       .order('created_at', { ascending: true }).range(f, t) as unknown as PromiseLike<{ data: PostRow[] | null; error: { message: string } | null }>),
@@ -496,6 +498,12 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
   const pendingPostIds = new Set(
     ((pendingGates.data ?? []) as GateRow[]).map((g) => g.channel_post_id).filter(Boolean) as string[],
   );
+  // A `decision` child post is the plain-language reasoning for its parent
+  // draft (same parent-collapse convention as feed_items.ts / WhyThis elsewhere).
+  const reasoningByParent = new Map<string, string>();
+  for (const p of posts) {
+    if (p.parent_post_id && p.kind === 'decision') reasoningByParent.set(p.parent_post_id, p.body ?? '');
+  }
 
   // A refusal to draft shows up two ways: the action selector skipping an
   // account outright, and the drafter reaching the model and choosing not to
@@ -1003,6 +1011,8 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     entity_id: p.channels?.account_entity_id ?? '',
     entity_name: N(p.channels?.account_entity_id),
     body: (p.body ?? '').trim(),
+    cites: p.cites ?? [],
+    reasoning: reasoningByParent.get(p.id) ?? null,
     createdAt: p.created_at,
     pending: pendingPostIds.has(p.id),
   }));

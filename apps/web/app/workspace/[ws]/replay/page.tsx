@@ -7,6 +7,7 @@ import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 import { CiteChain } from '../../../_components/CiteChain';
 import { WhyThis } from '../../../_components/WhyThis';
+import { CitedText } from '../../../_components/CitedText';
 
 interface Summary {
   ts: string;
@@ -215,7 +216,10 @@ export default function ReplayPage() {
                       lineHeight: 1.5,
                       fontFamily: p.kind === 'touch_draft' ? 'var(--font-mono)' : 'var(--font-sans)',
                     }}>
-                      {p.body.length > 280 ? p.body.slice(0, 280) + '…' : p.body}
+                      {(() => {
+                        const shown = p.body.length > 280 ? p.body.slice(0, 280) + '…' : p.body;
+                        return p.kind === 'touch_draft' && p.cites.length > 0 ? <CitedText text={shown} cites={p.cites} /> : shown;
+                      })()}
                     </div>
                     {p.cites.length > 0 && p.entity_id && (
                       <div style={{ marginTop: '.35rem' }}>
