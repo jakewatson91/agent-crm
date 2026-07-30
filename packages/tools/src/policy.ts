@@ -472,11 +472,12 @@ export interface ResearchPolicy {
   resolve_domains?: boolean;
   domain_backfill_per_day?: number;
   social_domains?: string[];
-  // Freshness controls for the per-account research path (news/open_web/social;
-  // own_site is exempt — a company's own pages are timeless and often undated).
-  //   max_age_days         : hard floor. A non-own_site result whose source
-  //                          published_at is older than this is dropped before it
-  //                          becomes a signal. Default 365.
+  // Freshness controls for the per-account research path, all scopes including
+  // own_site (only an UNDATED result is exempt — an evergreen page with no
+  // byline; a dated result is held to the floor no matter which domain it's on).
+  //   max_age_days         : hard floor. A result whose source published_at is
+  //                          older than this is dropped before it becomes a
+  //                          signal. Default 30.
   //   decay_half_life_days : signal magnitude halves every N days of source age,
   //                          so an older-but-passing source scores lower than a
   //                          fresh one. Default 90.

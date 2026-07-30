@@ -26,9 +26,14 @@ import { inngest } from '../client.js';
 
 const SEEN_WINDOW_DAYS = 30;
 // Freshness defaults for the research path (policy.research.max_age_days /
-// decay_half_life_days override). A non-own_site source older than the floor
-// never becomes a signal; magnitude halves every half-life days of source age.
-const DEFAULT_MAX_AGE_DAYS = 365;
+// decay_half_life_days override). A dated source older than the floor never
+// becomes a signal, regardless of scope; magnitude halves every half-life
+// days of source age. An undated page is exempt from the floor (own-site
+// evergreen pages — customer lists, general product pages — legitimately
+// carry no date), but a page that DOES carry a date is held to the same
+// month-scale bar an outreach hook needs: a two-year-old blog post is not a
+// current trigger just because it's on the company's own domain.
+const DEFAULT_MAX_AGE_DAYS = 30;
 const DEFAULT_DECAY_HALF_LIFE_DAYS = 90;
 
 /** Normalize a URL for exact same-source collapse: drop protocol, www, query, trailing slash. */
@@ -131,10 +136,13 @@ export function buildAngleRequest(
 
   if (angle.domain_scope === 'own_site') {
     if (!domain) return null; // can't scope to a site we don't know
-    // No recency on own-site: a company's own blog/product/customer pages are worth
-    // surfacing regardless of age, and date-filtering an own-domain search tends to
-    // return nothing (their pages aren't always freshly dated/indexed).
-    return { query, params: { query, num_results, include_domains: [domain] } };
+    // Only filter at query time when the angle set recency_days (a "recent
+    // posts/launches" angle should); an angle that omits it is deliberately
+    // evergreen (a customer/case-study list). Either way the post-fetch age
+    // gate still holds: a dated result past the freshness floor is dropped
+    // regardless of scope, so an evergreen angle can't smuggle in an old
+    // dated post just because no start_published_date was sent here.
+    return { query, params: { query, num_results, include_domains: [domain], start_published_date } };
   }
   if (angle.domain_scope === 'news') {
     return { query, params: { query, num_results, category: 'news', start_published_date, include_text: [entity_name] } };
@@ -294,9 +302,9 @@ export async function runEntityResearch(
         if (id) seenIds.add(id);
       }
 
-      // Freshness controls (policy override, else defaults). own_site is exempt
-      // from the age gate below — a company's own pages are timeless and often
-      // undated — so this only bounds news/open_web/social.
+      // Freshness controls (policy override, else defaults). Applies to every
+      // scope, including own_site — only an undated result is exempt (see gate
+      // below); a dated own-site post is bound by the same floor as news.
       const maxAgeDays = policy.research?.max_age_days ?? DEFAULT_MAX_AGE_DAYS;
       const halfLifeDays = policy.research?.decay_half_life_days ?? DEFAULT_DECAY_HALF_LIFE_DAYS;
       const staleCutoffMs = Date.now() - maxAgeDays * 86400 * 1000;
@@ -318,10 +326,12 @@ export async function runEntityResearch(
         }
         for (const er of res.results) {
           if (!er.id || seenIds.has(er.id)) continue;
-          // Age gate: drop a non-own_site result whose source is older than the
-          // floor (a 2013 news article is not an outreach hook). A missing or
-          // unparseable date is kept — undated evergreen pages are legitimate.
-          if (angle.domain_scope !== 'own_site' && er.publishedDate) {
+          // Age gate: drop a result whose source is older than the floor (a
+          // 2021 launch announcement is not an outreach hook, even from the
+          // company's own blog). A missing or unparseable date is kept —
+          // undated evergreen pages (own-site customer lists, product pages)
+          // are legitimate regardless of scope.
+          if (er.publishedDate) {
             const pub = Date.parse(er.publishedDate);
             if (Number.isFinite(pub) && pub < staleCutoffMs) { filtered_stale++; continue; }
           }

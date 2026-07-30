@@ -42,7 +42,7 @@ export const BASELINE_ANGLES: ResearchAngle[] = [
     label: 'Their own posts & launches',
     query_template: '{entity} blog OR launch OR announcement OR customer OR case study OR changelog OR product',
     domain_scope: 'own_site',
-    recency_days: 365,
+    recency_days: 30,
     num_results: 5,
   },
   {
@@ -50,7 +50,7 @@ export const BASELINE_ANGLES: ResearchAngle[] = [
     label: 'In the news',
     query_template: '{entity}',
     domain_scope: 'news',
-    recency_days: 120,
+    recency_days: 30,
     num_results: 5,
   },
   {
@@ -141,7 +141,7 @@ Each angle has:
     "own_site"  -> restricted to the company's own website (blog, launches, customers). Highest signal.
     "news"      -> press / news coverage about the company by others.
     "open_web"  -> the open web (third-party write-ups, customer lists, comparisons).
-- "recency_days": set when freshness matters (news, launches: 90-180). For "own_site" angles prefer a generous window (365) or omit it — a company's own blog/product/customer pages are worth surfacing even if not brand-new. Omit for evergreen pages (customer lists, case studies).
+- "recency_days": a hard freshness floor — any dated result older than this (or older than 30 days if omitted on a non-evergreen angle) is dropped, regardless of domain_scope. Set it to 30 for news, launches, and "own_site" angles that target recent posts. Omit ONLY for a deliberately evergreen "own_site" angle (customer lists, general product pages) — an omitted value exempts UNDATED results from the floor, but a dated result on that same angle is still held to 30 days.
 - "id": short slug. "label": short human title. "num_results": 3-5.
 
 Do NOT search for jobs/careers/hiring — a separate connector covers hiring. Avoid aggregator, profile, and directory pages (funding databases, professional-network company pages) — they restate what we already know and give no hook.
@@ -155,7 +155,7 @@ Return JSON only: {"angles":[{"id","label","query_template","domain_scope","rece
 // can't plan angles the runner would skip.
 function socialScopeAddendum(domains: string[]): string {
   return `ADDITIONAL SCOPE available for this workspace:
-    "social"    -> restricted to: ${domains.join(', ')}. Posts, talks, and interviews BY the prospect company's founders and executives — the concrete trigger a first-touch message can reference ("saw your post on X"). Include exactly ONE social angle. Phrase its query_template to surface a person speaking (post, talk, interview, panel, announcement by {entity} leadership), NOT the company's profile page. This is the one exception to the profile/directory-page rule above. Exec posts go stale fast: set recency_days 30-60.`;
+    "social"    -> restricted to: ${domains.join(', ')}. Posts, talks, and interviews BY the prospect company's founders and executives — the concrete trigger a first-touch message can reference ("saw your post on X"). Include exactly ONE social angle. Phrase its query_template to surface a person speaking (post, talk, interview, panel, announcement by {entity} leadership), NOT the company's profile page. This is the one exception to the profile/directory-page rule above. Exec posts go stale fast: set recency_days 30.`;
 }
 
 function buildUserPayload(ctx: PlannerContext): string {
@@ -360,7 +360,7 @@ TARGET COMPANY:
 - about: ${target.context || '(nothing known)'}
 
 A page is a MATCH only if ${hasRelevance ? 'ALL THREE' : 'BOTH'} hold:
-1. It is about THIS company (the one at that website / fitting that description). A company in a different industry, sector, or country that happens to share the name is NOT a match. A page hosted on the target's own website is by definition this company — treat condition 1 as satisfied for it and judge it on the remaining conditions only. ${unsureRule}
+1. It is about THIS company (the one at that website / fitting that description). A company in a different industry, sector, or country that happens to share the name is NOT a match. A page hosted on the target's own website is by definition this company — treat condition 1 as satisfied for it and judge it on the remaining conditions only. NOT a match: a page whose actual subject is a DIFFERENT company — a vendor's case study, press release, or write-up about that other company's project — where the target is merely named in passing as one of that company's customers, channels, brands, or products. The company the page is describing and solving problems FOR must BE the target, not a third party the target happens to be mentioned under. ${unsureRule}
 2. It carries substantive content: news, a launch, a blog post, a case study, an interview, a partnership, a review with real detail. Directory listings, tool aggregators, company-profile pages, and databases that merely restate name + category + description are NOT a match even when they're about the right company — they contain nothing we don't already know.${relevanceCondition}
 
 For each matching page, also classify what kind of hook it carries:
