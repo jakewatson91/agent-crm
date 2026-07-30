@@ -19,6 +19,8 @@ import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../_lib/swr';
 import { DraftActions } from '../../_components/DraftActions';
 import { CitedText } from '../../_components/CitedText';
+import { CiteChain } from '../../_components/CiteChain';
+import { WhyThis } from '../../_components/WhyThis';
 import { useSetPageContext, type PageContext } from '../../_components/PageContext';
 import { bandOf, BAND_HEADLINE, bandColor } from '../../_lib/bands';
 import { humanizeKey } from '../../_lib/labels';
@@ -444,13 +446,30 @@ function MoverCard({ move, ws }: { move: TodayMove; ws: string }) {
           Moved on <b style={{ color: 'var(--text)' }}>{(SCORE_DIMENSIONS[move.driver.key]?.label ?? humanizeKey(move.driver.key)).toLowerCase()}</b>
           {' '}<span className="mono muted">{move.driver.prev.toFixed(2)} → {move.driver.next.toFixed(2)}</span>
           {SCORE_DIMENSIONS[move.driver.key] && <span className="muted"> · {SCORE_DIMENSIONS[move.driver.key]!.help}</span>}
+          {move.driver.fact_ids && move.driver.fact_ids.length > 0 && (
+            <span style={{ marginLeft: '.4rem', display: 'inline-flex', gap: '.25rem' }}>
+              {move.driver.fact_ids.map((id) => <CiteChain key={id} fact_id={id} label="trace" />)}
+            </span>
+          )}
         </div>
       )}
 
       {move.claim && (
-        <div style={{ marginTop: '.45rem', display: 'flex', gap: '.45rem', alignItems: 'baseline' }}>
-          <span className="badge badge-blue" style={{ flexShrink: 0 }}>new info</span>
-          <span style={{ fontSize: '.88rem', color: 'var(--text-2)', lineHeight: 1.5 }}>{move.claim.body}</span>
+        <div style={{ marginTop: '.45rem' }}>
+          <div style={{ display: 'flex', gap: '.45rem', alignItems: 'baseline' }}>
+            <span className="badge badge-blue" style={{ flexShrink: 0 }}>new info</span>
+            <span style={{ fontSize: '.88rem', color: 'var(--text-2)', lineHeight: 1.5 }}>{move.claim.body}</span>
+          </div>
+          <div style={{ marginTop: '.3rem' }}>
+            <WhyThis
+              postId={move.claim.post_id}
+              workspace_id={ws}
+              entity_id={move.entity_id}
+              ts={move.claim.created_at}
+              reasoning={null}
+              cites={move.claim.cites}
+            />
+          </div>
         </div>
       )}
 
@@ -459,11 +478,16 @@ function MoverCard({ move, ws }: { move: TodayMove; ws: string }) {
       )}
 
       {move.facts.length > 0 && (
-        <div style={{ marginTop: '.5rem', display: 'flex', gap: '.3rem', flexWrap: 'wrap' }}>
-          {move.facts.map((f, i) => (
-            <span key={`${f.predicate}-${i}`} className="chip" title={f.object}>
-              {humanizeKey(f.predicate)}: {f.object.length > 42 ? `${f.object.slice(0, 42)}…` : f.object}
-            </span>
+        <div style={{ marginTop: '.5rem', display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
+          {move.facts.map((f) => (
+            <div key={f.id}>
+              <span className="chip" title={f.object}>
+                {humanizeKey(f.predicate)}: {f.object.length > 42 ? `${f.object.slice(0, 42)}…` : f.object}
+              </span>
+              <div style={{ marginTop: '.15rem' }}>
+                <CiteChain fact_id={f.id} label="trace" />
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -658,12 +682,15 @@ function LearnedCard({ row, ws }: { row: TodayLearned; ws: string }) {
         {row.name}
       </Link>
       <div style={{ marginTop: '.4rem', display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
-        {row.facts.map((f, i) => (
-          <div key={`${f.predicate}-${i}`} style={{ fontSize: '.82rem', lineHeight: 1.4 }}>
+        {row.facts.map((f) => (
+          <div key={f.id} style={{ fontSize: '.82rem', lineHeight: 1.4 }}>
             <span className={`badge ${f.pain ? 'badge-coral' : 'badge-mute'}`} style={{ marginRight: '.35rem' }}>
               {f.pain ? 'problem' : humanizeKey(f.predicate)}
             </span>
             <span style={{ color: 'var(--text-2)' }}>{f.object}</span>
+            <span style={{ marginLeft: '.4rem' }}>
+              <CiteChain fact_id={f.id} label="trace" />
+            </span>
           </div>
         ))}
       </div>

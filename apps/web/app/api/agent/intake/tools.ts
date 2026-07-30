@@ -156,11 +156,18 @@ async function queryEntities(
       .select('id, name, attributes')
       .eq('id', filter.id).maybeSingle();
     if (!ent.data) return { scope: 'entities', rows: [], error: 'entity not found' };
-    const facts = await ctx.supabase.from('facts')
-      .select('id, predicate, object_text, confidence, observed_at')
-      .eq('subject_entity', filter.id).is('supersedes', null).limit(50);
+    // `supersedes is null` returns the STALE ORIGINAL fact, not the current one
+    // (supersede_fact writes the new row pointing back at the old id) - the
+    // current fact is whichever one nothing else points to. Same convention as
+    // reads.ts getEntity / relations.ts excludeSuperseded.
+    const factRows = await ctx.supabase.from('facts')
+      .select('id, predicate, object_text, confidence, observed_at, supersedes')
+      .eq('subject_entity', filter.id).limit(500);
+    const allFacts = (factRows.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; supersedes: string | null }>;
+    const supersededIds = new Set(allFacts.map((f) => f.supersedes).filter((x): x is string => !!x));
+    const facts = allFacts.filter((f) => !supersededIds.has(f.id)).slice(0, 50);
     const types = await getEntityTypes(ctx.supabase, filter.id);
-    return { scope: 'entities', rows: [{ ...ent.data, kind: types[0] ?? 'entity', types, facts: facts.data ?? [] }] };
+    return { scope: 'entities', rows: [{ ...ent.data, kind: types[0] ?? 'entity', types, facts }] };
   }
 
   // 2) Name match — fuzzy ILIKE.

@@ -151,6 +151,15 @@ export interface ScoreBreakdown {
    * so graph_proximity has no neighbours to average.
    */
   unknown_dims?: string[];
+  /**
+   * Fact ids that fed a dimension's number, when known - lets the UI cite the
+   * specific facts behind a score move instead of just showing the delta.
+   * Only graph_proximity is populated today: it's a plain mean over neighbor
+   * icp_fit facts, so the contributing ids are known outright. The LLM-judged
+   * dimensions (industry_match/stage_match/signal_strength) don't yet capture
+   * which facts the rubric leaned on.
+   */
+  evidence_fact_ids?: { graph_proximity?: string[] };
 }
 
 export interface EntityScore {
@@ -447,6 +456,7 @@ export async function scoreEntity(
           // that has since gained a contact or a ground-truth attribute becomes
           // measurable on that dimension even when the LLM judgment is reused.
           unknown_dims,
+          evidence_fact_ids: { graph_proximity: graphRes.evidence_fact_ids },
         };
         const icp_total = combineSubScores(breakdown, weights);
         return {
@@ -511,6 +521,7 @@ export async function scoreEntity(
       // No unknown_dims here on purpose. The zeros above are this branch's
       // verdict — three embedding perspectives unanimously disagreed with the
       // ICP — not gaps in what we know, so they belong in the mean.
+      evidence_fact_ids: { graph_proximity: graphRes.evidence_fact_ids },
     };
     const icp_total = combineSubScores(breakdown, weights);
     return {
@@ -623,6 +634,7 @@ Score this account on the three rubric dimensions.`;
     graph_proximity: graph,
     rrf_prefilter,
     unknown_dims,
+    evidence_fact_ids: { graph_proximity: graphRes.evidence_fact_ids },
   };
 
   const icp_total = combineSubScores(breakdown, weights);
@@ -849,6 +861,7 @@ export async function scoreContact(
     recency,
     graph_proximity: account_fit,
     rrf_prefilter: 0,
+    evidence_fact_ids: { graph_proximity: graphRes.evidence_fact_ids },
   };
   const total = combineSubScores(breakdown, weights);
   return {

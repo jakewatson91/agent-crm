@@ -12,6 +12,7 @@
  */
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
+import { CiteChain } from '../../../../_components/CiteChain';
 
 export interface GraphNeighbor {
   entity_id: string;
@@ -19,6 +20,7 @@ export interface GraphNeighbor {
   kind: string;
   rel: string; // human relationship label ("works at", "invested in", …)
   confidence: number;
+  via_fact_id: string;
 }
 
 const HEIGHT = 340;
@@ -76,6 +78,7 @@ export function RelationshipGraph({
   });
 
   return (
+    <>
     <div
       ref={wrapRef}
       role="group"
@@ -162,5 +165,18 @@ export function RelationshipGraph({
         @media (prefers-reduced-motion: reduce) { .graph-node { transition: none; } .graph-node:hover { transform: translate(-50%,-50%); } }
       `}</style>
     </div>
+
+    {shown.length > 0 && (
+      <div style={{ marginTop: '.5rem', display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+        {shown.map((n) => (
+          <div key={n.entity_id} style={{ display: 'flex', gap: '.4rem', alignItems: 'baseline', flexWrap: 'wrap', fontSize: '.74rem' }}>
+            <span className="subtle">{n.rel} →</span>
+            <Link href={`/workspace/${ws}/entities/${n.entity_id}`} style={{ color: 'var(--text)' }}>{n.name}</Link>
+            <CiteChain fact_id={n.via_fact_id} label="trace" />
+          </div>
+        ))}
+      </div>
+    )}
+    </>
   );
 }

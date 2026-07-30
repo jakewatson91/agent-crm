@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
@@ -87,7 +88,13 @@ function SignalDrawer({ sourceId, ws, signals7d }: { sourceId: string; ws: strin
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <span style={{ color: 'var(--text)', fontWeight: 500 }}>
-                  {sig.entity_name ?? <span style={{ color: 'var(--text-3)' }}>unlinked</span>}
+                  {sig.entity_id ? (
+                    <Link href={`/workspace/${ws}/entities/${sig.entity_id}`} style={{ color: 'var(--text)' }}>
+                      {sig.entity_name ?? sig.entity_id.slice(0, 8)}
+                    </Link>
+                  ) : (
+                    <span style={{ color: 'var(--text-3)' }}>unlinked</span>
+                  )}
                 </span>
                 {sig.body && (
                   <span style={{ color: 'var(--text-2)', marginLeft: '.4rem' }}>

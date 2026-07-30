@@ -257,7 +257,7 @@ export function EntityDetail({
     .map((f) => {
       const key = f.predicate.replace(/^score_/, '');
       const meta = SCORE_DIMENSIONS[key];
-      return { key, label: meta?.label ?? humanizePredicate(key), help: meta?.help ?? null, value: parseFloat(f.object_text as string) };
+      return { key, id: f.id, label: meta?.label ?? humanizePredicate(key), help: meta?.help ?? null, value: parseFloat(f.object_text as string) };
     })
     .filter((c) => Number.isFinite(c.value));
   // The scorer's plain-language explanation, stored on the breakdown fact. This
@@ -286,7 +286,7 @@ export function EntityDetail({
   // Flatten inbound + outbound into one neighbor list for the graph, highest
   // confidence first, each carrying its human relationship label.
   const graphNeighbors = [...inbound, ...outbound]
-    .map((n) => ({ entity_id: n.entity_id, name: n.name, kind: n.kind, rel: predicateLabel(n.via_predicate), confidence: n.confidence }))
+    .map((n) => ({ entity_id: n.entity_id, name: n.name, kind: n.kind, rel: predicateLabel(n.via_predicate), confidence: n.confidence, via_fact_id: n.via_fact_id }))
     .sort((a, b) => b.confidence - a.confidence);
 
   // Identity strip: linked domain + score chip, derived from attributes/facts.
@@ -356,6 +356,9 @@ export function EntityDetail({
                     {c.help && (
                       <div className="subtle" style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.12rem' }}>{c.help}</div>
                     )}
+                    <div style={{ marginTop: '.15rem' }}>
+                      <CiteChain fact_id={c.id} label="trace" />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -544,8 +547,11 @@ export function EntityDetail({
                           {replayActiveFacts.length} active facts at this timestamp
                         </div>
                         {replayActiveFacts.slice(0, 10).map((f) => (
-                          <div key={f.id} className="mono" style={{ fontSize: '.72rem', color: 'var(--badge-green-fg)' }}>
-                            {f.predicate} = {f.object_text}
+                          <div key={f.id} style={{ display: 'flex', gap: '.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                            <span className="mono" style={{ fontSize: '.72rem', color: 'var(--badge-green-fg)' }}>
+                              {f.predicate} = {f.object_text}
+                            </span>
+                            <CiteChain fact_id={f.id} label="trace" />
                           </div>
                         ))}
                         {replayActiveFacts.length > 10 && <div className="muted" style={{ fontSize: '.7rem', marginTop: '.25rem' }}>… +{replayActiveFacts.length - 10} more</div>}
@@ -557,8 +563,9 @@ export function EntityDetail({
                   <div className="subtle" style={{ fontSize: '.7rem', marginBottom: '.4rem', textTransform: 'uppercase', letterSpacing: '.06em' }}>raw stream · {timeline.items.length} entries</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '.3rem', maxHeight: 400, overflowY: 'auto' }}>
                     {timeline.items.slice(0, 100).map((it) => (
-                      <div key={`${it.kind}-${it.id}`} className="mono subtle" style={{ fontSize: '.72rem' }}>
-                        [{it.ts.slice(0, 16)}] {it.kind} · {it.summary}
+                      <div key={`${it.kind}-${it.id}`} className="mono subtle" style={{ fontSize: '.72rem', display: 'flex', gap: '.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                        <span>[{it.ts.slice(0, 16)}] {it.kind} · {it.summary}</span>
+                        {it.kind === 'fact' && <CiteChain fact_id={it.id} label="trace" />}
                       </div>
                     ))}
                   </div>

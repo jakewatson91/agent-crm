@@ -20,6 +20,8 @@ export interface GraphProximityResult {
   score: number;        // [0, 1] — mean icp_fit of linked entities, 0 if no edges
   edge_count: number;   // how many neighbors were found
   predicates: Record<string, number>; // counts per predicate, for audit
+  /** The edge facts + neighbor icp_fit facts that actually fed the mean, for citing the score. */
+  evidence_fact_ids: string[];
 }
 
 /**
@@ -32,7 +34,7 @@ export async function graphProximity(
   workspace_id: string,
   entity_id: string,
 ): Promise<GraphProximityResult> {
-  const empty: GraphProximityResult = { score: 0, edge_count: 0, predicates: {} };
+  const empty: GraphProximityResult = { score: 0, edge_count: 0, predicates: {}, evidence_fact_ids: [] };
 
   // 1. Edges where this entity is the subject: facts(subject=entity_id, predicate∈EDGES, object_entity!=null)
   const subjRes = await supabase
@@ -53,17 +55,17 @@ export async function graphProximity(
   const objEdges = await excludeSuperseded(supabase, workspace_id,
     (objRes.data ?? []) as Array<{ id: string; predicate: string; subject_entity: string; supersedes: string | null }>);
 
-  const neighbors = new Map<string, string>();  // entity_id -> predicate that linked it
+  const neighbors = new Map<string, { predicate: string; edge_fact_id: string }>();
   const predicates: Record<string, number> = {};
   for (const e of subjEdges) {
     if (!neighbors.has(e.object_entity)) {
-      neighbors.set(e.object_entity, e.predicate);
+      neighbors.set(e.object_entity, { predicate: e.predicate, edge_fact_id: e.id });
       predicates[e.predicate] = (predicates[e.predicate] ?? 0) + 1;
     }
   }
   for (const e of objEdges) {
     if (!neighbors.has(e.subject_entity)) {
-      neighbors.set(e.subject_entity, e.predicate);
+      neighbors.set(e.subject_entity, { predicate: e.predicate, edge_fact_id: e.id });
       predicates[e.predicate] = (predicates[e.predicate] ?? 0) + 1;
     }
   }
@@ -82,13 +84,18 @@ export async function graphProximity(
     (fitsRes.data ?? []) as Array<{ id: string; subject_entity: string; object_text: string; supersedes: string | null }>);
 
   const fitValues: number[] = [];
+  const evidenceFactIds: string[] = [];
   for (const f of fits) {
     const v = parseFloat(f.object_text);
-    if (!isNaN(v)) fitValues.push(v);
+    if (isNaN(v)) continue;
+    fitValues.push(v);
+    evidenceFactIds.push(f.id);
+    const edge = neighbors.get(f.subject_entity);
+    if (edge) evidenceFactIds.push(edge.edge_fact_id);
   }
 
-  if (fitValues.length === 0) return { score: 0, edge_count: neighbors.size, predicates };
+  if (fitValues.length === 0) return { score: 0, edge_count: neighbors.size, predicates, evidence_fact_ids: [] };
 
   const mean = fitValues.reduce((a, b) => a + b, 0) / fitValues.length;
-  return { score: Math.max(0, Math.min(1, mean)), edge_count: neighbors.size, predicates };
+  return { score: Math.max(0, Math.min(1, mean)), edge_count: neighbors.size, predicates, evidence_fact_ids: evidenceFactIds };
 }

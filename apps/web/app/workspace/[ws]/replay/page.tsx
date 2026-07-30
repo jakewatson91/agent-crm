@@ -5,6 +5,8 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
+import { CiteChain } from '../../../_components/CiteChain';
+import { WhyThis } from '../../../_components/WhyThis';
 
 interface Summary {
   ts: string;
@@ -24,6 +26,7 @@ interface Summary {
     entity_id: string;
     entity_name: string;
     source: string | null;
+    url: string | null;
     observed_at: string;
     body: string;
   }>;
@@ -32,6 +35,8 @@ interface Summary {
     kind: string;
     created_at: string;
     body: string;
+    cites: string[];
+    reasoning: string | null;
     entity_id: string | null;
     entity_name: string;
   }>;
@@ -41,7 +46,7 @@ interface Summary {
     kind: string;
     domain: string | null;
     created_at: string;
-    scores: Record<string, number>;
+    scores: Record<string, { value: number; fact_id: string }>;
   }>;
 }
 
@@ -178,6 +183,11 @@ export default function ReplayPage() {
                     ) : (
                       <div className="muted" style={{ fontStyle: 'italic', fontSize: '.78rem' }}>(no body text)</div>
                     )}
+                    {sig.url && (
+                      <a href={sig.url} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: '.72rem', color: 'var(--accent-blue)', marginTop: '.3rem', display: 'inline-block' }}>
+                        ↗ {sig.url.replace(/^https?:\/\//, '')}
+                      </a>
+                    )}
                   </div>
                 ))}
               </div>
@@ -207,6 +217,18 @@ export default function ReplayPage() {
                     }}>
                       {p.body.length > 280 ? p.body.slice(0, 280) + '…' : p.body}
                     </div>
+                    {p.cites.length > 0 && p.entity_id && (
+                      <div style={{ marginTop: '.35rem' }}>
+                        <WhyThis
+                          postId={p.id}
+                          workspace_id={params.ws}
+                          entity_id={p.entity_id}
+                          ts={p.created_at}
+                          reasoning={p.reasoning}
+                          cites={p.cites}
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -220,8 +242,8 @@ export default function ReplayPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '.45rem' }}>
                 {summary.newest_entities.map((e) => {
                   const scoreEntries = SCORE_ORDER
-                    .map((k) => ({ key: k, label: SCORE_LABELS[k] ?? k, value: e.scores[k] }))
-                    .filter((s): s is { key: string; label: string; value: number } => typeof s.value === 'number');
+                    .map((k) => ({ key: k, label: SCORE_LABELS[k] ?? k, value: e.scores[k]?.value, fact_id: e.scores[k]?.fact_id }))
+                    .filter((s): s is { key: string; label: string; value: number; fact_id: string } => typeof s.value === 'number');
                   return (
                     <div key={e.id} className="card" style={{ padding: '.6rem .85rem' }}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: '.6rem', flexWrap: 'wrap' }}>
@@ -243,6 +265,7 @@ export default function ReplayPage() {
                                 </div>
                                 <span className="mono" style={{ fontSize: '.7rem', color: 'var(--text-2)' }}>{s.value.toFixed(2)}</span>
                               </div>
+                              <CiteChain fact_id={s.fact_id} label="trace" />
                             </div>
                           ))}
                         </div>

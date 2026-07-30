@@ -21,6 +21,7 @@ import remarkGfm from 'remark-gfm';
 import TextareaAutosize from 'react-textarea-autosize';
 import { lowConfLabel } from '../_lib/confidence';
 import { usePageContextGetter } from './PageContext';
+import { CiteChain } from './CiteChain';
 
 interface ThreadSummary {
   id: string;
@@ -645,15 +646,16 @@ function QueryEntities({ rows, total }: { rows: any[]; total?: number }) {
   const single = rows.length === 1 && rows[0]?.facts !== undefined;
   if (single) {
     const e = rows[0];
-    const facts: Array<{ predicate: string; object_text: string }> = e.facts ?? [];
+    const facts: Array<{ id: string; predicate: string; object_text: string }> = e.facts ?? [];
     return (
       <ResultCard label={`query · entities · ${e.name ?? '?'}`}>
         <div style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{e.kind} · {(e.id ?? '').slice(0, 8)}</div>
         <div style={{ marginTop: '.25rem' }}>
           {facts.slice(0, 8).map((f, i) => (
-            <div key={i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem' }}>
+            <div key={f.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
               <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>{f.predicate}</span>
               <span style={{ flex: 1, wordBreak: 'break-word' }}>{f.object_text}</span>
+              {f.id && <CiteChain fact_id={f.id} label="trace" />}
             </div>
           ))}
           {facts.length > 8 && <div style={{ color: 'var(--text-3)', fontSize: '.7rem', marginTop: '.2rem' }}>… +{facts.length - 8} more</div>}
@@ -685,10 +687,11 @@ function QueryFacts({ rows }: { rows: any[] }) {
     <ResultCard label={`query · facts · ${rows.length}`}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
         {rows.slice(0, 20).map((f, i) => (
-          <div key={f.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem' }}>
+          <div key={f.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
             <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', minWidth: 110 }}>{f.predicate}</span>
             <span style={{ flex: 1, wordBreak: 'break-word' }}>{f.object_text}</span>
             {lowConfLabel(f.confidence) && <span style={{ color: 'var(--accent-coral)', fontSize: '.65rem' }}>{lowConfLabel(f.confidence)}</span>}
+            {f.id && <CiteChain fact_id={f.id} label="trace" />}
           </div>
         ))}
         {rows.length > 20 && <div style={{ color: 'var(--text-3)', fontSize: '.7rem', marginTop: '.2rem' }}>… +{rows.length - 20} more</div>}

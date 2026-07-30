@@ -85,11 +85,11 @@ export interface TodayMove {
   scoreNew: number;
   delta: number;
   /** The sub-score that moved most since before the window. */
-  driver: { key: string; prev: number; next: number } | null;
+  driver: { key: string; prev: number; next: number; fact_ids?: string[] } | null;
   reasoning: string | null;
   /** The enricher's own write-up of the best-evidenced new fact. */
-  claim: { body: string; cites: string[] } | null;
-  facts: Array<{ predicate: string; object: string }>;
+  claim: { post_id: string; created_at: string; body: string; cites: string[] } | null;
+  facts: Array<{ id: string; predicate: string; object: string }>;
   signals: number;
   hasDraft: boolean;
   hasContact: boolean;
@@ -115,7 +115,7 @@ export interface TodaySignal {
 export interface TodayLearned {
   entity_id: string;
   name: string;
-  facts: Array<{ predicate: string; object: string; pain: boolean }>;
+  facts: Array<{ id: string; predicate: string; object: string; pain: boolean }>;
 }
 
 export interface TodayContact {
@@ -478,7 +478,7 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
   // one fact said twice, and no cheap string check separates that from two real
   // claims: so only ever surface the best-evidenced one (most citations, longest
   // as the tiebreak) rather than trying to de-dup near-identical prose.
-  const claimsOf = new Map<string, { body: string; cites: string[] }>();
+  const claimsOf = new Map<string, { post_id: string; created_at: string; body: string; cites: string[] }>();
   for (const p of posts) {
     if (p.kind !== 'claim') continue;
     const entId = p.channels?.account_entity_id;
@@ -488,7 +488,7 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     if (!body) continue;
     const best = claimsOf.get(entId);
     if (best && (best.cites.length > cites.length || (best.cites.length === cites.length && best.body.length >= body.length))) continue;
-    claimsOf.set(entId, { body: firstSentences(body, 220), cites });
+    claimsOf.set(entId, { post_id: p.id, created_at: p.created_at, body: firstSentences(body, 220), cites });
   }
 
   // ---- Drafts, declines, approvals.
@@ -607,10 +607,11 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
   for (const s of signals) if (s.entity_id) signalCountOf.set(s.entity_id, (signalCountOf.get(s.entity_id) ?? 0) + 1);
   const draftedIds = new Set(draftPosts.map((p) => p.channels?.account_entity_id).filter(Boolean) as string[]);
 
-  const learnedByEntity = new Map<string, Array<{ predicate: string; object: string; pain: boolean }>>();
+  const learnedByEntity = new Map<string, Array<{ id: string; predicate: string; object: string; pain: boolean }>>();
   for (const f of learnedFacts) {
     const list = learnedByEntity.get(f.subject_entity) ?? [];
     list.push({
+      id: f.id,
       predicate: f.predicate,
       object: (f.object_text ?? '').replace(/\s+/g, ' ').slice(0, 240),
       pain: f.predicate === 'pain_observed',
@@ -660,6 +661,14 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
         if (a === null || b === null || Math.abs(b - a) < 0.01) continue;
         if (!driver || Math.abs(b - a) > Math.abs(driver.next - driver.prev)) driver = { key: k, prev: a, next: b };
       }
+      // graph_proximity is a plain mean over neighbor icp_fit facts, so the
+      // scorer records exactly which facts drove it (see graph.ts
+      // graphProximity/evidence_fact_ids) - surface those so the "moved on
+      // network proximity" line can cite them instead of just showing the delta.
+      if (driver && driver.key === 'graph_proximity') {
+        const ids = (cur as { evidence_fact_ids?: { graph_proximity?: unknown } } | undefined)?.evidence_fact_ids?.graph_proximity;
+        if (Array.isArray(ids) && ids.length) driver = { ...driver, fact_ids: ids.filter((x): x is string => typeof x === 'string') };
+      }
     }
     const reasoningRaw = typeof cur?.reasoning === 'string' ? cur.reasoning.trim() : '';
     return {
@@ -671,7 +680,7 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       driver,
       reasoning: reasoningRaw ? firstSentences(cleanReasoning(reasoningRaw), 260) : null,
       claim: claimsOf.get(c.id) ?? null,
-      facts: (learnedByEntity.get(c.id) ?? []).slice(0, 4).map((f) => ({ predicate: f.predicate, object: f.object })),
+      facts: (learnedByEntity.get(c.id) ?? []).slice(0, 4).map((f) => ({ id: f.id, predicate: f.predicate, object: f.object })),
       signals: signalCountOf.get(c.id) ?? 0,
       hasDraft: draftedIds.has(c.id),
       hasContact: accountsWithNewContact.has(c.id),

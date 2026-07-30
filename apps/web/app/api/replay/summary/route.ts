@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
+import { pickSourceUrl, type StructuredTags } from '../../_lib/source_url';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,14 +60,15 @@ export async function GET(req: NextRequest) {
     }
   }
   const topSignals = sortedSignals.slice(0, 5).map((sig) => {
-    const tags = sig.structured_tags ?? {};
+    const tags = (sig.structured_tags ?? {}) as StructuredTags;
     return {
       id: sig.id,
       type: sig.type,
       magnitude: sig.magnitude,
       entity_id: sig.entity_id,
       entity_name: entityNameById.get(sig.entity_id) ?? '(unknown entity)',
-      source: (tags as { signal_source?: string }).signal_source ?? null,
+      source: tags.signal_source ?? null,
+      url: pickSourceUrl(tags),
       observed_at: sig.observed_at,
       body: sigBodies.get(sig.id) ?? '',
     };
@@ -77,13 +79,20 @@ export async function GET(req: NextRequest) {
   const topPostIds = sortedPosts.slice(0, 8).map((p) => p.id);
   const postRows = topPostIds.length
     ? await sb.from('channel_posts')
-        .select('id, body, channel_id, channels!inner(account_entity_id)')
+        .select('id, body, cites, parent_post_id, kind, channel_id, channels!inner(account_entity_id)')
         .in('id', topPostIds)
-    : { data: [] as Array<{ id: string; body: string; channel_id: string; channels: { account_entity_id: string } }> };
-  type PostRow = { id: string; body: string; channel_id: string; channels: { account_entity_id: string } };
+    : { data: [] as Array<{ id: string; body: string; cites: string[] | null; parent_post_id: string | null; kind: string; channel_id: string; channels: { account_entity_id: string } }> };
+  type PostRow = { id: string; body: string; cites: string[] | null; parent_post_id: string | null; kind: string; channel_id: string; channels: { account_entity_id: string } };
   const postRowsTyped = (postRows.data ?? []) as unknown as PostRow[];
   const postById = new Map<string, PostRow>();
   for (const r of postRowsTyped) postById.set(r.id, r);
+  // A `decision` child post is the plain-language reasoning for its parent
+  // (same parent-collapse convention as feed_items.ts) - resolve it here so
+  // the page can render it next to the parent's cited facts.
+  const reasoningByParent = new Map<string, string>();
+  for (const r of postRowsTyped) {
+    if (r.parent_post_id && r.kind === 'decision') reasoningByParent.set(r.parent_post_id, r.body);
+  }
   const topPosts = sortedPosts.slice(0, 8).map((p) => {
     const row = postById.get(p.id);
     const entId = row?.channels?.account_entity_id;
@@ -92,6 +101,8 @@ export async function GET(req: NextRequest) {
       kind: p.kind,
       created_at: p.created_at,
       body: row?.body ?? '',
+      cites: row?.cites ?? [],
+      reasoning: reasoningByParent.get(p.id) ?? null,
       entity_id: entId ?? null,
       entity_name: entId ? entityNameById.get(entId) ?? '(unknown)' : '(unknown)',
     };
@@ -118,12 +129,12 @@ export async function GET(req: NextRequest) {
   const supersededFactIds = new Set<string>(scoreFactsTyped.map((f) => f.supersedes).filter((x): x is string => !!x));
   const activeScoreFacts = scoreFactsTyped.filter((f) => !supersededFactIds.has(f.id));
 
-  const scoresByEntity = new Map<string, Record<string, number>>();
+  const scoresByEntity = new Map<string, Record<string, { value: number; fact_id: string }>>();
   for (const f of activeScoreFacts) {
     const v = parseFloat(f.object_text);
     if (!Number.isFinite(v)) continue;
     if (!scoresByEntity.has(f.subject_entity)) scoresByEntity.set(f.subject_entity, {});
-    scoresByEntity.get(f.subject_entity)![f.predicate] = v;
+    scoresByEntity.get(f.subject_entity)![f.predicate] = { value: v, fact_id: f.id };
   }
 
   const newestEntities = newestSlice.map((e) => ({
