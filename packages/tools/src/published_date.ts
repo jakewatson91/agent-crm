@@ -153,6 +153,32 @@ export function parseContentDate(raw: string | null | undefined): string | null 
   return d.toISOString();
 }
 
+/** A value carrying a plausible four-digit year is a date, however it is written. */
+const CARRIES_A_YEAR = /(?:19|20)\d{2}/;
+
+/**
+ * A date the model read off the page that parseContentDate refused, or null.
+ *
+ * parseContentDate takes ISO and nothing else, so a model that hands back the
+ * page's own format is dropped exactly as if the page had carried no date. The
+ * two outcomes are indistinguishable downstream and the raw model output is kept
+ * nowhere, so the second one leaves no trace: the source silently keeps the
+ * search provider's wrong date and there is nothing to grep for afterwards.
+ * Observed live on a French press release whose header read
+ * "Communiqué de presse du 23/04/2026" and whose signal kept a crawl date.
+ *
+ * A value with no year in it is the model answering in words ("unknown", "n/a",
+ * "last Tuesday"). That is the model saying the page gave nothing, not a failure
+ * worth recording, so it returns null. A value carrying a year is a date we
+ * failed to read, and the caller records it.
+ */
+export function unreadableContentDate(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || parseContentDate(trimmed)) return null;
+  return CARRIES_A_YEAR.test(trimmed) ? trimmed : null;
+}
+
 /**
  * Fold a date printed on the page into what we already believe.
  *

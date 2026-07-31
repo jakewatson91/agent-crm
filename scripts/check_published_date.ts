@@ -13,7 +13,7 @@
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
-import { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate } from '../packages/tools/src/published_date.ts';
+import { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate, unreadableContentDate } from '../packages/tools/src/published_date.ts';
 
 let fail = 0;
 function eq(label: string, got: unknown, want: unknown) {
@@ -83,6 +83,18 @@ eq('impossible day rejected', parseContentDate('2023-02-31'), null);
 eq('future date rejected', parseContentDate('2099-01-01'), null);
 eq('absurdly old rejected', parseContentDate('1823-01-01'), null);
 eq('non-string survives', parseContentDate(null), null);
+
+console.log('\nunreadableContentDate — separates "the page said nothing" from "we could not read it":');
+// The live failure: a French press-release header read 23/04/2026 and the whole
+// date was discarded as silently as if the page had shown none.
+eq('day-first numeric date is recorded, not lost', unreadableContentDate('23/04/2026'), '23/04/2026');
+eq('month name form is recorded', unreadableContentDate('July 7, 2025'), 'July 7, 2025');
+eq('year-and-month only is recorded', unreadableContentDate('2023-04'), '2023-04');
+eq('a date we can read is not a failure', unreadableContentDate('2023-04-11'), null);
+eq('nothing reported is not a failure', unreadableContentDate(''), null);
+eq('words with no year are the page saying nothing', unreadableContentDate('unknown'), null);
+eq('vague prose with no year is not a failure', unreadableContentDate('last Tuesday'), null);
+eq('non-string survives', unreadableContentDate(null), null);
 
 console.log('\napplyContentDate — may move a source OLDER or fill a blank, never newer:');
 // The whole point: the page's own dateline rescues a source nothing else could date.

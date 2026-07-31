@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -1024,8 +1024,21 @@ export async function runAgent(
     // so a misread costs one result rather than putting stale news in an email.
     if (sigData?.id) {
       const tags = (sigData.structured_tags ?? {}) as Record<string, unknown>;
-      const corrected = applyContentDate(tags.published_at as string | null, decision.source_published_date as string | undefined);
-      if (corrected) {
+      const reported = decision.source_published_date as string | undefined;
+      // A date the model read but wrote in the page's own format is refused by
+      // parseContentDate, and used to vanish exactly like a page that carried no
+      // date: no error, no log, the source quietly keeping the provider's wrong
+      // date. Park it on the signal instead, so a format the prompt failed to
+      // convert is one SQL query away rather than a replayed enricher call.
+      const unreadable = unreadableContentDate(reported);
+      const corrected = applyContentDate(tags.published_at as string | null, reported);
+      if (unreadable) {
+        console.warn(`[enricher] signal ${sigData.id}: source_published_date "${unreadable}" is not YYYY-MM-DD, date not applied`);
+        const upd = await supabase.from('signals').update({
+          structured_tags: { ...tags, published_at_unreadable: unreadable.slice(0, 64) },
+        }).eq('id', sigData.id);
+        if (upd.error) console.warn(`[enricher] unreadable source date write failed for signal ${sigData.id}: ${upd.error.message}`);
+      } else if (corrected) {
         const upd = await supabase.from('signals').update({
           structured_tags: {
             ...tags,
@@ -1472,6 +1485,7 @@ DEPTH (when the signal carries a rich payload — a long post, a detailed listin
 
 SOURCE DATE — include a "source_published_date" field: the date this SOURCE was published, in YYYY-MM-DD form, but ONLY if the content itself states it. Read it off a byline, a dateline, a "Posted on", a press-release header, or an explicit sentence about when the piece was written. Use "" when the content does not say. This matters because search engines routinely report the date they crawled a page instead of the date it was written, which has put years-old articles in front of prospects as if they were this week's news; the date printed on the page is the reliable one.
 Rules: report the date the SOURCE was published, never a date it merely mentions. "Launched in November 2022", "the 2024 season", or a conference happening next March are events being described, NOT the publication date. If the page only carries an event date and no publication date, return "". Do not estimate, infer from context, or guess a year. If the page shows only a day and month with no year, return "".
+Format: pages almost never print a date the way this field wants it, so converting it is your job. "23/04/2026" becomes "2026-04-23"; "7 juillet 2025" becomes "2025-07-07"; "July 7, 2025" becomes "2025-07-07". Anything that is not four-digit year, two-digit month, two-digit day is thrown away as if the page had carried no date at all. For an all-numeric date, read the day/month order the way the page's own language and country write it: French, Spanish, German and British English put the day first, US English puts the month first, and any number above 12 can only be the day. If both numbers are 12 or under and nothing on the page settles the order, return "".
 
 REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.
 
