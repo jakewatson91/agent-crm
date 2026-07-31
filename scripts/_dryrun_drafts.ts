@@ -92,15 +92,22 @@ async function main() {
       !['icp_fit', 'icp_fit_breakdown', 'contact_score', 'dropped_until', 'outreach_cooldown_until'].includes(f.predicate));
     if (!activeFacts.length) { log(`── ${acct.name}: no substantive facts, skipping\n`); continue; }
 
-    // Same source-date recovery the live drafter does: the fact's own observed_at
-    // is extraction time; the signal's published_at is when the event happened.
+    // Same source-date recovery the live drafter does, and it has to STAY the
+    // same or this harness grades prompts against behaviour that never ships.
+    // Only a real published_at counts as the source date; everything else is
+    // just when we filed it, and the fact lines say so.
     const sigIds = [...new Set(activeFacts.map((f) => f.signal_id).filter(Boolean))];
+    const dateBySig = new Map<string, string>();
     if (sigIds.length) {
       const { data: srcSigs } = await sb.from('signals').select('id, observed_at, structured_tags').in('id', sigIds);
-      const dateBySig = new Map<string, string>((srcSigs ?? []).map((s: any) => [s.id, s.structured_tags?.published_at || s.observed_at]));
-      for (const f of activeFacts) f.source_date = (f.signal_id && dateBySig.get(f.signal_id)) || f.observed_at;
-    } else {
-      for (const f of activeFacts) f.source_date = f.observed_at;
+      for (const s of (srcSigs ?? []) as any[]) {
+        const pub = s.structured_tags?.published_at;
+        if (pub && Number.isFinite(Date.parse(pub))) dateBySig.set(s.id, pub);
+      }
+    }
+    for (const f of activeFacts) {
+      f.source_date = f.signal_id ? dateBySig.get(f.signal_id) : undefined;
+      f.recorded_date = f.observed_at;
     }
 
     const { data: contactRows } = await sb

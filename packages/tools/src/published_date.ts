@@ -132,3 +132,56 @@ export function resolvePublishedDate(
   }
   return { publishedDate: fromUrl, source: 'url', overruledProviderDate: providerDate! };
 }
+
+/** Earliest date we will believe. Anything before this is a misread, not a publication. */
+const EARLIEST_PLAUSIBLE_MS = Date.UTC(1995, 0, 1);
+
+/**
+ * A date the enricher read off the page itself, as YYYY-MM-DD, or null if it
+ * reported nothing usable. Rejects anything in the future or absurdly old, both
+ * of which mean the model misread a number rather than found a date.
+ */
+export function parseContentDate(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const m = raw.trim().match(/^((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/);
+  if (!m) return null;
+  const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = Date.UTC(year, month - 1, day);
+  const d = new Date(t);
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null;
+  if (t > Date.now() + FUTURE_SLACK_MS || t < EARLIEST_PLAUSIBLE_MS) return null;
+  return d.toISOString();
+}
+
+/**
+ * Fold a date printed on the page into what we already believe.
+ *
+ * The page's own dateline is the best evidence there is, but it reaches us
+ * through a model that can misread, so it is allowed to move a source in one
+ * direction only: OLDER, never newer.
+ *
+ * That asymmetry is deliberate. Every date error measured in live data made an
+ * old page look new, so moving older corrects the real failure. A model that
+ * misreads in the other direction can then only cost us one search result, never
+ * put stale news in front of a prospect. Filling a blank is the same trade: an
+ * undated source is exempt from the freshness floor, so giving it a date can only
+ * ever subject it to more scrutiny.
+ *
+ * Returns null when nothing should change.
+ */
+export function applyContentDate(
+  currentDate: string | null | undefined,
+  contentDateRaw: string | null | undefined,
+): string | null {
+  const content = parseContentDate(contentDateRaw);
+  if (!content) return null;
+  if (!currentDate) return content;
+
+  const currentMs = Date.parse(currentDate);
+  if (!Number.isFinite(currentMs)) return content;
+
+  const contentMs = Date.parse(content);
+  if (contentMs >= currentMs) return null;                              // never moves a source newer
+  if (currentMs - contentMs <= DRIFT_TOLERANCE_DAYS * 86_400_000) return null;  // same story, finer stamp
+  return content;
+}

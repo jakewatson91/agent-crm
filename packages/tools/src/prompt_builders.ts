@@ -119,15 +119,20 @@ export interface DrafterDecisionOpts {
 const outreachCraft = (maxAgeDays: number, freshDays: number) => `Work these steps in order. Do not skip ahead to writing.
 
 STEP 1 — READ THE DATES, THEN PICK THE MESSAGE MODE.
-Fact lines in the user message carry a date: when the source was published or the fact was observed. Trust those dates over your instincts, and never present something older than ${freshDays} days as if it just happened.
+Fact lines in the user message carry one of two dates, and they do NOT mean the same thing:
+  "published <date>" — the source itself was published then. This is real evidence of when something happened.
+  "undated source, we recorded it <date>" — the source carried no date at all. That date is only when we filed it. It says NOTHING about when the event happened: the page could have been written last week or ten years ago.
+Trust a published date over your instincts, and never present something older than ${freshDays} days as if it just happened.
 
-MODE A, TRIGGER-LED: there is a real event dated inside the last ${freshDays} days. An event is something that HAPPENED: they posted, spoke, shipped, launched, raised, hired, published a number, changed a plan. Test it by finishing this sentence with the fact's date and a verb: "On <date>, they <did X>." Lead with it.
+MODE A, TRIGGER-LED: there is a real event with a PUBLISHED date inside the last ${freshDays} days. An event is something that HAPPENED: they posted, spoke, shipped, launched, raised, hired, published a number, changed a plan. Test it by finishing this sentence with the fact's published date and a verb: "On <date>, they <did X>." Lead with it.
+An undated fact can NEVER be the trigger, however recent the recorded date looks. You cannot write "On <date>, they <did X>" from a source that has no date, and guessing has put four-year-old news in front of real prospects. If the only thing that looks fresh is undated, you are in mode B.
 NOT events, and a trigger-led message built on one will be rejected: what the company IS ("a streaming platform"), what it FOCUSES ON ("cost efficiency"), what you INFER it suffers from ("must be facing buffering"), an award, a topic they cover, or a description of their market.
 
-MODE B, THEME-LED: nothing is fresh enough to lead with, but two or more facts, from different dates or sources, point at the same current priority: a cost they keep attacking, a market they keep entering, a platform they keep scaling, a strategy they keep stating. Open on the pattern, the way you would after following a company for months: "you've spent this year pushing X", "every move lately points at Y". An older event may appear as supporting evidence with honest timing ("back when you launched X"), never as the news of the message.
+MODE B, THEME-LED: nothing has a published date fresh enough to lead with, but two or more facts, from different dates or sources, point at the same current priority: a cost they keep attacking, a market they keep entering, a platform they keep scaling, a strategy they keep stating. Open on the pattern, the way you would after following a company for months: "you've spent this year pushing X", "every move lately points at Y". An older event may appear as supporting evidence with honest timing ("back when you launched X"), never as the news of the message.
 A theme needs convergence. One old launch alone is not a theme. "They match who we sell to" is not a theme. If the facts don't agree on a direction, there is no theme.
 
-Facts older than ${maxAgeDays} days are dead weight in both modes: not a trigger, not evidence.
+Facts with a published date older than ${maxAgeDays} days are dead weight in both modes: not a trigger, not evidence.
+An undated fact is NOT automatically dead weight. It cannot anchor mode A, but it can still support a theme in mode B, and it is often the durable kind of detail that does not go stale: what they sell, who their customers are, what they run on. Use it for that, and never date it out loud.
 PICK THE STRONGEST, NOT THE FIRST. In mode A, when several fresh events qualify, lead with the one closest to the problem in STEP 2. A market launch or a traffic number beats a conference appearance every time. Do not open on a weak trigger and then quietly build the question off a stronger fact further down: put the strong one first.
 If neither mode has an honest anchor, output the request_gate escape hatch naming the one fact you would need. A message not sent costs nothing. A fake trigger, or a stale event dressed up as fresh, burns the account permanently.
 

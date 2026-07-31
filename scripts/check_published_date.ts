@@ -13,7 +13,7 @@
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
-import { publishedDateFromUrl, resolvePublishedDate } from '../packages/tools/src/published_date.ts';
+import { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate } from '../packages/tools/src/published_date.ts';
 
 let fail = 0;
 function eq(label: string, got: unknown, want: unknown) {
@@ -72,6 +72,28 @@ eq('overruled results keep what was wrong',
   resolvePublishedDate('https://teeveetee.blogspot.com/2022/03/x.html', '2026-07-30T00:00:00.000Z').overruledProviderDate, '2026-07-30T00:00:00.000Z');
 eq('untouched results claim nothing', resolvePublishedDate('https://example.com/x.html', '2026-07-30T00:00:00.000Z').overruledProviderDate, null);
 eq('nothing to go on', resolvePublishedDate('https://example.com/x.html', null).source, 'none');
+
+console.log('\nparseContentDate — only believes a real, plausible YYYY-MM-DD:');
+eq('plain date', parseContentDate('2023-04-11')?.slice(0, 10), '2023-04-11');
+eq('whitespace tolerated', parseContentDate('  2023-04-11 ')?.slice(0, 10), '2023-04-11');
+eq('empty string means the page did not say', parseContentDate(''), null);
+eq('prose is not a date', parseContentDate('April 2023'), null);
+eq('partial date rejected', parseContentDate('2023-04'), null);
+eq('impossible day rejected', parseContentDate('2023-02-31'), null);
+eq('future date rejected', parseContentDate('2099-01-01'), null);
+eq('absurdly old rejected', parseContentDate('1823-01-01'), null);
+eq('non-string survives', parseContentDate(null), null);
+
+console.log('\napplyContentDate — may move a source OLDER or fill a blank, never newer:');
+// The whole point: the page's own dateline rescues a source nothing else could date.
+eq('fills a blank', applyContentDate(null, '2023-04-11')?.slice(0, 10), '2023-04-11');
+eq('overrules a provider date that is far too new', applyContentDate('2026-07-30T00:00:00.000Z', '2022-03-04')?.slice(0, 10), '2022-03-04');
+// A model misreading a date must never be able to make stale news look current.
+eq('refuses to move a source newer', applyContentDate('2022-03-01T00:00:00.000Z', '2026-07-30'), null);
+eq('same story, finer stamp, leaves it alone', applyContentDate('2026-07-15T00:00:00.000Z', '2026-07-10'), null);
+eq('nothing reported changes nothing', applyContentDate('2026-07-15T00:00:00.000Z', ''), null);
+eq('garbage reported changes nothing', applyContentDate('2026-07-15T00:00:00.000Z', 'last Tuesday'), null);
+eq('blank + nothing reported stays blank', applyContentDate(null, ''), null);
 
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);

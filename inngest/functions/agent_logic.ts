@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -125,7 +125,7 @@ export async function runAgent(
     .select('id, predicate, object_text, confidence, supersedes, created_at, observed_at, source_event_id, signal_id')
     .eq('subject_entity', ent.data.id);
   if (allFacts.error) return { ok: false, action: 'skip', reason: `facts query failed: ${allFacts.error.message}` };
-  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string; observed_at: string; source_event_id: number | null; signal_id: string | null; source_date?: string }>;
+  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string; observed_at: string; source_event_id: number | null; signal_id: string | null; source_date?: string; recorded_date?: string }>;
   const supersededIds = new Set(factRows.map((f) => f.supersedes).filter((x): x is string => !!x));
   const activeFacts = factRows.filter((f) => !supersededIds.has(f.id));
 
@@ -699,9 +699,16 @@ export async function runAgent(
 
     // Facts get observed_at stamped at extraction time, which hides how old the
     // underlying event is: a fact extracted today from a January article looks
-    // fresh. Recover each fact's source date from its signal (the article's
-    // published_at when the connector recorded one, else when the signal was
-    // observed) so the craft rules can tell a fresh trigger from theme evidence.
+    // fresh. Recover each fact's real source date from its signal so the craft
+    // rules can tell a fresh trigger from theme evidence.
+    //
+    // Only a genuine published_at counts. This used to fall back to the signal's
+    // observed_at, which is when WE crawled the page, so any source we could not
+    // date was handed to the drafter looking like it was published the day we
+    // found it. Measured on the Sudden book, that covered 96% of active facts and
+    // made 2011 accounts look trigger-eligible when only 16 had a fresh dated
+    // source. An unknown date must stay unknown: the drafter is told so
+    // explicitly, and "undated" is a far cheaper error than a fake trigger.
     try {
       const sigIds = [...new Set(activeFacts.map((f) => f.signal_id).filter((x): x is string => !!x))];
       const dateBySig = new Map<string, string>();
@@ -710,11 +717,13 @@ export async function runAgent(
           .select('id, observed_at, structured_tags')
           .in('id', sigIds);
         for (const s of (srcSigs.data ?? []) as Array<{ id: string; observed_at: string; structured_tags: { published_at?: string | null } | null }>) {
-          dateBySig.set(s.id, s.structured_tags?.published_at || s.observed_at);
+          const pub = s.structured_tags?.published_at;
+          if (pub && Number.isFinite(Date.parse(pub))) dateBySig.set(s.id, pub);
         }
       }
       for (const f of activeFacts) {
-        f.source_date = (f.signal_id ? dateBySig.get(f.signal_id) : undefined) ?? f.observed_at;
+        f.source_date = f.signal_id ? dateBySig.get(f.signal_id) : undefined;
+        f.recorded_date = f.observed_at;
       }
     } catch { /* non-fatal — fact lines render without dates */ }
   }
@@ -1007,6 +1016,28 @@ export async function runAgent(
   // Enricher dispatch: assert each extracted fact, then post a one-line summary.
   // assert_fact is content-hashed, so re-asserting an identical fact is idempotent.
   if (behavior === 'enricher') {
+    // The enricher is the only step that reads the whole page, so it is the only
+    // place that can see a dateline the URL and the search provider both missed.
+    // Fold it back onto the signal so the freshness floor, the age decay, the
+    // recency dimension and the drafter all get the real date from here on. It
+    // can only ever move a source older or fill a blank (see applyContentDate),
+    // so a misread costs one result rather than putting stale news in an email.
+    if (sigData?.id) {
+      const tags = (sigData.structured_tags ?? {}) as Record<string, unknown>;
+      const corrected = applyContentDate(tags.published_at as string | null, decision.source_published_date as string | undefined);
+      if (corrected) {
+        const upd = await supabase.from('signals').update({
+          structured_tags: {
+            ...tags,
+            published_at: corrected,
+            published_at_source: 'content',
+            ...(tags.published_at ? { published_at_reported: tags.published_at } : {}),
+          },
+        }).eq('id', sigData.id);
+        if (upd.error) console.warn(`[enricher] source date write-back failed for signal ${sigData.id}: ${upd.error.message}`);
+      }
+    }
+
     const facts = (decision.facts ?? []) as Array<{ predicate: string; object_text: string; object_type?: string; domain?: string; confidence: number }>;
     let asserted = 0;
     let assertedSubstantive = false;
@@ -1439,12 +1470,31 @@ Pain is usually expressed indirectly. Look for: complaints ("we hate / can't / w
 
 DEPTH (when the signal carries a rich payload — a long post, a detailed listing, a press release — go deep, but stay on the SUBJECT company). Extract details that describe THIS company: what it builds, sells, or offers; who it serves; its stage, size, stack, funding, customers, partners; a notable thing it's doing (launched / hired / raised / shipped); and any pain — plus one short summary fact of the event itself. Do NOT extract details that only describe the internals of the artifact rather than the company. Concretely: a job posting's required skills, years of experience, nice-to-haves, and ideal-candidate traits describe a hypothetical hire, not the company — from a job posting, capture that the company is hiring for role X (and any pain the posting implies about why), NOT the checklist of what they want in a candidate. The test for each fact: is it a claim about the company, or about the contents/spec of this one artifact? Keep the first, drop the second. Reuse a predicate the workspace examples or the entity's ACTIVE FACTS already use; coin a new lowercase predicate only when none fits, and never split one idea across near-synonym predicates (e.g. requirement / requires / required_attribute). One predicate, one object — never collapse multiple details into a single fact. If the payload is empty or generic, extract only what's actually there and skip the rest. Confidence 0.95 when explicit, 0.7 when strongly implied.
 
+SOURCE DATE — include a "source_published_date" field: the date this SOURCE was published, in YYYY-MM-DD form, but ONLY if the content itself states it. Read it off a byline, a dateline, a "Posted on", a press-release header, or an explicit sentence about when the piece was written. Use "" when the content does not say. This matters because search engines routinely report the date they crawled a page instead of the date it was written, which has put years-old articles in front of prospects as if they were this week's news; the date printed on the page is the reliable one.
+Rules: report the date the SOURCE was published, never a date it merely mentions. "Launched in November 2022", "the 2024 season", or a conference happening next March are events being described, NOT the publication date. If the page only carries an event date and no publication date, return "". Do not estimate, infer from context, or guess a year. If the page shows only a day and month with no year, return "".
+
 REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.
 
 Output strictly valid JSON:
-{"facts":[${objSchema},...],"summary":"<1 sentence>","reasoning":"<why these facts, 1-2 sentences>"}
+{"facts":[${objSchema},...],"source_published_date":"<YYYY-MM-DD, or empty string>","summary":"<1 sentence>","reasoning":"<why these facts, 1-2 sentences>"}
 
 If nothing genuinely new is extractable, output {"facts":[],"summary":"No new facts; data already known or signal too vague.","reasoning":"<why nothing new>"}`;
+}
+
+/**
+ * How a fact's age is stated to the agent.
+ *
+ * The two cases are kept visibly different because they mean different things.
+ * "published" is evidence of when something actually happened and can anchor a
+ * trigger-led message. "undated" means the source carried no date and the only
+ * date we hold is our own filing date, which says nothing about when the event
+ * happened. Collapsing the second into the first is what let a 2015 page read as
+ * this week's news; see the source-date recovery above.
+ */
+function factDateLabel(f: { source_date?: string; recorded_date?: string }): string {
+  if (f.source_date) return `, published ${f.source_date.slice(0, 10)}`;
+  if (f.recorded_date) return `, undated source, we recorded it ${f.recorded_date.slice(0, 10)}`;
+  return '';
 }
 
 export function buildUserPrompt(
@@ -1453,7 +1503,7 @@ export function buildUserPrompt(
   subSemantic: string,
   signal: any,
   entity: { id: string; name: string; attributes: unknown },
-  activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number; source_date?: string }>,
+  activeFacts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number; source_date?: string; recorded_date?: string }>,
   pastOutcomesList: Array<{ entity_name: string; gate_policy: string; decision: string; decided_at: string; similarity: number | null; resolution: Record<string, unknown>; draft_excerpt?: string | null }> = [],
   contacts: Array<{ name: string; email: string; role: string; recent_signal?: string }> = [],
   recommended: FactScore[] = [],
@@ -1504,7 +1554,7 @@ ATTRIBUTES (already known — do not re-extract these as facts):
 ${proseAttributes ? renderAttributesProse(entity.attributes) : JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
-${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence}${f.source_date ? `, seen ${f.source_date.slice(0, 10)}` : ''})`).join('\n') : '  (none yet)'}
+${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence}${factDateLabel(f)})`).join('\n') : '  (none yet)'}
 When a new fact is the same kind of thing as one above, REUSE that fact's label (the part before "=") rather than inventing a new label for it. Only coin a new label when the fact is a genuinely new kind. (e.g. if a label already captures this fact, restate or refine it under that label instead of adding a near-synonym label for the same thing.)
 ${pastOutcomesBlock}${contactsBlock}${recommendedBlock}
 Decide.`;
