@@ -43,7 +43,22 @@ eq('unknown dim never lowers the score', Math.min(0, both - old) , 0);
 eq('all dims unknown returns 0 not NaN',
   combineSubScores({ ...base, unknown_dims: ['industry_match','stage_match','signal_strength','evidence_depth','recency','graph_proximity'] }), 0);
 
-// 6. Result stays inside [0,1] with a lopsided weights object.
+// 6. Recency joins the unmeasured set when no fact traces to a dated source.
+// Guards the fix for the fallback that dated facts off our own write time: the
+// dimension read p10 0.65 / p90 0.66 across 2009 Sudden accounts, a constant
+// carrying 10% of the weight. Unmeasured must mean dropped, not zero.
+const noRecency = (0.30*1.0 + 0.20*0.4 + 0.10*0.4 + 0.20*0.83 + 0.10*0.0) / 0.90;
+eq('drops recency and renormalizes', combineSubScores({ ...base, unknown_dims: ['recency'] }), noRecency);
+// Zeroing it instead would punish the account for a gap in OUR data, not a bad fit.
+const recencyAsZero = 0.30*1.0 + 0.20*0.4 + 0.10*0.4 + 0.20*0.83 + 0.10*0.0 + 0.10*0.0;
+eq('zeroing an unmeasured recency scores strictly lower', combineSubScores({ ...base, recency: 0 }), recencyAsZero);
+console.log(`  (unmeasured -> ${noRecency.toFixed(3)}, zeroed -> ${recencyAsZero.toFixed(3)}: the ${(noRecency - recencyAsZero).toFixed(3)} gap is why "unknown" must not be 0)`);
+// The three real gaps on a fresh CSV import: no edges, no ground truth, no dated source.
+const allThree = (0.30*1.0 + 0.10*0.4 + 0.20*0.83) / 0.60;
+eq('drops graph_proximity + stage_match + recency',
+  combineSubScores({ ...base, unknown_dims: ['graph_proximity','stage_match','recency'] }), allThree);
+
+// 7. Result stays inside [0,1] with a lopsided weights object.
 const odd = combineSubScores({ ...base, unknown_dims: ['stage_match'] }, { ...DEFAULT_WEIGHTS, industry_match: 5 });
 console.log(`  ${odd >= 0 && odd <= 1 ? 'PASS' : 'FAIL'}  clamped to [0,1] with oversized weights: ${odd.toFixed(4)}`);
 if (!(odd >= 0 && odd <= 1)) fail++;

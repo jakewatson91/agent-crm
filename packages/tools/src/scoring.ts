@@ -193,37 +193,52 @@ function evidenceDepth(facts: Array<{ predicate: string }>): number {
 }
 
 /**
- * How fresh is what we know about this account.
+ * How fresh is what we know about this account, or null when we cannot tell.
  *
- * Dated off the SOURCE's publish date when we have one (`sourceDates`, keyed by
- * the fact's signal_id and read from signals.structured_tags.published_at), and
- * only off our own write time as a fallback.
+ * Dated ONLY off the source's publish date (`sourceDates`, keyed by the fact's
+ * signal_id and read from signals.structured_tags.published_at). Facts whose
+ * source carries no date are skipped, and an account with no dated source at all
+ * returns null so the caller can mark the dimension unmeasured.
  *
- * Our write time on its own does not measure the account at all. `observed_at`
- * is set when the enricher writes the fact, so an article from eighteen months
- * ago and one from this morning both land as "today" — measured on the Sudden
- * book, 1000 of 1000 facts had observed_at within a day of created_at, and
- * recency came out at 0.98 for essentially every account (p10 0.97, p90 0.98).
- * A dimension that reports the pipeline's own cron schedule is noise carrying
- * 10% of the weight. Research reaches back up to a year, so real publish dates
- * spread this across the full range instead.
+ * Our write time is not a fallback, because it does not measure the account at
+ * all. `observed_at` is set when the enricher writes the fact, so an article from
+ * eighteen months ago and one from this morning both land as "today". That
+ * fallback survived one earlier attempt to fix this: the dimension stopped
+ * reading 0.98 only because the book aged, and it then sat at p10 0.65 / p90 0.66
+ * across 2009 accounts — still a constant, still reporting the pipeline's own
+ * cron schedule while carrying 10% of the weight.
+ *
+ * Research reaches back up to a year, so real publish dates spread this across
+ * the full range. Only 81 of those 2009 accounts had a dated source when this
+ * changed; the enricher's dateline extraction (see published_date.ts) is what
+ * grows that number, and this dimension gets more informative as it does.
  */
 function recencyScore(
   facts: Array<{ predicate: string; created_at?: string; observed_at?: string; signal_id?: string | null }>,
   sourceDates?: Map<string, string>,
-): number {
+): number | null {
   // Freshness must mean "when did we last learn something real about the
   // account" — so only substantive facts count. Score outputs are rewritten
   // every scoring run; counting them pinned recency at ~1.0 forever.
   const real = facts.filter((f) => isSubstantiveFact(f.predicate));
-  if (!real.length) return 0;
   let mostRecent = 0;
   for (const f of real) {
     const published = f.signal_id ? sourceDates?.get(f.signal_id) : undefined;
-    const t = Date.parse(published ?? f.observed_at ?? f.created_at ?? '');
+    if (!published) continue;
+    const t = Date.parse(published);
     if (Number.isFinite(t) && t > mostRecent) mostRecent = t;
   }
-  if (!mostRecent) return 0;
+  // Not one substantive fact traces to a source with a real publication date, so
+  // we cannot say how fresh this account is. Returning null hands it to
+  // combineSubScores as an unmeasured dimension, which drops it and renormalizes
+  // the remaining weights. Neither a penalty nor a free pass: an honest gap.
+  //
+  // This used to fall back to our own observed_at, which is when the enricher
+  // wrote the fact, so the number described our cron schedule rather than the
+  // account. Measured on the Sudden book at the time of the change, that made it
+  // a near-constant: p10 0.65, p90 0.66 across 2009 accounts, carrying 10% of the
+  // weight while distinguishing nobody from anybody.
+  if (!mostRecent) return null;
   // A source can carry a publish date in the future (bad metadata, or a
   // scheduled post). Clamp the age at 0 so it scores as "today", never above 1.
   const ageDays = Math.max(0, (Date.now() - mostRecent) / 86400_000);
@@ -232,8 +247,8 @@ function recencyScore(
 
 /**
  * Publish dates for the signals behind a set of facts, keyed by signal_id.
- * Missing / unparseable dates are simply absent, so recencyScore falls back to
- * our own write time for those facts.
+ * Missing / unparseable dates are simply absent from the map, and recencyScore
+ * skips those facts rather than dating them off our own write time.
  */
 async function loadSourceDates(
   supabase: SupabaseClient,
@@ -437,7 +452,8 @@ export async function scoreEntity(
 
   // ---- Deterministic sub-scores ----
   const evidence_depth = evidenceDepth(facts);
-  const recency = recencyScore(facts, await loadSourceDates(supabase, workspace_id, facts));
+  const recencyMeasured = recencyScore(facts, await loadSourceDates(supabase, workspace_id, facts));
+  const recency = recencyMeasured ?? 0;
   const graph = graphRes.score;
 
   // ---- Which dimensions could we actually measure? ----
@@ -453,10 +469,15 @@ export async function scoreEntity(
   // founded year, public/private...). The rubric instructs the model to answer
   // 0.4 when that section is empty rather than guess from prose, so on a book
   // whose accounts carry no such attributes it is a constant, not a signal.
+  //
+  // recency is the same shape of gap: with no dated source behind any fact there
+  // is no age to measure, and the old fallback to our own write time reported the
+  // cron schedule instead. See recencyScore.
   const groundTruth = renderGroundTruth(entity.attributes ?? {});
   const unknown_dims: string[] = [];
   if (graphRes.edge_count === 0) unknown_dims.push('graph_proximity');
   if (!groundTruth) unknown_dims.push('stage_match');
+  if (recencyMeasured === null) unknown_dims.push('recency');
 
   // ---- Unchanged-inputs reuse ----
   // Past the stale guard but the rubric's inputs are byte-identical to the ones
@@ -847,7 +868,7 @@ export async function scoreContact(
 ): Promise<EntityScore | null> {
   const [entRes, factsRes, wsRes, graphRes] = await Promise.all([
     supabase.from('entities').select('id, name, attributes').eq('id', entity_id).maybeSingle(),
-    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes')
+    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes, signal_id')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .order('observed_at', { ascending: false }),
     supabase.from('workspaces').select('policy, about').eq('id', workspace_id).maybeSingle(),
@@ -855,7 +876,7 @@ export async function scoreContact(
   ]);
   if (!entRes.data) return null;
 
-  const rawFacts = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null }>;
+  const rawFacts = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null; signal_id: string | null }>;
   const supersededIds = new Set(rawFacts.map((f) => f.supersedes).filter((x): x is string => !!x));
   const facts = rawFacts.filter((f) => !supersededIds.has(f.id));
 
@@ -889,7 +910,12 @@ export async function scoreContact(
   const dp = decisionPower(roleText);
   const persona = personaMatch(roleText, targetRoles, dp);
   const evidence_depth = evidenceDepth(facts);
-  const recency = recencyScore(facts);
+  // A contact's dated facts are their own posts and quotes, which is exactly the
+  // evidence "is this person active right now" should rest on. This call site
+  // passed no source dates at all, so recency was measured purely off our write
+  // time — the same gap the account path had. Unmeasurable stays unmeasurable.
+  const recencyMeasured = recencyScore(facts, await loadSourceDates(supabase, workspace_id, facts));
+  const recency = recencyMeasured ?? 0;
   const account_fit = graphRes.score; // mean neighbor icp_fit == parent account fit
 
   // Contact-level signal. Most contacts are names-only and have no content to
@@ -914,6 +940,7 @@ export async function scoreContact(
     recency,
     graph_proximity: account_fit,
     rrf_prefilter: 0,
+    ...(recencyMeasured === null ? { unknown_dims: ['recency'] } : {}),
     evidence_fact_ids: { graph_proximity: graphRes.evidence_fact_ids },
   };
   const total = combineSubScores(breakdown, weights);
