@@ -20,6 +20,7 @@ interface FeedItem {
   kind: 'claim' | 'decision' | 'touch_draft' | 'gate_request' | 'system' | 'outcome' | 'question';
   body: string;
   cites: string[];
+  cite_quotes: { fact_id: string; quote: string }[];
   author_kind: string;
   author_id: string;
   created_at: string;

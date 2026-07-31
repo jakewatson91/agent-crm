@@ -23,6 +23,7 @@ interface GroupedItem {
   body: string;
   reasoning: string | null;
   cites: string[];
+  cite_quotes: { fact_id: string; quote: string }[];
   author_id: string;
   dup_count: number;
 }
@@ -623,7 +624,7 @@ function ActivityRow({
         </span>
       </div>
       <div style={{ fontSize: '.85rem', whiteSpace: 'pre-wrap', lineHeight: 1.55, fontFamily: isDraft ? 'var(--font-mono)' : 'var(--font-sans)', color: 'var(--text)' }}>
-        {isDraft && item.cites.length > 0 ? <CitedText text={display} cites={item.cites} /> : display}
+        {isDraft && item.cites.length > 0 ? <CitedText text={display} cites={item.cites} citeQuotes={item.cite_quotes} /> : display}
       </div>
       {isDraft && <DraftActions postId={item.id} workspaceId={ws} />}
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.5rem', flexWrap: 'wrap' }}>

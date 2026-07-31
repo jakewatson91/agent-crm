@@ -79,10 +79,10 @@ export async function GET(req: NextRequest) {
   const topPostIds = sortedPosts.slice(0, 8).map((p) => p.id);
   const postRows = topPostIds.length
     ? await sb.from('channel_posts')
-        .select('id, body, cites, parent_post_id, kind, channel_id, channels!inner(account_entity_id)')
+        .select('id, body, cites, cite_quotes, parent_post_id, kind, channel_id, channels!inner(account_entity_id)')
         .in('id', topPostIds)
-    : { data: [] as Array<{ id: string; body: string; cites: string[] | null; parent_post_id: string | null; kind: string; channel_id: string; channels: { account_entity_id: string } }> };
-  type PostRow = { id: string; body: string; cites: string[] | null; parent_post_id: string | null; kind: string; channel_id: string; channels: { account_entity_id: string } };
+    : { data: [] as Array<{ id: string; body: string; cites: string[] | null; cite_quotes: { fact_id: string; quote: string }[] | null; parent_post_id: string | null; kind: string; channel_id: string; channels: { account_entity_id: string } }> };
+  type PostRow = { id: string; body: string; cites: string[] | null; cite_quotes: { fact_id: string; quote: string }[] | null; parent_post_id: string | null; kind: string; channel_id: string; channels: { account_entity_id: string } };
   const postRowsTyped = (postRows.data ?? []) as unknown as PostRow[];
   const postById = new Map<string, PostRow>();
   for (const r of postRowsTyped) postById.set(r.id, r);
@@ -102,6 +102,7 @@ export async function GET(req: NextRequest) {
       created_at: p.created_at,
       body: row?.body ?? '',
       cites: row?.cites ?? [],
+      cite_quotes: row?.cite_quotes ?? [],
       reasoning: reasoningByParent.get(p.id) ?? null,
       entity_id: entId ?? null,
       entity_name: entId ? entityNameById.get(entId) ?? '(unknown)' : '(unknown)',

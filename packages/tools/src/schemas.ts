@@ -83,6 +83,11 @@ export const PostToChannelSchema = z.object({
   kind: z.enum(['claim', 'question', 'decision', 'touch_draft', 'gate_request', 'system', 'outcome']),
   body: z.string().min(1),
   cites: z.array(UuidSchema).default([]),
+  // Which exact phrase in `body` reflects each cited fact, so the UI can
+  // highlight it inline without guessing from the fact's raw object_text
+  // (which almost never survives paraphrasing into readable draft copy).
+  // touch_draft only; other post kinds leave this empty.
+  cite_quotes: z.array(z.object({ fact_id: UuidSchema, quote: z.string().min(1) })).default([]),
   parent_post_id: UuidSchema.optional(),
   thread_root_id: UuidSchema.optional(),
   // How much this claim's facts moved the account's score (score_after -

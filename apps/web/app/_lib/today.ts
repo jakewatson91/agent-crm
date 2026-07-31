@@ -134,6 +134,7 @@ export interface TodayDraft {
   entity_name: string;
   body: string;
   cites: string[];
+  cite_quotes: { fact_id: string; quote: string }[];
   reasoning: string | null;
   createdAt: string;
   pending: boolean;
@@ -387,7 +388,8 @@ interface EventLite { action: string; created_at: string }
 interface SignalRow { id: string; entity_id: string | null; type: string; magnitude: number | null; structured_tags: Record<string, any> | null; created_at: string }
 interface FactRow { id: string; predicate: string; subject_entity: string; object_text: string | null; object_entity: string | null; observed_at: string }
 interface PostRow {
-  id: string; kind: string; body: string | null; cites: string[] | null; created_at: string;
+  id: string; kind: string; body: string | null; cites: string[] | null;
+  cite_quotes: { fact_id: string; quote: string }[] | null; created_at: string;
   author_id: string; parent_post_id: string | null; channels: { account_entity_id: string } | null;
 }
 interface GateRow {
@@ -429,7 +431,7 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       .eq('workspace_id', ws).gte('observed_at', since).lt('observed_at', until)
       .order('observed_at', { ascending: true }).range(f, t)),
     fetchAll<PostRow>((f, t) => sb.from('channel_posts')
-      .select('id, kind, body, cites, created_at, author_id, parent_post_id, channels!inner(workspace_id, account_entity_id)')
+      .select('id, kind, body, cites, cite_quotes, created_at, author_id, parent_post_id, channels!inner(workspace_id, account_entity_id)')
       .eq('channels.workspace_id', ws)
       .gte('created_at', since).lt('created_at', until)
       .order('created_at', { ascending: true }).range(f, t) as unknown as PromiseLike<{ data: PostRow[] | null; error: { message: string } | null }>),
@@ -1012,6 +1014,7 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     entity_name: N(p.channels?.account_entity_id),
     body: (p.body ?? '').trim(),
     cites: p.cites ?? [],
+    cite_quotes: p.cite_quotes ?? [],
     reasoning: reasoningByParent.get(p.id) ?? null,
     createdAt: p.created_at,
     pending: pendingPostIds.has(p.id),

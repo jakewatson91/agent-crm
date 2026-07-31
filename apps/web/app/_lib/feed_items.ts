@@ -22,6 +22,7 @@ export interface FeedItem {
   kind: 'claim' | 'decision' | 'touch_draft' | 'gate_request' | 'system' | 'outcome' | 'question';
   body: string;
   cites: string[];
+  cite_quotes: { fact_id: string; quote: string }[];
   author_kind: string;
   author_id: string;
   created_at: string;
@@ -52,7 +53,7 @@ const ACTIVITY_KINDS = ['claim', 'decision', 'system', 'question'];
 const CONSEQUENTIAL_KINDS = ['touch_draft', 'gate_request', 'outcome'];
 
 const POST_SELECT = `
-  id, kind, body, cites, author_kind, author_id, created_at, parent_post_id, score_delta,
+  id, kind, body, cites, cite_quotes, author_kind, author_id, created_at, parent_post_id, score_delta,
   channels!inner(id, title, workspace_id, account_entity_id,
     entity:entities(id, name)
   )
@@ -81,6 +82,7 @@ const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
 
   const rows = [...(activityRes.data ?? []), ...(consequentialRes.data ?? [])] as unknown as Array<{
     id: string; kind: string; body: string; cites: string[];
+    cite_quotes: { fact_id: string; quote: string }[] | null;
     author_kind: string; author_id: string; created_at: string;
     parent_post_id: string | null; score_delta: number | null;
     channels: {
@@ -165,6 +167,7 @@ const _getFeedItems = async (ws: string): Promise<FeedItem[]> => {
       kind: r.kind as FeedItem['kind'],
       body: r.body,
       cites: Array.isArray(r.cites) ? r.cites : [],
+      cite_quotes: Array.isArray(r.cite_quotes) ? r.cite_quotes : [],
       author_kind: r.author_kind,
       author_id: r.author_id,
       created_at: r.created_at,

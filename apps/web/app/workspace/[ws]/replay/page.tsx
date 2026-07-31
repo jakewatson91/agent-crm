@@ -37,6 +37,7 @@ interface Summary {
     created_at: string;
     body: string;
     cites: string[];
+    cite_quotes: { fact_id: string; quote: string }[];
     reasoning: string | null;
     entity_id: string | null;
     entity_name: string;
@@ -218,7 +219,7 @@ export default function ReplayPage() {
                     }}>
                       {(() => {
                         const shown = p.body.length > 280 ? p.body.slice(0, 280) + '…' : p.body;
-                        return p.kind === 'touch_draft' && p.cites.length > 0 ? <CitedText text={shown} cites={p.cites} /> : shown;
+                        return p.kind === 'touch_draft' && p.cites.length > 0 ? <CitedText text={shown} cites={p.cites} citeQuotes={p.cite_quotes} /> : shown;
                       })()}
                     </div>
                     {p.cites.length > 0 && p.entity_id && (

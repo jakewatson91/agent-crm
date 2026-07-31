@@ -3,15 +3,17 @@
 import { useEffect, useMemo, useState } from 'react';
 
 /**
- * Renders draft text with best-effort inline citation highlighting. For each
- * fact the drafter cited, we try to find where its wording landed in the body
- * (deterministic substring match — NO LLM) and underline that span; hovering
- * shows the fact it came from and the source link.
+ * Renders draft text with inline citation highlighting. When the drafter
+ * supplied a cite_quotes anchor for a fact (the exact phrase it used, given
+ * at generation time), we match that phrase directly. For posts written
+ * before cite_quotes existed (or citations without one), we fall back to
+ * guessing: searching for a verbatim substring of the fact's raw object_text
+ * in the body. The guess is unreliable — the drafter almost always
+ * paraphrases object_text into readable copy — which is why cite_quotes is
+ * the primary path now, not the fallback.
  *
- * This is intentionally best-effort: the drafter emits one flat cite list for
- * the whole draft, not per-phrase anchors, so paraphrased claims won't match.
- * The "why this?" panel remains the complete, guaranteed list of sources — this
- * just surfaces the obvious anchors right in the text.
+ * Either way, the "why this?" panel remains the complete, guaranteed list of
+ * sources — this just surfaces the obvious anchors right in the text.
  */
 interface Fact {
   id: string;
@@ -21,14 +23,22 @@ interface Fact {
   source_signal: { source_name: string | null; source_url: string | null } | null;
 }
 
+export interface CiteQuote { fact_id: string; quote: string }
+
 interface Span { start: number; end: number; fact: Fact }
 
 // Longest contiguous word-window (>=3 words, >=10 chars) of a fact's text that
 // appears verbatim (case-insensitive) in the body. Non-overlapping; longer wins.
-function findSpans(text: string, facts: Fact[]): Span[] {
+function findSpans(text: string, facts: Fact[], citeQuotes: CiteQuote[]): Span[] {
   const lower = text.toLowerCase();
+  const quoteByFactId = new Map(citeQuotes.map((cq) => [cq.fact_id, cq.quote]));
   const found: Span[] = [];
   for (const f of facts) {
+    const quote = quoteByFactId.get(f.id)?.trim();
+    if (quote) {
+      const idx = lower.indexOf(quote.toLowerCase());
+      if (idx >= 0) { found.push({ start: idx, end: idx + quote.length, fact: f }); continue; }
+    }
     const ot = (f.object_text ?? '').trim();
     if (ot.length < 6) continue;
     const words = ot.split(/\s+/).filter(Boolean);
@@ -53,7 +63,7 @@ function findSpans(text: string, facts: Fact[]): Span[] {
   return out;
 }
 
-export function CitedText({ text, cites }: { text: string; cites: string[] }) {
+export function CitedText({ text, cites, citeQuotes = [] }: { text: string; cites: string[]; citeQuotes?: CiteQuote[] }) {
   const [facts, setFacts] = useState<Fact[] | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
 
@@ -67,7 +77,7 @@ export function CitedText({ text, cites }: { text: string; cites: string[] }) {
     return () => { alive = false; };
   }, [cites]);
 
-  const spans = useMemo(() => (facts ? findSpans(text, facts) : []), [facts, text]);
+  const spans = useMemo(() => (facts ? findSpans(text, facts, citeQuotes) : []), [facts, text, citeQuotes]);
 
   if (spans.length === 0) return <>{text}</>;
 

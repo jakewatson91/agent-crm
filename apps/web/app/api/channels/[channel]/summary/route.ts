@@ -23,6 +23,7 @@ interface GroupedItem {
   body: string;
   reasoning: string | null;
   cites: string[];
+  cite_quotes: { fact_id: string; quote: string }[];
   author_id: string;
   dup_count: number;
 }
@@ -64,7 +65,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   const [factsRes, postsRes] = await Promise.all([
     supabase.from('facts').select('id, predicate, object_text, object_entity, confidence, observed_at, supersedes')
       .eq('subject_entity', account_id).order('observed_at', { ascending: false }).limit(200),
-    supabase.from('channel_posts').select('id, kind, body, cites, author_id, parent_post_id, created_at')
+    supabase.from('channel_posts').select('id, kind, body, cites, cite_quotes, author_id, parent_post_id, created_at')
       .eq('channel_id', channel).order('created_at', { ascending: false }).limit(400),
   ]);
 
@@ -86,7 +87,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   }
 
   // ---- Parent-collapse posts ----
-  const postRows = (postsRes.data ?? []) as Array<{ id: string; kind: string; body: string; cites: string[] | null; author_id: string; parent_post_id: string | null; created_at: string }>;
+  const postRows = (postsRes.data ?? []) as Array<{ id: string; kind: string; body: string; cites: string[] | null; cite_quotes: { fact_id: string; quote: string }[] | null; author_id: string; parent_post_id: string | null; created_at: string }>;
   const childByParent = new Map<string, string>();
   const childIds = new Set<string>();
   for (const p of postRows) {
@@ -102,6 +103,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
     body: p.body,
     reasoning: childByParent.get(p.id) ?? null,
     cites: Array.isArray(p.cites) ? p.cites : [],
+    cite_quotes: Array.isArray(p.cite_quotes) ? p.cite_quotes : [],
     author_id: p.author_id,
     dup_count: 1,
   });

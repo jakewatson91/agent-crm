@@ -232,8 +232,10 @@ REQUEST_GATE — when STEP 1, STEP 2 or STEP 7 tells you to stop, output exactly
 
 REASONING — include a "reasoning" field: name the template you chose, the mode (trigger-led or theme-led), the anchor (the event and its date, or the theme and the dated facts behind it), and why this recipient fits that template's audience. Shown in the audit channel, never sent to the recipient.
 
+CITE_QUOTES — for each id in "cites", also add an entry to "cite_quotes" giving the exact phrase copied verbatim from your "body" that reflects that fact (a few words, not the whole sentence). This is what lets the UI underline the claim in place — the phrase must appear in "body" character-for-character.
+
 Output strictly valid JSON:
-{"action":"post_touch_draft","subject":null,"body":"<linkedin DM, aim under ${budget} chars>","cites":["<fact_id_uuid>",...],"reasoning":"<template chosen + trigger + why this audience>","to_email":null}`;
+{"action":"post_touch_draft","subject":null,"body":"<linkedin DM, aim under ${budget} chars>","cites":["<fact_id_uuid>",...],"cite_quotes":[{"fact_id":"<fact_id_uuid>","quote":"<exact phrase from body>"},...],"reasoning":"<template chosen + trigger + why this audience>","to_email":null}`;
     }
     const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);
     const values = (opts.value_props ?? []).filter((s) => s.trim().length > 0);
@@ -268,8 +270,10 @@ NEVER LEAD WITH IDENTITY — do not comment on, praise, or remark on a person's 
 
 REASONING — include a "reasoning" field: 1-2 sentences on which facts you anchored to. Shown in the audit channel, not sent to the recipient.
 
+CITE_QUOTES — for each id in "cites", also add an entry to "cite_quotes" giving the exact phrase copied verbatim from your "body" that reflects that fact (a few words, not the whole sentence). This is what lets the UI underline the claim in place — the phrase must appear in "body" character-for-character.
+
 Output strictly valid JSON:
-{"action":"post_touch_draft","subject":null,"body":"<linkedin message, max 250 chars>","cites":["<fact_id_uuid>",...],"reasoning":"<which facts you anchored to>","to_email":null}`;
+{"action":"post_touch_draft","subject":null,"body":"<linkedin message, max 250 chars>","cites":["<fact_id_uuid>",...],"cite_quotes":[{"fact_id":"<fact_id_uuid>","quote":"<exact phrase from body>"},...],"reasoning":"<which facts you anchored to>","to_email":null}`;
   }
 
   const style = opts.subject_style ?? 'one_word';
@@ -359,6 +363,8 @@ If the active facts genuinely don't give you enough to write something concrete 
 
 REASONING — every post_touch_draft output MUST include a "reasoning" field: 1-2 sentences explaining which 2-3 facts you anchored to. This becomes a separate "decision" post in the channel so the human auditor can see why each draft happened.
 
+CITE_QUOTES — for each id in "cites", also add an entry to "cite_quotes" giving the exact phrase copied verbatim from your "body" that reflects that fact (a few words, not the whole sentence). This is what lets the UI underline the claim in place — the phrase must appear in "body" character-for-character.
+
 Output strictly valid JSON, no preamble:
-{"action":"post_touch_draft","subject":"<see subject rule>","body":"<email body, ~${paraCount} short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"reasoning":"<which facts you anchored to, 1-2 sentences>","to_email":"<picked contact email or null>"}`;
+{"action":"post_touch_draft","subject":"<see subject rule>","body":"<email body, ~${paraCount} short paragraphs separated by blank lines>","cites":["<fact_id_uuid>",...],"cite_quotes":[{"fact_id":"<fact_id_uuid>","quote":"<exact phrase from body>"},...],"reasoning":"<which facts you anchored to, 1-2 sentences>","to_email":"<picked contact email or null>"}`;
 }

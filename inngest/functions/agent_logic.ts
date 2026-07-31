@@ -904,8 +904,18 @@ export async function runAgent(
     const composed = outreachChannel === 'linkedin'
       ? body
       : (subject ? `${toLine}Subject: ${subject}\n\n${body}` : `${toLine}${body}`);
+    // Keep only quotes that cite an active fact and appear verbatim in the
+    // composed body — a hallucinated or mismatched quote just falls back to
+    // no inline highlight for that fact, never a broken one.
+    const composedLower = composed.toLowerCase();
+    const rawCiteQuotes = (decision.cite_quotes ?? []) as Array<{ fact_id?: unknown; quote?: unknown }>;
+    const validCiteQuotes = rawCiteQuotes
+      .filter((cq): cq is { fact_id: string; quote: string } =>
+        typeof cq?.fact_id === 'string' && typeof cq?.quote === 'string' && cq.quote.trim().length > 0)
+      .filter((cq) => validCites.includes(cq.fact_id) && composedLower.includes(cq.quote.trim().toLowerCase()))
+      .map((cq) => ({ fact_id: cq.fact_id, quote: cq.quote.trim() }));
     const r = await callTool(supabase, actor, 'post_to_channel', {
-      channel_id, kind: 'touch_draft', body: composed, cites: validCites,
+      channel_id, kind: 'touch_draft', body: composed, cites: validCites, cite_quotes: validCiteQuotes,
     }, meta);
     if (!r.ok) return { ok: false, action: 'skip', reason: r.error, behavior, ...tokens };
     // Open an approval for this draft. Sending is irreversible — gates are
