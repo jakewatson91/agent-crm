@@ -12,6 +12,7 @@
  * use `isEntityOfType`.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchAll } from './paginate.ts';
 
 export async function getEntityTypes(
   sb: SupabaseClient,
@@ -78,46 +79,12 @@ export async function entityIdsOfType(
 ): Promise<string[]> {
   // PostgREST caps a single response at 1000 rows; page through so workspaces
   // with more than 1000 entities of a type return the full set.
-  const ids: string[] = [];
-  const page = 1000;
-  for (let from = 0; ; from += page) {
-    const { data, error } = await sb.from('facts')
-      .select('subject_entity')
-      .eq('workspace_id', workspaceId)
-      .eq('predicate', 'is_a')
-      .eq('object_text', type)
-      .is('supersedes', null)
-      .range(from, from + page - 1);
-    if (error) throw new Error(`entityIdsOfType failed: ${error.message}`);
-    const rows = (data ?? []) as Array<{ subject_entity: string }>;
-    for (const r of rows) ids.push(r.subject_entity);
-    if (rows.length < page) break;
-  }
-  return ids;
-}
-
-/**
- * Distinct type values currently in use in a workspace. Used by the settings
- * UI to populate the scorable_types multiselect and by the entities list to
- * group entities without a hardcoded type list.
- */
-export async function listWorkspaceTypes(
-  sb: SupabaseClient,
-  workspaceId: string,
-): Promise<Array<{ type: string; count: number }>> {
-  // RPC-free path: pull all is_a facts and aggregate client-side. With the
-  // facts_predicate_object_active_idx, the scan is index-only.
-  const { data } = await sb.from('facts')
-    .select('object_text')
+  const rows = await fetchAll<{ subject_entity: string }>((from, to) => sb.from('facts')
+    .select('subject_entity')
     .eq('workspace_id', workspaceId)
     .eq('predicate', 'is_a')
-    .is('supersedes', null);
-  const counts = new Map<string, number>();
-  for (const row of (data ?? []) as Array<{ object_text: string | null }>) {
-    if (!row.object_text) continue;
-    counts.set(row.object_text, (counts.get(row.object_text) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([type, count]) => ({ type, count }))
-    .sort((a, b) => b.count - a.count);
+    .eq('object_text', type)
+    .is('supersedes', null)
+    .range(from, to));
+  return rows.map((r) => r.subject_entity);
 }

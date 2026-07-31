@@ -13,8 +13,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { act } from '@agent-crm/primitives';
 import { getPolicy, resolveEnvVar, type WorkspacePolicy } from './policy.ts';
 import { scoreAndAssert } from './scoring.ts';
-import { recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS } from './activity_markers.ts';
-import { fetchAll } from './paginate.ts';
+import { recordActivityMarker, ACTIVITY_MARKERS } from './activity_markers.ts';
 
 const HUNTER_API = 'https://api.hunter.io/v2/domain-search';
 const EXPLORIUM_API = 'https://api.explorium.ai/v1';
@@ -400,8 +399,8 @@ export async function pullContactsForAccount(
   async function audit(text: string): Promise<void> {
     // Records that a contact pull attempt finished (and how) — what the system
     // did, not a fact about the account, so it goes to the event log. The sweep
-    // contact-pull health check and drainPendingContactRequests read it back by
-    // action name. summary carries the text the error-share check greps.
+    // contact-pull health check reads it back by action name. summary carries
+    // the text the error-share check greps.
     await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.CONTACTS_COMPLETED, entity_id, {
       summary: text.slice(0, 200),
     });
@@ -496,94 +495,4 @@ export async function pullContactsForAccount(
   }
   await audit(`${created} new contact(s) via ${usedProvider} (${pulled.length} found)`);
   return { ok: true, provider: usedProvider, found: pulled.length, created };
-}
-
-export interface DrainResult {
-  pending: number;          // total unfulfilled requests found
-  attempted: number;        // how many we ran this pass (capped)
-  contacts_created: number;
-  errors: number;           // pulls that hit a provider error
-  results: Array<{ entity_id: string; provider?: string; found: number; created: number; ok: boolean; reason?: string }>;
-}
-
-/**
- * Run any enrich_contacts requests that haven't been fulfilled yet. The action
- * selector writes a `contacts_requested` fact and emits a `contacts.requested`
- * event for the Inngest contactsRunner; while Inngest is out, the daily loop
- * calls this so pulls still happen. A request is "pending" until a
- * `contacts_completed` fact lands after it. Highest account score first, capped
- * per pass so a backlog can't drain the whole provider quota in one night.
- */
-export async function drainPendingContactRequests(
-  supabase: SupabaseClient,
-  workspace_id: string,
-  cap: number,
-): Promise<DrainResult> {
-  const out: DrainResult = { pending: 0, attempted: 0, contacts_created: 0, errors: 0, results: [] };
-  if (cap <= 0) return out;
-
-  // Most recent contacts_requested per account — event-log markers now, not
-  // facts. Paginated so a busy workspace's request log doesn't truncate at 1000.
-  const reqs = await fetchAll<{ target_id: string | null; created_at: string }>((f, t) =>
-    supabase.from('events').select('target_id, created_at')
-      .eq('workspace_id', workspace_id).eq('target_kind', 'entity')
-      .eq('action', ACTIVITY_MARKERS.CONTACTS_REQUESTED)
-      .order('created_at', { ascending: true }).range(f, t));
-  const requestedAt = new Map<string, string>();
-  for (const r of reqs) {
-    if (!r.target_id) continue;
-    const prev = requestedAt.get(r.target_id);
-    if (!prev || r.created_at > prev) requestedAt.set(r.target_id, r.created_at);
-  }
-  if (!requestedAt.size) return out;
-
-  // Latest contacts_completed per account (event-log markers — take max).
-  const subs = [...requestedAt.keys()];
-  const completedMs = await latestMarkerByEntity(supabase, workspace_id, subs, [ACTIVITY_MARKERS.CONTACTS_COMPLETED]);
-
-  // Pending = requested with no completion landing after the request.
-  const pending = subs.filter((s) => {
-    const done = completedMs.get(s);
-    return !done || done < Date.parse(requestedAt.get(s)!);
-  });
-  out.pending = pending.length;
-  if (!pending.length) return out;
-
-  // Order by current account score_total desc — scarce credits go to the best
-  // accounts first. (The current score is the row no other row supersedes.)
-  // Chunked at 150 and paged, like every other .in() here. An unchunked list
-  // overflows the request URL, and an unpaged read stops at PostgREST's 1000-row
-  // cap — this pulls EVERY score_total version for each account, superseded ones
-  // included, so it reaches 1000 at a few hundred pending accounts. The failure
-  // would be silent and exactly backwards: accounts whose rows fell off the page
-  // would score as 0 and sort last, so the scarce contact credits would skip the
-  // very accounts this ordering exists to prioritize.
-  const rows: Array<{ id: string; subject_entity: string; object_text: string | null; supersedes: string | null }> = [];
-  for (let i = 0; i < pending.length; i += 150) {
-    const slice = pending.slice(i, i + 150);
-    rows.push(...await fetchAll<{ id: string; subject_entity: string; object_text: string | null; supersedes: string | null }>((from, to) =>
-      supabase.from('facts')
-        .select('id, subject_entity, object_text, supersedes')
-        .eq('workspace_id', workspace_id)
-        .eq('predicate', 'score_total')
-        .in('subject_entity', slice)
-        .order('id').range(from, to)));
-  }
-  const pointed = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
-  const scoreByEnt = new Map<string, number>();
-  for (const r of rows) {
-    if (pointed.has(r.id)) continue;
-    const v = parseFloat(r.object_text ?? '');
-    if (Number.isFinite(v)) scoreByEnt.set(r.subject_entity, v);
-  }
-  const ordered = [...pending].sort((a, b) => (scoreByEnt.get(b) ?? 0) - (scoreByEnt.get(a) ?? 0));
-
-  for (const entity_id of ordered.slice(0, cap)) {
-    const r = await pullContactsForAccount(supabase, { workspace_id, entity_id });
-    out.attempted++;
-    out.contacts_created += r.created;
-    if (!r.ok && r.reason === 'provider error') out.errors++;
-    out.results.push({ entity_id, provider: r.provider, found: r.found, created: r.created, ok: r.ok, reason: r.reason });
-  }
-  return out;
 }

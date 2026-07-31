@@ -22,6 +22,7 @@ import { unstable_cache } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
 import {
   fetchAll,
+  chunk,
   CONNECTORS,
   resolveConnectorState,
   cronToMinIntervalMinutes,
@@ -242,7 +243,6 @@ export interface TodayData {
 const WINDOW_HOURS = 24;
 /** A scheduled pass finishes within minutes; a gap this long means a new pass. */
 const RUN_GAP_MIN = 30;
-const CHUNK = 150;
 
 const MOVERS_CAP = 12;
 const SIGNALS_CAP = 30;
@@ -264,12 +264,6 @@ const DETAIL_ACTIONS = [
 ];
 
 // ---------------------------------------------------------------- helpers
-
-function chunk<T>(xs: T[], n = CHUNK): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
-  return out;
-}
 
 // The scorer sometimes prefixes a sentence with a machine field label
 // ("industry_match:", "Industry:"). That's a single token + colon (shape, not
@@ -557,37 +551,26 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
 
   // ---- Round 2: reads that need ids from round 1.
   const moverCandidateIds = scoredIds;
+  // Each chunk covers a disjoint slice of ids, so the per-chunk queries below
+  // are independent and safe to run concurrently instead of one at a time.
   const [prevScoreFacts, prevBreakdownFacts, signalBodies] = await Promise.all([
-    (async () => {
-      const out: FactRow[] = [];
-      for (const c of chunk(moverCandidateIds)) {
-        out.push(...await fetchAll<FactRow>((f, t) => sb.from('facts')
-          .select('id, predicate, subject_entity, object_text, object_entity, observed_at')
-          .eq('workspace_id', ws).eq('predicate', 'icp_fit').in('subject_entity', c)
-          .lt('observed_at', since).order('observed_at', { ascending: false }).range(f, t)));
-      }
-      return out;
-    })(),
-    (async () => {
-      const out: FactRow[] = [];
-      for (const c of chunk(moverCandidateIds)) {
-        out.push(...await fetchAll<FactRow>((f, t) => sb.from('facts')
-          .select('id, predicate, subject_entity, object_text, object_entity, observed_at')
-          .eq('workspace_id', ws).eq('predicate', 'icp_fit_breakdown').in('subject_entity', c)
-          .lt('observed_at', since).order('observed_at', { ascending: false }).range(f, t)));
-      }
-      return out;
-    })(),
+    Promise.all(chunk(moverCandidateIds).map((c) => fetchAll<FactRow>((f, t) => sb.from('facts')
+      .select('id, predicate, subject_entity, object_text, object_entity, observed_at')
+      .eq('workspace_id', ws).eq('predicate', 'icp_fit').in('subject_entity', c)
+      .lt('observed_at', since).order('observed_at', { ascending: false }).range(f, t)))).then((r) => r.flat()),
+    Promise.all(chunk(moverCandidateIds).map((c) => fetchAll<FactRow>((f, t) => sb.from('facts')
+      .select('id, predicate, subject_entity, object_text, object_entity, observed_at')
+      .eq('workspace_id', ws).eq('predicate', 'icp_fit_breakdown').in('subject_entity', c)
+      .lt('observed_at', since).order('observed_at', { ascending: false }).range(f, t)))).then((r) => r.flat()),
     (async () => {
       // Bodies are ~2KB each, so fetch them only for the signals we render.
       const ids = signals.slice(0, SIGNALS_CAP).map((s) => s.id);
       if (!ids.length) return [] as Array<{ id: string; body_for_embedding: string | null }>;
-      const out: Array<{ id: string; body_for_embedding: string | null }> = [];
-      for (const c of chunk(ids)) {
+      const pages = await Promise.all(chunk(ids).map(async (c) => {
         const { data } = await sb.from('signals').select('id, body_for_embedding').in('id', c);
-        out.push(...((data ?? []) as Array<{ id: string; body_for_embedding: string | null }>));
-      }
-      return out;
+        return (data ?? []) as Array<{ id: string; body_for_embedding: string | null }>;
+      }));
+      return pages.flat();
     })(),
   ]);
 
@@ -654,9 +637,12 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
   declineRows.forEach((d) => wanted.add(d.entity_id));
   detailEvents.forEach((e) => e.target_id && wanted.add(e.target_id));
   const nameOf = new Map<string, string>();
-  for (const c of chunk([...wanted])) {
+  const namePages = await Promise.all(chunk([...wanted]).map(async (c) => {
     const { data } = await sb.from('entities').select('id, name').in('id', c);
-    for (const r of (data ?? []) as Array<{ id: string; name: string }>) nameOf.set(r.id, r.name);
+    return (data ?? []) as Array<{ id: string; name: string }>;
+  }));
+  for (const page of namePages) {
+    for (const r of page) nameOf.set(r.id, r.name);
   }
   const N = (id: string | null | undefined) => (id && nameOf.get(id)) || (id ?? '?').slice(0, 8);
 

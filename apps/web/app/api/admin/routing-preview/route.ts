@@ -78,10 +78,18 @@ export async function POST(req: Request) {
     factsByEnt.set(f.subject_entity, arr);
   }
 
-  const samples: PerEntity[] = [];
-  const distribution: Record<string, number> = {};
+  // Channel lookup batched once for every ranked entity instead of one query
+  // per entity — `ranked` is capped at 100, and this was 100 round trips.
+  const chansRes = await supabase.from('channels').select('id, account_entity_id')
+    .eq('workspace_id', body.workspace_id).in('account_entity_id', entIds);
+  const channelIdByEnt = new Map(
+    ((chansRes.data ?? []) as Array<{ id: string; account_entity_id: string }>).map((c) => [c.account_entity_id, c.id]),
+  );
 
-  for (const r of ranked) {
+  // Each entity's remaining lookups (cooldown/drop context, best contact
+  // score) are independent of every other entity's, so run them concurrently
+  // instead of one at a time.
+  const samplesOrdered = await Promise.all(ranked.map(async (r) => {
     const facts = factsByEnt.get(r.id) ?? [];
     const readScore = (p: string) => {
       const f = facts.find((x) => x.predicate === p);
@@ -101,14 +109,14 @@ export async function POST(req: Request) {
     // total the customer sees in the preview.
     const icpTotal = combineSubScores(breakdown, weights);
 
-    // Channel + cooldown / drop info, same as production action_selector.
-    const chan = await supabase.from('channels').select('id')
-      .eq('workspace_id', body.workspace_id).eq('account_entity_id', r.id).maybeSingle();
-    const channelCtx = chan.data?.id
-      ? await loadActionContext(supabase, body.workspace_id, r.id, chan.data.id as string)
-      : { recent_draft_at: null, recent_research_at: null, recent_contacts_request_at: null, dropped_until: null, cooldown_until: null };
-
-    const bestContactScore = await loadBestContactScore(supabase, body.workspace_id, r.id);
+    // Cooldown / drop info, same as production action_selector.
+    const channelId = channelIdByEnt.get(r.id);
+    const [channelCtx, bestContactScore] = await Promise.all([
+      channelId
+        ? loadActionContext(supabase, body.workspace_id, r.id, channelId)
+        : Promise.resolve({ recent_draft_at: null, recent_research_at: null, recent_contacts_request_at: null, dropped_until: null, cooldown_until: null }),
+      loadBestContactScore(supabase, body.workspace_id, r.id),
+    ]);
     const decision = selectAction({
       workspace_id: body.workspace_id,
       entity_id: r.id,
@@ -122,8 +130,7 @@ export async function POST(req: Request) {
       thresholds,
     });
 
-    distribution[decision.action] = (distribution[decision.action] ?? 0) + 1;
-    samples.push({
+    const sample: PerEntity = {
       entity_id: r.id,
       entity_name: nameById.get(r.id) ?? '?',
       icp_total_now: r.score,
@@ -131,8 +138,13 @@ export async function POST(req: Request) {
       action: decision.action,
       policy: decision.policy,
       reason: decision.reason,
-    });
-  }
+    };
+    return sample;
+  }));
+
+  const samples: PerEntity[] = samplesOrdered;
+  const distribution: Record<string, number> = {};
+  for (const s of samples) distribution[s.action] = (distribution[s.action] ?? 0) + 1;
 
   return NextResponse.json({
     ok: true,

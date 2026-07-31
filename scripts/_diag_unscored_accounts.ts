@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { isSubstantiveFact } from '@agent-crm/tools';
+import { isSubstantiveFact, chunk } from '@agent-crm/tools';
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
 const ws = 'af602fa1-1e0b-4bee-9841-01894553e0a9';
@@ -11,7 +11,6 @@ async function fetchAll<T>(q: (f: number, t: number) => any): Promise<T[]> {
   for (;;) { const { data, error } = await q(f, f + n - 1); if (error) throw error; const r = (data ?? []) as T[]; o.push(...r); if (r.length < n) break; f += n; }
   return o;
 }
-function chunk<T>(a: T[], n: number): T[][] { const o: T[][] = []; for (let i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; }
 
 async function main() {
   // all account entities (last is_a = account)

@@ -1,9 +1,0 @@
-◇ injected env (24) from .env.local // tip: ◈ secrets for agents [www.dotenvx.com]
-account=VibeFlow best_contact_score=0.84
-trigger fact: pain_observed = wasting time on repetitive integration wiring, API glue, and database setup when (id=c305717e)
-gates before: 349
-runAgent result: {"ok":true,"action":"skip","channel_post_id":"0a4280d7-a703-42cf-83ff-0aac4eb31116","reason":"facts_insufficient_for_draft","behavior":"drafter","llm_input_tokens":6373,"llm_output_tokens":1427,"llm_cached_input_tokens":6272,"llm_provider":"deepseek","llm_model":"deepseek-v4-pro"}
-gates after: null
-latest gates: null
-DRAFT POST:
- [facts_insufficient_for_draft] The signal indicates VibeFlow is wasting time on integration wiring for internal tools, not on founder-led outbound sales; need evidence that the founders currently handle prospecting manually and that it's a pain.

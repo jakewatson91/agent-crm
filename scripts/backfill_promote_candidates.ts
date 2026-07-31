@@ -13,7 +13,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { scoreAndAssert, isSubstantiveFact } from '@agent-crm/tools';
+import { scoreAndAssert, isSubstantiveFact, chunk } from '@agent-crm/tools';
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
 const ws = process.env.WS_ID || 'af602fa1-1e0b-4bee-9841-01894553e0a9';
@@ -24,8 +24,6 @@ async function fetchAll<T>(q: (f: number, t: number) => any): Promise<T[]> {
   for (;;) { const { data, error } = await q(f, f + size - 1); if (error) throw error; const rows = (data ?? []) as T[]; out.push(...rows); if (rows.length < size) break; f += size; }
   return out;
 }
-
-function chunk<T>(arr: T[], n: number): T[][] { const o: T[][] = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; }
 
 async function main() {
   const ents = await fetchAll<{ id: string; name: string; attributes: any }>((f, t) => sb.from('entities')

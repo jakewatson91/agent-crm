@@ -25,3 +25,10 @@ export async function fetchAll<T>(
   }
   return all;
 }
+
+/** Split an id list into batches small enough for a single `.in()` call. */
+export function chunk<T>(xs: T[], n = 150): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+}

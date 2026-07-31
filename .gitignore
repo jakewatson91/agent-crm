@@ -38,3 +38,8 @@ benchmark/v1/results/
 # packages/db generated types
 packages/db/src/generated.ts
 .backups/
+
+# one-off script output (raw stdout/data dumps, not source)
+scripts/*.txt
+scripts/*_results.json
+scripts/_candidates.json
