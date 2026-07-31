@@ -381,6 +381,11 @@ export async function runEntityResearch(
           // company's own blog). A missing or unparseable date is kept —
           // undated evergreen pages (own-site customer lists, product pages)
           // are legitimate regardless of scope.
+          //
+          // The date read here is already corrected against the URL by
+          // runExaSearch. Do not go back to Exa's raw publishedDate: it reports
+          // the crawl date for pages it cannot date, which walked a March 2022
+          // post through this gate as of yesterday. See published_date.ts.
           if (er.publishedDate) {
             const pub = Date.parse(er.publishedDate);
             if (Number.isFinite(pub) && pub < staleCutoffMs) { filtered_stale++; continue; }
@@ -505,6 +510,9 @@ export async function runEntityResearch(
               exa_id: c.er.id,
               url: c.er.url,
               published_at: c.er.publishedDate ?? null,
+              ...(c.er.overruledPublishedDate
+                ? { published_at_source: 'url', published_at_reported: c.er.overruledPublishedDate }
+                : {}),
               triggered_by: reason,
               ...(hookClass ? { hook_class: hookClass } : {}),
             },

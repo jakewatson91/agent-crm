@@ -30,7 +30,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, entityIdsOfType, fetchSeenSignalTags, runExaSearch } from '@agent-crm/tools';
+import { callTool, entityIdsOfType, fetchSeenSignalTags, runExaSearch, type ExaResult } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
@@ -38,16 +38,6 @@ import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } fro
 const EXTRACT_MODEL = 'deepseek-v4-flash';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
-
-interface ExaResult {
-  id: string;
-  title: string | null;
-  url: string;
-  publishedDate?: string;
-  author?: string;
-  text?: string;
-  score?: number;
-}
 
 export { exaMeta as meta } from '../registry_meta.js';
 
@@ -231,6 +221,9 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
         item_url: er.url,
         author: er.author,
         published_at: er.publishedDate ?? null,
+        ...(er.overruledPublishedDate
+          ? { published_at_source: 'url', published_at_reported: er.overruledPublishedDate }
+          : {}),
         score: er.score,
         intent,
         query,

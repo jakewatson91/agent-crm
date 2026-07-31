@@ -9,6 +9,8 @@
  * below are always safe; do not add other categories without splitting the request shape.
  */
 
+import { resolvePublishedDate } from './published_date.ts';
+
 const EXA_API = 'https://api.exa.ai/search';
 const EXA_CONTENTS_API = 'https://api.exa.ai/contents';
 const FETCH_TIMEOUT_MS = 15_000;
@@ -17,7 +19,14 @@ export interface ExaResult {
   id: string;
   title: string | null;
   url: string;
+  /**
+   * Publication date, corrected against the URL before any caller sees it — Exa
+   * reports the crawl date for pages it can't date, which made years-old posts
+   * look fresh. See published_date.ts.
+   */
   publishedDate?: string;
+  /** Set only when the URL's date overruled Exa's, so a signal can record what was wrong. */
+  overruledPublishedDate?: string;
   author?: string;
   text?: string;
   score?: number;
@@ -40,6 +49,16 @@ export interface ExaSearchResult {
   results: ExaResult[];
   status?: number;
   error?: string;
+}
+
+/** Replace a result's reported date with the one corroborated against its URL. */
+function withCorrectedDate(er: ExaResult): ExaResult {
+  const resolved = resolvePublishedDate(er.url, er.publishedDate);
+  return {
+    ...er,
+    publishedDate: resolved.publishedDate ?? undefined,
+    ...(resolved.overruledProviderDate ? { overruledPublishedDate: resolved.overruledProviderDate } : {}),
+  };
 }
 
 export async function runExaSearch(apiKey: string, params: ExaSearchParams): Promise<ExaSearchResult> {
@@ -72,7 +91,10 @@ export async function runExaSearch(apiKey: string, params: ExaSearchParams): Pro
     });
     if (!r.ok) return { ok: false, results: [], status: r.status, error: (await r.text()).slice(0, 300) };
     const j = await r.json() as { results?: ExaResult[] };
-    return { ok: true, results: j.results ?? [] };
+    // Correct the publication date here, at the one door every Exa result comes
+    // through, so the freshness floor, the age decay and the stored signal all
+    // read the same corrected value and no caller can forget to ask.
+    return { ok: true, results: (j.results ?? []).map(withCorrectedDate) };
   } catch (e) {
     return { ok: false, results: [], error: e instanceof Error ? e.message : String(e) };
   }

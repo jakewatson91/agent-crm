@@ -19,7 +19,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, compress, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
+import { callTool, compress, entityIdsOfType, fetchSeenSignalTags, resolvePublishedDate } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
@@ -341,6 +341,18 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
     result.errors.push(`${isFeed ? 'rss parse' : 'llm extract'} failed: ${e instanceof Error ? e.message : String(e)}`);
     return result;
   }
+
+  // Correct each date against its URL before filtering. A feed's own <pubDate>
+  // and an LLM reading a page are both capable of handing back the date the item
+  // was seen rather than the date it was written, and either one makes an old
+  // post look current. Where the URL carries the publication date it wins. Same
+  // correction the search path applies; see published_date.ts.
+  items = items.map((it) => {
+    const resolved = resolvePublishedDate(it.url, it.published_at);
+    return resolved.publishedDate === it.published_at
+      ? it
+      : { ...it, published_at: resolved.publishedDate ?? undefined };
+  });
 
   // Filter by recency.
   const cutoffMs = Date.now() - since_hours * 3600 * 1000;
