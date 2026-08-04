@@ -10,7 +10,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { chatCompleteForWorkspace, scoreFacts } from '@agent-crm/tools';
+import { chatCompleteForWorkspace, scoreFacts, pickDraftAngle } from '@agent-crm/tools';
 import { buildSystemPrompt, buildUserPrompt } from '../inngest/functions/agent_logic.ts';
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
@@ -36,25 +36,6 @@ async function main() {
   const { data: w } = await sb.from('workspaces').select('about, constitution, persona, icp, policy').eq('id', WS).single();
   const ws = w as Record<string, any>;
   const policy = (ws.policy ?? {}) as Record<string, any>;
-
-  const system = buildSystemPrompt('drafter', ws.about, ws.constitution, ws.persona, ws.icp, {}, {
-    outreach_channel: policy.drafter?.outreach_channel,
-    subject_style: policy.drafter?.subject_style,
-    paragraph_count: policy.drafter?.paragraph_count,
-    pain_points: policy.drafter?.pain_points,
-    value_props: policy.drafter?.value_props,
-    tone_keywords: policy.drafter?.tone_keywords,
-    ask_examples: policy.drafter?.ask_examples,
-    forbidden_phrases: policy.outreach?.banned_phrases ?? [],
-    forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
-    market_brief: policy.drafter?.market_brief,
-    templates: policy.drafter?.templates,
-    message_rules: policy.drafter?.message_rules,
-    char_budget: policy.drafter?.char_budget,
-    trigger_max_age_days: policy.drafter?.trigger_max_age_days,
-    trigger_fresh_days: policy.drafter?.trigger_fresh_days,
-    out_of_scope: policy.drafter?.out_of_scope,
-  });
 
   const ent = await resolveEntity();
   const entityId = ent.id;
@@ -110,6 +91,41 @@ async function main() {
 
   let recommended: any[] = [];
   try { recommended = await scoreFacts(sb as any, { workspace_id: WS, entity_id: entityId, facts: activeFacts as any, limit: 5 } as any); } catch { /* optional */ }
+
+  // The angle picker runs before the prompt is built, exactly as the live
+  // drafter runs it. Build the system prompt AFTER it, per account — building it
+  // once up front would grade a prompt that never ships.
+  const decision = (policy.drafter?.templates ?? []).length
+    ? await pickDraftAngle(sb as any, WS, {
+        model: 'deepseek-v4-flash',
+        account_name: ent.name,
+        facts: activeFacts.map((f: any) => ({ predicate: f.predicate, object_text: f.object_text })),
+        pain_points: policy.drafter?.pain_points ?? [],
+        templates: policy.drafter?.templates ?? [],
+      })
+    : { choice: null, reason: 'menu_too_small' as const };
+  const angle = decision.choice;
+  console.log(`angle  : ${angle ? `${angle.problem}\n         withheld: ${angle.withheld_template_ids.join(', ') || 'none'}  |  ${angle.why}` : `(none — ${decision.reason}, full menu rendered)`}`);
+
+  const system = buildSystemPrompt('drafter', ws.about, ws.constitution, ws.persona, ws.icp, {}, {
+    outreach_channel: policy.drafter?.outreach_channel,
+    subject_style: policy.drafter?.subject_style,
+    paragraph_count: policy.drafter?.paragraph_count,
+    pain_points: policy.drafter?.pain_points,
+    value_props: policy.drafter?.value_props,
+    tone_keywords: policy.drafter?.tone_keywords,
+    ask_examples: policy.drafter?.ask_examples,
+    forbidden_phrases: policy.outreach?.banned_phrases ?? [],
+    forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
+    market_brief: policy.drafter?.market_brief,
+    templates: policy.drafter?.templates,
+    angle: angle ? { problem: angle.problem, withheld_template_ids: angle.withheld_template_ids } : undefined,
+    message_rules: policy.drafter?.message_rules,
+    char_budget: policy.drafter?.char_budget,
+    trigger_max_age_days: policy.drafter?.trigger_max_age_days,
+    trigger_fresh_days: policy.drafter?.trigger_fresh_days,
+    out_of_scope: policy.drafter?.out_of_scope,
+  });
 
   const user = buildUserPrompt('claims_outbound_drafter', 'dry-run', 'dry-run grading pass',
     sig ?? {}, { id: entityId, name: ent.name, attributes: ent.attributes }, activeFacts, [], contacts, recommended as any, true);

@@ -40,6 +40,7 @@ export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepse
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
 export { suggestColumnMapping, type SuggestedMapping, type SuggestedFact } from './suggest_mapping.ts';
 export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts } from './prompt_builders.ts';
+export { pickDraftAngle, type AngleChoice, type AngleDecision, type AngleSkipReason, type AngleTemplate, type PickDraftAngleArgs } from './pick_angle.ts';
 export { diffDraftBody, type ParagraphDiff } from './diff_draft.ts';
 export { scoreFacts, DEFAULT_CONFIG as SCORE_FACTS_DEFAULTS, type FactRow, type FactScore, type FactScoreComponents, type ScoreFactsConfig } from './score_facts.ts';
 export { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, fetchSeenSignalTags };

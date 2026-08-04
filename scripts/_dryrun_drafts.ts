@@ -13,7 +13,7 @@ import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
-import { chatCompleteForWorkspace, scoreFacts } from '@agent-crm/tools';
+import { chatCompleteForWorkspace, scoreFacts, pickDraftAngle, type AngleDecision } from '@agent-crm/tools';
 import { buildSystemPrompt, buildUserPrompt } from '../inngest/functions/agent_logic.js';
 
 const WS = 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
@@ -38,7 +38,10 @@ async function main() {
   const ws = w as any;
   const policy = (ws.policy ?? {}) as any;
 
-  const system = buildSystemPrompt('drafter', ws.about, ws.constitution, ws.persona, ws.icp, {}, {
+  // The system prompt is now built per account, not once for the batch: the
+  // angle picker runs first and its answer changes which exemplars render. See
+  // buildSystem below, called inside the loop the way the live drafter does it.
+  const buildSystem = (angle: AngleDecision['choice']) => buildSystemPrompt('drafter', ws.about, ws.constitution, ws.persona, ws.icp, {}, {
     outreach_channel: policy.drafter?.outreach_channel,
     pain_points: policy.drafter?.pain_points,
     value_props: policy.drafter?.value_props,
@@ -46,13 +49,14 @@ async function main() {
     forbidden_phrases: policy.outreach?.banned_phrases ?? [],
     forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
     templates: policy.drafter?.templates,
+    angle: angle ? { problem: angle.problem, withheld_template_ids: angle.withheld_template_ids } : undefined,
     message_rules: policy.drafter?.message_rules,
     char_budget: policy.drafter?.char_budget,
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
     out_of_scope: policy.drafter?.out_of_scope,
   });
-  log(`system prompt: ${system.length} chars\n`);
+  log(`system prompt: ${buildSystem(null).length} chars before any angle is picked\n`);
 
   // Scores live as facts (score_total), and the CURRENT fact is the one nothing
   // else supersedes — `.is('supersedes', null)` would hand back the stale
@@ -75,6 +79,9 @@ async function main() {
 
   let drafted = 0, gated = 0;
   const bodies: Array<{ name: string; body: string }> = [];
+  // Every account landing on the same problem is the sameness this whole change
+  // is aimed at, and it is visible before you read a single draft.
+  const angleCounts = new Map<string, number>();
 
   for (const row of ranked) {
     const { data: ent } = await sb.from('entities').select('id, name, attributes').eq('id', row.entity_id).maybeSingle();
@@ -143,6 +150,22 @@ async function main() {
       recommended = await scoreFacts(sb as any, { workspace_id: WS, entity_id: acct.id, facts: activeFacts as any, limit: 5 } as any);
     } catch { /* shortlist is a nice-to-have here */ }
 
+    // Pick the argument before the prompt renders an exemplar, same order the
+    // live drafter uses. A null angle means the picker declined or failed, and
+    // the prompt falls back to the full menu.
+    let decision: AngleDecision = { choice: null, reason: 'menu_too_small' };
+    if ((policy.drafter?.templates ?? []).length) {
+      decision = await pickDraftAngle(sb as any, WS, {
+        model: 'deepseek-v4-flash',
+        account_name: acct.name,
+        facts: activeFacts.map((f: any) => ({ predicate: f.predicate, object_text: f.object_text })),
+        pain_points: policy.drafter?.pain_points ?? [],
+        templates: policy.drafter?.templates ?? [],
+      });
+    }
+    const angle = decision.choice;
+    const system = buildSystem(angle);
+
     const user = buildUserPrompt('claims_outbound_drafter', 'dry-run', 'dry-run grading pass',
       sig ?? {}, { id: acct.id, name: acct.name, attributes: acct.attributes }, activeFacts, [], contacts, recommended as any, true);
 
@@ -169,6 +192,8 @@ async function main() {
     }
 
     log(`── ${acct.name}  (score=${Number(acct.score).toFixed(2)}, ${activeFacts.length} facts, ${contacts.length} contacts)`);
+    log(`   angle: ${angle ? `${angle.problem.slice(0, 90)}  [withheld: ${angle.withheld_template_ids.join(', ') || 'none'}]  (${angle.why})` : `(none — ${decision.reason}, full menu rendered)`}`);
+    if (angle) angleCounts.set(angle.problem, (angleCounts.get(angle.problem) ?? 0) + 1);
     if (parsed.action === 'request_gate') {
       gated++;
       log(`   GATE: ${parsed.body}\n`);
@@ -193,6 +218,10 @@ async function main() {
   // Sameness check: do any two drafts share too much wording? This is the failure
   // the last batch had (ten messages, one message with the nouns swapped).
   log(`\n=== ${drafted} drafted, ${gated} gated ===`);
+  if (angleCounts.size) {
+    log('angle spread:');
+    for (const [problem, n] of [...angleCounts].sort((a, b) => b[1] - a[1])) log(`  ${n}×  ${problem.slice(0, 100)}`);
+  }
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
       const a = new Set(bodies[i]!.body.toLowerCase().split(/\W+/).filter((t) => t.length > 4));

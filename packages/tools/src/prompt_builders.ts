@@ -76,7 +76,18 @@ export interface DrafterDecisionOpts {
    * the linkedin channel, the DM prompt below replaces the generic
    * connection-request formula. Contents are config, never code.
    */
-  templates?: Array<{ id: string; label: string; audience: string; body: string; anatomy?: string; enabled?: boolean }>;
+  templates?: Array<{ id: string; label: string; audience: string; body: string; angle?: string; anatomy?: string; enabled?: boolean }>;
+  /**
+   * The argument this message makes, decided before the prompt is built (see
+   * pick_angle.ts). `problem` is one entry from pain_points, hoisted out of the
+   * menu so the model writes to it instead of choosing from a list it reads
+   * after three finished exemplars. `withheld_template_ids` are the templates
+   * whose exemplar argues that same thing: they render audience and anatomy
+   * with the body cut, because a finished question in context is copied no
+   * matter how many rules say not to.
+   * Unset = every exemplar renders in full and the model picks its own problem.
+   */
+  angle?: { problem: string; withheld_template_ids?: string[] };
   /** Drafting rules rendered verbatim above the templates. */
   message_rules?: string[];
   /** Character target for the DM body. Default 400. */
@@ -246,8 +257,22 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
       const rulesBlock = rules.length
         ? rules.map((r) => `- ${r}`).join('\n')
         : `- Aim for under ${budget} characters.`;
+      // An exemplar that argues the same point this message will argue gets its
+      // body cut, not a rule asking the model to please not copy it. That rule
+      // was written three times and lost to the exemplar all three times: with
+      // a finished question sitting in context, copying is the cheapest path
+      // available. The anatomy stays, so sentence count, beat order and rhythm
+      // still transfer — only the argument is gone.
+      const withheld = new Set((opts.angle?.withheld_template_ids ?? []).filter((id) => typeof id === 'string' && id.trim()));
       const templatesBlock = templates
-        .map((t, i) => `[${i + 1}] ${t.label}\n    AUDIENCE: ${t.audience}\n    EXEMPLAR: "${t.body}"${t.anatomy ? `\n    ANATOMY: ${t.anatomy}` : ''}`)
+        .map((t, i) => {
+          const head = `[${i + 1}] ${t.label}\n    AUDIENCE: ${t.audience}`;
+          const anatomy = t.anatomy ? `\n    ANATOMY: ${t.anatomy}` : '';
+          if (withheld.has(t.id)) {
+            return `${head}\n    EXEMPLAR: WITHHELD — this one argues the same point you are writing to, so its wording is not available to you. Its shape is still yours to use: build it from the anatomy.${anatomy}`;
+          }
+          return `${head}\n    EXEMPLAR: "${t.body}"${anatomy}`;
+        })
         .join('\n\n');
       // The menu STEP 4 refers to. Both are derived from the workspace's own
       // ABOUT at setup and were being computed, stored, passed in here, and then
@@ -257,8 +282,18 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
       // constitution still governs what may be asserted.
       const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);
       const values = (opts.value_props ?? []).filter((s) => s.trim().length > 0);
-      const menuBlock = (pains.length || values.length)
-        ? `\n${pains.length ? `PROBLEMS WE SOLVE — pick the ONE this account's anchor actually points at, and build your Think question from it. Never default to the first, and never list more than one in a message.\n${pains.map((p) => `  - ${p}`).join('\n')}\n` : ''}${values.length ? `\nWHAT IT ACTUALLY DOES — true behaviors you may state. Pick the one that answers the problem you chose; the exemplar's wording is one option, not the required one.\n${values.map((v) => `  - ${v}`).join('\n')}\n` : ''}`
+      // When the angle was picked upstream, the menu collapses to the one
+      // problem. Leaving all of them in front of the model reopens the door
+      // this was built to close: it would read the list after three exemplars
+      // and pick whichever one the exemplars had already argued.
+      const chosenProblem = opts.angle?.problem?.trim();
+      const painsBlock = chosenProblem
+        ? `THE PROBLEM YOU ARE WRITING TO — chosen for this account by reading its facts, before you saw any exemplar:\n  ${chosenProblem}\nBuild your Think question from this one and no other. If nothing in the facts actually shows this problem, do not substitute a different one — stop and request_gate, as STEP 2 says.\n`
+        : pains.length
+          ? `PROBLEMS WE SOLVE — pick the ONE this account's anchor actually points at, and build your Think question from it. Never default to the first, and never list more than one in a message.\n${pains.map((p) => `  - ${p}`).join('\n')}\n`
+          : '';
+      const menuBlock = (painsBlock || values.length)
+        ? `\n${painsBlock}${values.length ? `\nWHAT IT ACTUALLY DOES — true behaviors you may state. Pick the one that answers the problem you chose; the exemplar's wording is one option, not the required one.\n${values.map((v) => `  - ${v}`).join('\n')}\n` : ''}`
         : '';
       const scope = (opts.out_of_scope ?? []).filter((s) => s.trim().length > 0);
       const scopeBlock = scope.length
@@ -292,7 +327,9 @@ REQUEST_GATE — when STEP 0, STEP 1, STEP 2 or STEP 7 tells you to stop, output
 {"action":"request_gate","body":"<one sentence: the fact you would need>","policy":"facts_insufficient_for_draft"}
 
 REASONING — include a "reasoning" field: name the template you chose, the mode (trigger-led or theme-led), the anchor (the event and its date, or the theme and the dated facts behind it), and why this recipient fits that template's audience. Shown in the audit channel, never sent to the recipient.
-Also name which problem from the menu you built the question on, and say in a few words why the OTHER problems fit this account less well. If you cannot give a reason the others lose, you did not choose — you took the first one. Go back and read the account's facts against all of them before writing.
+${chosenProblem
+  ? 'Also quote the one fact that shows the problem above is real for this account. If you cannot point at a fact, you are assuming it, and an assumed problem is a gate, not a draft.'
+  : 'Also name which problem from the menu you built the question on, and say in a few words why the OTHER problems fit this account less well. If you cannot give a reason the others lose, you did not choose — you took the first one. Go back and read the account\'s facts against all of them before writing.'}
 
 CITE_QUOTES — for each id in "cites", also add an entry to "cite_quotes" giving the exact phrase copied verbatim from your "body" that reflects that fact (a few words, not the whole sentence). This is what lets the UI underline the claim in place — the phrase must appear in "body" character-for-character.
 

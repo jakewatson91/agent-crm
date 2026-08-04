@@ -330,7 +330,74 @@ onto those facts. The second is the better fix and is item 1 of the signal-extra
 
 Sample is six accounts. Treat the direction as real and the magnitude as noisy.
 
-### Still open in item 5, and now the top of the list
+### Item 5's remaining half — BUILT 2026-08-04, uncommitted. The sameness moved, it did not go.
+
+The angle is now picked before the prompt renders an exemplar, and any exemplar arguing that
+same point renders its anatomy with the body cut. Verified end to end. What the measurement
+then showed is that the templates were not the last cause of sameness, only the one we could
+see: **five of seven accounts get assigned the same problem, and that problem is written as the
+question**, so the drafts still rhyme. Details below, then what is left.
+
+**What ships (all uncommitted, dev only — the automated drafter keeps the old behaviour until
+this is committed and Render redeploys):**
+
+- `policy.drafter.templates[].angle` — one plain sentence naming what that exemplar argues.
+  Config, per workspace. Unset = the exemplar always renders in full, which is the old
+  behaviour, so this cannot break a workspace that never sets it.
+- `packages/tools/src/pick_angle.ts` — one cheap-model call per drafted account
+  (`deepseek-v4-flash`, the same model `classifyRole` uses; the drafter itself stays on
+  `deepseek-v4-pro`). It reads the account's facts, picks one problem from `pain_points`, and
+  names which template angles argue that same thing.
+- The prompt then renders `THE PROBLEM YOU ARE WRITING TO` in place of the four-item menu, and
+  the colliding templates render `EXEMPLAR: WITHHELD` plus their anatomy.
+- Failure is a no-op by design: any error, any unparseable answer, or "no problem fits" falls
+  back to the exact prompt that rendered before. The picker cannot block a draft.
+- `AngleDecision` carries a reason (`llm_error` / `unparseable` / `no_problem_fits` /
+  `no_facts` / `menu_too_small`) instead of a bare null, and the reason lands on the
+  `drafter_shortlist_pick` event next to the draft it shaped. A silent null here would be the
+  same trap as the harness that reported "0 contacts" for every account.
+- `scripts/_set_sudden_template_angles.ts` tags Sudden's four templates. Already applied.
+
+**A real bug this surfaced, now structurally fixed.** `angle` was passed into
+`buildSystemPrompt` correctly and never reached the prompt: the hand-off to
+`buildDrafterDecision` re-lists every key by hand, and the new one was not in the list. That is
+the THIRD field this call site has eaten (`templates` in `f101935`, `char_budget` caught
+pre-commit on 07-21). Every field is optional on the receiving type, so a dropped key
+type-checks clean. It now spreads the object instead of re-listing keys, so there is nothing
+left to forget. `_chk_drafter_prompt.ts` is what caught it, within a minute of the change.
+
+**Measured, two runs of the top 8 (`_dryrun_drafts.ts 8`):**
+
+| | first run | after tightening the picker |
+|---|---|---|
+| distinct problems chosen | 2 | 3 |
+| accounts on the most common problem | 5 of 6 | 5 of 7 |
+| draft pairs over 45% word overlap | 3 | 1 |
+
+Withholding works: MBC Group now picks the cost-per-viewer problem and `t2_founder` — the exact
+template it cloned on 2026-08-04 — renders with no body. Ab Films TV picked the redundant-egress
+problem and withheld `t3_technical` instead. Cineverse got the release-spike problem, withheld
+nothing, and produced the one genuinely different question in the batch: whether the CDN
+delivery during a popular episode is redundant.
+
+**What is left, and it is now a config question, not a code one.** Sudden's `pain_points[0]` is
+*"Delivery cost per viewer never falls; the cost line grows one to one with the audience"* —
+which is not a problem so much as the answer to the question every draft asks. Problems 2 and 4
+(redundant egress; delivery spikes on every release) are both special cases of it. The picker
+cannot separate what the config does not separate, so it keeps landing on the general one, and
+once assigned it, the drafter writes the 1:1 question with no exemplar to copy from. Two moves,
+both Jake's:
+
+1. Rewrite the menu so the four entries are genuinely different problems rather than one
+   problem at four zoom levels. This is the higher-yield one.
+2. Accept some convergence as mandated: the constitution allows exactly two credibility claims
+   and one of them IS the 1:1 claim. That was a deliberate choice and this does not change it.
+
+Watch on the first automated cycle after deploy: `angle_outcome` on `drafter_shortlist_pick`.
+A run where most rows say `no_problem_fits` means the picker is refusing rather than choosing,
+and the whole thing has quietly reverted to the old prompt.
+
+### The original diagnosis, kept because it is what the fix was built against
 
 **Hide the exemplar whose angle the model picked.** This is no longer a hypothesis. MBC Group,
 re-drafted 2026-08-04 after every other fix was in, chose Template 2 and produced:
@@ -351,6 +418,8 @@ the question it carries is not available to copy.
 
 Requires splitting angle from template, which is the config work already described above. Do
 that next; the content menu was the cheap half and it went as far as it can.
+
+*(Built 2026-08-04 — see the section above for what shipped and what the measurement showed.)*
 
 ### Background: why this was the situation
 

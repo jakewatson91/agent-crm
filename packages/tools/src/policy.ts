@@ -144,6 +144,17 @@ export interface DrafterPolicy {
     audience: string;
     /** Exemplar message, rendered verbatim as a style anchor. */
     body: string;
+    /**
+     * The argument this exemplar's question makes, in one plain sentence
+     * ("unit cost scales one to one with volume"). Audience picks WHO the
+     * message is for; this names WHAT it argues, which is the thing the model
+     * kept copying. Before every draft, the angle picker reads this list
+     * alongside the problem it chose for the account and names the templates
+     * that argue the same thing; those render their anatomy with the body
+     * withheld, so the shape still teaches and the argument cannot be lifted.
+     * Unset = the exemplar always renders in full, which is the old behaviour.
+     */
+    angle?: string;
     /** Structure breakdown (Trigger/Think/Cred/Talk) shown to the model. */
     anatomy?: string;
     /** Bump message for a future follow-up touch. Stored, not drafted yet. */

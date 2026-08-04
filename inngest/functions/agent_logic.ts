@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, type WorkspacePolicy, type FactScore } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, type WorkspacePolicy, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -742,6 +742,44 @@ export async function runAgent(
     edgeVocab = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([p]) => p);
   }
 
+  // Compute the deterministic shortlist for drafters. ~30 token addition; the
+  // drafter prompt is told to prefer these but can override when context demands.
+  // Skipped for non-drafter behaviors (claim_poster/enricher don't pick angles).
+  let recommended: FactScore[] = [];
+  if (behavior === 'drafter') {
+    try {
+      recommended = await scoreFacts(supabase, {
+        workspace_id: payload.workspace_id,
+        account_entity_id: ent.data.id,
+        facts: activeFacts.map((f) => ({
+          id: f.id, predicate: f.predicate, object_text: f.object_text,
+          confidence: f.confidence, observed_at: f.observed_at, source_event_id: f.source_event_id,
+        })),
+        config: (policy as Record<string, unknown>).fact_ranking as Record<string, unknown> | undefined,
+      });
+    } catch { /* non-fatal */ }
+  }
+
+  // Decide WHAT this message argues before the prompt renders a single
+  // exemplar, and withhold the bodies of the exemplars that already argue it.
+  // One cheap-model call per drafted account; a failure returns null and the
+  // prompt renders exactly as it did before, so the picker can never block a
+  // draft. Only the template-driven channel has exemplars to withhold.
+  let angleDecision: AngleDecision = { choice: null, reason: 'menu_too_small' };
+  if (behavior === 'drafter' && (policy.drafter?.templates ?? []).length) {
+    angleDecision = await pickDraftAngle(supabase, payload.workspace_id, {
+      // The workspace's cheap model, same one classifyRole uses. The drafter
+      // itself stays on DRAFTER_MODEL; this call picks an argument, it does
+      // not write anything a customer reads.
+      model: DEFAULT_MODEL,
+      account_name: (ent.data.name as string) ?? '(unnamed)',
+      facts: activeFacts.map((f) => ({ predicate: f.predicate, object_text: f.object_text })),
+      pain_points: (policy.drafter?.pain_points ?? []) as string[],
+      templates: (policy.drafter?.templates ?? []) as Array<{ id: string; angle?: string; enabled?: boolean }>,
+    });
+  }
+  const angle = angleDecision.choice;
+
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp, {
     examples: (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>,
     banned: (policy.enrichment?.banned_predicates ?? []) as string[],
@@ -761,29 +799,13 @@ export async function runAgent(
     forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
     market_brief: policy.drafter?.market_brief,
     templates: policy.drafter?.templates,
+    angle: angle ? { problem: angle.problem, withheld_template_ids: angle.withheld_template_ids } : undefined,
     message_rules: policy.drafter?.message_rules,
     char_budget: policy.drafter?.char_budget,
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
     out_of_scope: policy.drafter?.out_of_scope,
   });
-  // Compute the deterministic shortlist for drafters. ~30 token addition; the
-  // drafter prompt is told to prefer these but can override when context demands.
-  // Skipped for non-drafter behaviors (claim_poster/enricher don't pick angles).
-  let recommended: FactScore[] = [];
-  if (behavior === 'drafter') {
-    try {
-      recommended = await scoreFacts(supabase, {
-        workspace_id: payload.workspace_id,
-        account_entity_id: ent.data.id,
-        facts: activeFacts.map((f) => ({
-          id: f.id, predicate: f.predicate, object_text: f.object_text,
-          confidence: f.confidence, observed_at: f.observed_at, source_event_id: f.source_event_id,
-        })),
-        config: (policy as Record<string, unknown>).fact_ranking as Record<string, unknown> | undefined,
-      });
-    } catch { /* non-fatal */ }
-  }
   const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, recommended, behavior === 'drafter');
 
   let llm;
@@ -996,6 +1018,14 @@ export async function runAgent(
           actually_cited: validCites,
           cited_from_shortlist: citedFromShortlist,
           override: recommendedIds.length > 0 && citedFromShortlist.length === 0,
+          // What the angle picker decided, on the same row as the draft it
+          // shaped. Without this, a draft that clones an exemplar anyway is
+          // unattributable: you cannot tell whether the picker chose the wrong
+          // problem, missed a collision, or was never called at all.
+          angle_problem: angle?.problem ?? null,
+          angle_why: angle?.why ?? null,
+          angle_withheld_template_ids: angle?.withheld_template_ids ?? [],
+          angle_outcome: angleDecision.reason,
         },
         prompt_hash: promptHash,
         parent_event_id: payload.parent_event_id ?? null,
@@ -1314,7 +1344,9 @@ interface DrafterPromptFields {
   forbidden_phrases?: string[];
   forbidden_field_terms?: string[];
   market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };
-  templates?: Array<{ id: string; label: string; audience: string; body: string; anatomy?: string; enabled?: boolean }>;
+  templates?: Array<{ id: string; label: string; audience: string; body: string; angle?: string; anatomy?: string; enabled?: boolean }>;
+  /** Decided by pickDraftAngle before this prompt is built. See pick_angle.ts. */
+  angle?: { problem: string; withheld_template_ids?: string[] };
   message_rules?: string[];
   char_budget?: number;
   trigger_max_age_days?: number;
@@ -1371,26 +1403,15 @@ export function buildSystemPrompt(
     edgeVocab: enricherPolicy?.edgeVocab,
     nodeTypes: enricherPolicy?.nodeTypes,
   });
-  const drafterDecision = buildDrafterDecision({
-    // outreach_channel was previously not passed, so a linkedin workspace got
-    // the email formula under a "LinkedIn drafter" identity line.
-    outreach_channel: drafterPolicy?.outreach_channel,
-    templates: drafterPolicy?.templates,
-    message_rules: drafterPolicy?.message_rules,
-    char_budget: drafterPolicy?.char_budget,
-    trigger_max_age_days: drafterPolicy?.trigger_max_age_days,
-    trigger_fresh_days: drafterPolicy?.trigger_fresh_days,
-    subject_style: drafterPolicy?.subject_style,
-    paragraph_count: drafterPolicy?.paragraph_count,
-    pain_points: drafterPolicy?.pain_points,
-    value_props: drafterPolicy?.value_props,
-    tone_keywords: drafterPolicy?.tone_keywords,
-    ask_examples: drafterPolicy?.ask_examples,
-    forbidden_phrases: drafterPolicy?.forbidden_phrases,
-    forbidden_field_terms: drafterPolicy?.forbidden_field_terms,
-    market_brief: drafterPolicy?.market_brief,
-    out_of_scope: drafterPolicy?.out_of_scope,
-  });
+  // Spread, do not re-list. This hand-off has now dropped a field three times:
+  // `templates` (f101935), `char_budget` (caught pre-commit 2026-07-21), and
+  // `angle` (caught by _chk_drafter_prompt.ts, 2026-08-04). Every field is
+  // optional on the receiving type, so a key that goes missing type-checks
+  // clean and shows up weeks later as a prompt quietly missing a section.
+  // Re-listing keys was the bug; there is nothing to re-list now.
+  // (outreach_channel used to be the missing one, which is why a linkedin
+  // workspace once got the email formula under a "LinkedIn drafter" identity.)
+  const drafterDecision = buildDrafterDecision({ ...(drafterPolicy ?? {}) });
 
   const decisionBlock = behavior === 'drafter' ? drafterDecision
     : behavior === 'enricher' ? enricherDecision
