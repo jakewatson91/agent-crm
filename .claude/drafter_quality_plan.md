@@ -409,7 +409,17 @@ is worth writing down, because the same wrong ideas will look attractive again l
   `out_of_scope` condition — that is the same shape as the web-share condition deleted this
   morning, a binary test that cannot fire because peak concurrency is not a fact the book holds
   for most accounts. It belongs as a research question first, so the number gets collected, and
-  a scoring input once there is coverage. Not built.
+  a scoring input once there is coverage. **BUILT:** `research.always_include` now carries
+  "peak concurrent viewers or simultaneous streams on a single title", and the planner has
+  authored an angle for it — `open_peak_viewers`, open_web, 365-day window (a concurrency record
+  does not go stale in 30 days). Revisit the floor once there is coverage to look at.
+
+  **A gap found doing it, worth knowing before editing any research config:** `isStrategyFresh()`
+  checks only the AGE of `strategy_generated_at`. The docstring says the strategy regenerates on
+  a guidance change, but nothing in the code watches `guidance` or `always_include`, so a config
+  edit sits inert until the cached strategy ages out on its own. Editing either field without
+  forcing a regeneration does nothing. `scripts/_set_sudden_stable_attrs_and_research.ts` forces
+  it; a proper fix is to hash the planner inputs the way `scoreInputsHash` does for scoring.
 
 `scripts/_set_sudden_pitch_menu.ts` (dry run by default, `--apply` to write). Applied.
 
@@ -438,9 +448,53 @@ and the numbers, which the word-overlap check grades. `_dryrun_drafts.ts` now la
 as diagnostic and says what to read it for: the picker refusing outright, or a problem nothing
 ever selects.
 
-**Loose end, not chased:** OVI Technologies scored 0.95 and the angle picker's rationale cited
-"live streams with more than 5M viewers". If OVI is live-only, the out-of-scope veto should have
-caught it and did not. One account, unverified, worth a look before the next send.
+**OVI Technologies: chased, root-caused, fixed.** It scored 0.95 while calling itself a "sub
+second live streaming environment" whose own site says *"when we say Live, we mean LIVE."* The
+veto was not broken and the score was not stale — `scoreEntity` returns null for it, meaning the
+stored judgment was current under the current conditions. The rubric had **two facts with
+opposite answers**:
+
+```
+company_description: "Live Streaming and Gaming Ecosystem ... sub second live streaming"
+product:             "Film/TV Streaming, Sports Streaming"   <- imported taxonomy tag
+```
+
+Condition 1 requires live-only *with no on-demand catalog*, the `product` tag asserts a catalog,
+and the block says to stop only on evidence rather than assumption. Refusing to veto was the
+correct call on the evidence it had. **No rewording fixes this**, and rewording is the expensive
+move anyway (`out_of_scope` is in `scoreInputsHash`, so an edit re-rubrics all 1961 accounts).
+
+I also tried to size the class with a keyword sweep and it was useless: 1343 of 1841
+descriptions matched "live-focused" because a VOD service that mentions live once matches.
+KKTV and Film Movement Plus came back as candidates. That question cannot be answered by
+matching strings, which is the whole argument for storing the answer.
+
+**Fix, and it is item 2 + signal-extraction item 5 of this plan, now built:** ask the stable
+questions once and store the answers as facts, so the veto reads a stated answer instead of
+re-deriving one from contradictory prose.
+
+- `policy.enrichment.stable_attributes` — `{ predicate, question, values[] }`, empty by default.
+  Nothing about video, live or on-demand appears in code; which properties matter and what they
+  are called is customer config, because "live versus on-demand" means nothing in another
+  vertical.
+- `scripts/backfill_stable_attributes.ts` — dry run by default, `--apply`, `--limit`,
+  `--entity`. One cheap-model call per account. A value outside the configured list is dropped
+  rather than stored, and "unknown" stores nothing: a wrong stable attribute is worse than a
+  missing one, because the scorer will trust it for as long as it stands.
+- Sudden configured with `delivery_mode` (live_only / on_demand_only / both) and `business_model`
+  (operates_streaming_service / sells_to_streaming_services / neither), the second being exactly
+  the predicate item 2 proposed.
+
+**Verified on OVI:** with `delivery_mode=live_only` stored, the veto fires and cites it.
+`icp_total` 0.95 → **0**, written. The reasoning now reads: *"delivery_mode=live_only;
+company_description: 'when we say Live, we mean LIVE.'"*
+
+**Not run across the book, because it is a real spend decision.** Sample of 25: `delivery_mode`
+answered for 7 (3 live_only, 3 both, 1 on_demand_only), `business_model` for 20, nothing
+rejected as an invented value. If 12% live-only holds across ~1800 candidates that is roughly
+200 accounts that should be vetoed today and are not — but the sample is unordered, so treat the
+rate as indicative. Cost of the full pass: ~1800 cheap-model calls, plus a rescore of every
+touched account, which is the same order as the full rescore of 2026-08-04. Jake's call.
 
 **CAUTION for whoever touches this next:** `pain_points` and `value_props` are re-derived from
 the workspace About text by `deriveDefaults`, so saving About in Settings overwrites both lists.

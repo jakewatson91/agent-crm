@@ -18,6 +18,32 @@ export interface OutreachPolicy {
 }
 
 export interface EnrichmentPolicy {
+  /**
+   * Properties of a business that never change, asserted once and then read,
+   * instead of being re-derived from prose on every scoring call.
+   *
+   * The case that forced this: the out-of-scope veto asks "is their video live
+   * only, with no on-demand catalog". OVI Technologies describes itself as a
+   * "sub second live streaming environment" and also carries an imported
+   * `product: Film/TV Streaming` tag. Two facts, opposite answers, so the
+   * rubric correctly refused to veto and a live-only account scored 0.95. No
+   * wording change fixes that, because the contradiction is in the evidence.
+   * Asking the question once and storing the answer does.
+   *
+   * Contents are entirely workspace config. The SHAPE is here; which
+   * properties matter, what they are called and what values they may take
+   * belong to the customer, because "live versus on-demand" means nothing
+   * outside one vertical. Empty / unset = the backfill does nothing, which is
+   * the default for every workspace.
+   *
+   *   predicate : the fact name to assert (e.g. a delivery mode, a business
+   *               model). One fact per account per predicate.
+   *   question  : plain-English question the model answers from the account's
+   *               facts. Write it so the answer is one of `values`.
+   *   values    : the allowed answers. Anything else is discarded rather than
+   *               stored, so a model that improvises writes nothing.
+   */
+  stable_attributes?: Array<{ predicate: string; question: string; values: string[] }>;
   // Primary contact provider. 'hunter' (keyed by HUNTER_API_KEY) is broad but
   // weak on young startups; 'explorium' (keyed per-workspace via EXPLORIUM_API_KEY)
   // covers small startups better.
