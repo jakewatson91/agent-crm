@@ -192,6 +192,26 @@ export interface DrafterPolicy {
    * is better than "we're agent-native."
    */
   value_props?: string[];
+  /**
+   * Conditions that make an account unsellable no matter how well it matches
+   * the ICP on paper: traffic the product can't serve yet, a business that
+   * resells what we sell instead of buying it, a market we don't ship to.
+   * One plain sentence each, written so a reader can check it against the
+   * account's facts.
+   *
+   * Read by BOTH the scorer and the drafter, like pain_points/value_props
+   * above. In the scorer it is a veto, not a weighted dimension: a matched
+   * condition forces icp_total to 0 regardless of the other sub-scores, since
+   * an account we cannot serve is not "a slightly worse fit" — it is no fit.
+   * Averaging it would leave a textbook-industry match above the draft bar,
+   * which is exactly how a live-only video vendor got drafted at icp_fit 0.87.
+   * In the drafter it is a hard stop that routes to request_gate, which covers
+   * accounts already scored before a condition was added.
+   *
+   * What belongs here is a property of the product, so it is config and starts
+   * empty. Default: no conditions, nothing is vetoed.
+   */
+  out_of_scope?: string[];
   /** Tone keywords baked into the prompt: ["casual", "direct", "concrete"]. */
   tone_keywords?: string[];
   /**

@@ -95,6 +95,14 @@ export interface DrafterDecisionOpts {
    * never presented as news. Default 14 days; per-workspace knob.
    */
   trigger_fresh_days?: number;
+  /**
+   * Conditions that make an account unsellable (policy.drafter.out_of_scope).
+   * The scorer vetoes these to icp_total 0 so they never reach a draft, but a
+   * standing score computed before a condition was added still clears the bar.
+   * Rendering them here is the second line: the drafter refuses at write time,
+   * which is the last point before a message reaches a person.
+   */
+  out_of_scope?: string[];
 }
 
 /**
@@ -115,6 +123,23 @@ export interface DrafterDecisionOpts {
  *
  * Lands in the cached system prefix, which is stable per workspace, so the
  * length is close to free after the first call of a run.
+ *
+ * WRITING A RULE HERE: do not quote a banned string that would be a usable
+ * output in the slot the rule governs. The model completes the pattern instead
+ * of avoiding it — line 182 used to read `no trailing fragments like "Shows in
+ * your dashboard."` and a draft on 2026-08-04 ended with exactly that sentence.
+ * State the rule positively (what every sentence must have), or describe the
+ * bad SHAPE without handing over a phrase that can be pasted.
+ *
+ * Quoting is still right in three places, all kept deliberately: the input
+ * formats the user message uses, the ranked CTAs in STEP 5 that are prescribed
+ * rather than banned, and the industry-cliché bans whose whole value is naming
+ * a phrase the model would otherwise reach for on its own. The test is whether
+ * the quoted string could be dropped into this message and read as normal.
+ *
+ * Nothing vertical goes in this block. It is shared by every workspace, so a
+ * video example here is a bug even when it reads well. Keep
+ * `grep -n "1:1\\|egress\\|segments\\|CDN"` on this file returning nothing.
  */
 const outreachCraft = (maxAgeDays: number, freshDays: number) => `Work these steps in order. Do not skip ahead to writing.
 
@@ -126,18 +151,20 @@ Trust a published date over your instincts, and never present something older th
 
 MODE A, TRIGGER-LED: there is a real event with a PUBLISHED date inside the last ${freshDays} days. An event is something that HAPPENED: they posted, spoke, shipped, launched, raised, hired, published a number, changed a plan. Test it by finishing this sentence with the fact's published date and a verb: "On <date>, they <did X>." Lead with it.
 An undated fact can NEVER be the trigger, however recent the recorded date looks. You cannot write "On <date>, they <did X>" from a source that has no date, and guessing has put four-year-old news in front of real prospects. If the only thing that looks fresh is undated, you are in mode B.
-NOT events, and a trigger-led message built on one will be rejected: what the company IS ("a streaming platform"), what it FOCUSES ON ("cost efficiency"), what you INFER it suffers from ("must be facing buffering"), an award, a topic they cover, or a description of their market.
+NOT events, and a trigger-led message built on one will be rejected: what the company IS (a description of its business), what it FOCUSES ON (a priority it states about itself), what you INFER it suffers from (a problem you assumed from its industry rather than read in a fact), an award, a topic they cover, or a description of their market.
 
 MODE B, THEME-LED: nothing has a published date fresh enough to lead with, but two or more facts, from different dates or sources, point at the same current priority: a cost they keep attacking, a market they keep entering, a platform they keep scaling, a strategy they keep stating. Open on the pattern, the way you would after following a company for months: "you've spent this year pushing X", "every move lately points at Y". An older event may appear as supporting evidence with honest timing ("back when you launched X"), never as the news of the message.
 A theme needs convergence. One old launch alone is not a theme. "They match who we sell to" is not a theme. If the facts don't agree on a direction, there is no theme.
+A THEME MAY REST ENTIRELY ON UNDATED FACTS. Mode B does not need a recent signal — that is what mode A is for. Two undated facts from DIFFERENT sources that agree on a direction are a theme, and are enough to write on. Most of what is known about a company (what it runs on, who it buys from, what it has been trying to fix) never carries a date at all, and refusing to write until something is dated throws away the majority of what you know. What you must not do is imply timing you cannot support: describe the pattern as standing, not as news.
 
-Facts with a published date older than ${maxAgeDays} days are dead weight in both modes: not a trigger, not evidence.
+AGE KILLS EVENTS, NOT STATE. An EVENT with a published date older than ${maxAgeDays} days is dead weight: it happened, it is over, and it is neither a trigger nor evidence of a current priority.
+A fact describing how the company STANDS — what it runs on, who it buys from, what it has invested in, what it said it was trying to fix — does not expire just because the page reporting it is old. A case study from two years ago saying they adopted a particular encoder is still true about their stack today. It can never be the news of the message, but it is legitimate theme evidence in mode B, and dating it must not silently delete it. Judge the fact by whether it still describes them, not by the age of the page it came from.
 An undated fact is NOT automatically dead weight. It cannot anchor mode A, but it can still support a theme in mode B, and it is often the durable kind of detail that does not go stale: what they sell, who their customers are, what they run on. Use it for that, and never date it out loud.
 PICK THE STRONGEST, NOT THE FIRST. In mode A, when several fresh events qualify, lead with the one closest to the problem in STEP 2. A market launch or a traffic number beats a conference appearance every time. Do not open on a weak trigger and then quietly build the question off a stronger fact further down: put the strong one first.
 If neither mode has an honest anchor, output the request_gate escape hatch naming the one fact you would need. A message not sent costs nothing. A fake trigger, or a stale event dressed up as fresh, burns the account permanently.
 
 STEP 2 — TURN THE ANCHOR INTO THE JOB THEY HATE.
-Because of this anchor (the fresh event in mode A, the running theme in mode B), what unglamorous job or growing cost lands on this person's desk? Write it the way their own team would say it out loud, not the way a product page would. "The bill grows every time an episode drops" beats "rising infrastructure costs."
+Because of this anchor (the fresh event in mode A, the running theme in mode B), what unglamorous job or growing cost lands on this person's desk? Write it the way their own team would say it out loud, not the way a product page would. Name the thing that recurs and what it costs them when it does. A category of cost is not a problem; a category of cost with a trigger attached to it is.
 ONE HOP, NOT THREE. The anchor must reach the problem in a single step. If you need "they did X, so probably Y, which might mean Z" to get there, the anchor is too weak — go back to STEP 1 and find another or stop. An award, badge, certification or partner status is recognition of something they already do well, so it almost never reaches a problem in one hop; a growth number, a launch, a hire or a stated plan usually does.
 If you could delete the first sentence and the rest still reads fine, the personalization is decoration and you have not done the work.
 If the anchor honestly points the other way, that they already solved this, that LOWERS fit. Drop the angle or stop. Never tell them their own strategy is wrong.
@@ -145,10 +172,12 @@ If the anchor honestly points the other way, that they already solved this, that
 STEP 3 — WRITE THE THINK QUESTION. This is the most important line in the message.
 It makes them check an assumption about the way they do things now. It is never a question about your product.
 It must be answerable from memory in one line. If they would have to open a dashboard to answer it, it is too heavy.
-Prefer a fork over an open question. "Does X fall, or does it grow 1:1?" costs less to answer than "how do you think about X?"
-Do not answer it yourself in the line before it. If the previous sentence already asserts the answer, the question is rhetorical and dead.
+Prefer a fork over an open question: two named options cost less to answer than a blank page. "Is that still the same team, or did it move?" and "Did that come out of the existing budget, or a new one?" are forks. "How do you think about X?" is not.
+Those two are SHAPES, not scripts, and neither is yours. Build the fork out of the two outcomes THIS account is actually choosing between.
+A fork you have already seen in one of the exemplars is the one to avoid. Reusing it is how ten different companies get sent the same question.
+Do not answer it about THEM. A pattern you have seen across the category is allowed to come first and set the question up: "most teams at that size find X" followed by "where does yours sit?" is a real question, and handing them something to disagree with is the point of asking. That is what an expert sounds like. What kills the question is asserting the answer for THIS company, because then there is nothing left for them to tell you.
 Do not ask a question whose honest answer is "we're fine" with nowhere to go.
-BUILD IT FROM THEIR SITUATION, DO NOT COPY THE EXEMPLAR'S. The exemplar's question was written for a different company. Yours has to point at the specific thing in STEP 2: their peak, their release cadence, their new market, the thing that just changed. "When you drop a new series, how much egress is the same segments over and over?" is doing the work. The same question with the specifics filed off is not. If your question would read identically to another company in this industry, it is too generic — rewrite it.
+BUILD IT FROM THEIR SITUATION, DO NOT COPY THE EXEMPLAR'S. The exemplar's question was written for a different company. Yours has to point at the specific thing in STEP 2: their peak, their release cadence, their new market, the thing that just changed. A question that names that specific thing is doing the work; the same question with the specifics filed off is not. Test it before you keep it: if your question could be pasted into a message to a different company in this industry without editing a word, it is too generic — rewrite it.
 
 STEP 4 — CRED AND PITCH ARE TOOLS, NOT A QUOTA.
 Cred is a pattern you have seen across the category, or a number with a named source. It is never a promise about their results.
@@ -167,9 +196,11 @@ BANNED with no exceptions: "Open to a quick chat?", "Worth a quick call?", "Do y
 
 STEP 6 — WELD IT INTO ONE VOICE, THEN LINE EDIT. The steps above are how you THINK; they are not a list of sentences to emit. Your message has fewer sentences than there are steps, because beats share sentences. Weld them: the trigger and the problem it creates belong in one sentence; the credibility number never stands alone, it rides inside a sentence that says what it costs them; the pitch and the ask carry the close. Now read it back as the recipient, out loud. It should sound like one person talking, not parts with the bullets removed.
 - Open on them. The first five words are about their world, never yours.
-- Use their first name if you have it. A bare "Hey," with no name is worse than no greeting at all: drop the greeting entirely instead.
-- Never tell them what they think, feel, worry about or wonder. "That must keep you up at night", "a spike like that makes you wonder", "you're probably frustrated by" — all out. State the fact and ask the question; let them supply the feeling.
-- Fifth-grade reading level: common words, plain sentences. Short does not mean chopped. A sentence may carry two welded beats joined by a comma or "and" when that makes it flow. Every sentence is complete, with a subject and a verb: no trailing fragments like "Shows in your dashboard."
+- THE FIRST SENTENCE NAMES THEM AND SOMETHING THEY DID. It has a subject and a verb. A string of nouns, metrics and product names with no verb is a data row, not an opening: company name, then a number, then another number, is the single most common way this message fails. If you cannot get a verb into the opening clause, you picked the wrong anchor — go back to STEP 1 and take one that describes an action.
+- Use their first name if you have it. A bare greeting with no name is worse than no greeting at all: drop the greeting entirely instead.
+- Never tell them what they think, feel, worry about or wonder. Anything that assigns them an emotion, or tells them what a fact makes them wonder, is out. State the fact and ask the question; let them supply the feeling.
+- Fifth-grade reading level: common words, plain sentences. Short does not mean chopped. A sentence may carry two welded beats joined by a comma or "and" when that makes it flow.
+- EVERY sentence has a subject and a verb, the closing one included. A final line that starts with a bare verb is a fragment: give it a subject, or fold it into the sentence before it.
 - Cut every word that survives being cut. Kill "just", "quick", "really", "I hope this finds you well", and every exclamation mark.
 - No abstract product nouns ("single source of truth", "all-in-one platform", "seamless integration"). No filler verbs (streamline, leverage, optimize, empower, unlock, revolutionize).
 - Keep the pitch to one sentence, and never place it before the Think question.
@@ -182,10 +213,11 @@ STEP 7 — PICK ONE TEMPLATE AND MATCH ITS SHAPE.
 Match the recipient's real role to the AUDIENCE lines and pick exactly one. If the recipient matches none of them, do not force a fit: output request_gate.
 What MUST be built fresh for this account: the anchor (trigger or theme), the problem in STEP 2, and the think question. Never take those from the exemplar.
 What MAY repeat across accounts: approved claim wording and the sentence describing what you do, WHEN the message includes them at all. Whether to include them is STEP 4's call, made per message. A message that skips the cred, or pitches a different true behavior than the exemplar did, is often the better message. What never varies is honesty and shape discipline.
+GET THIS ASYMMETRY THE RIGHT WAY ROUND. The approved wording is the part that SHOULD stay word for word: it is approved because someone checked it. The anchor and the question are the parts that MUST change. Rewriting an approved term into a loose synonym while keeping the exemplar's question is backwards on both counts — it makes the claim vaguer and the message identical. If you find yourself reaching for a different word for something the workspace already names, stop: use their word, and spend the originality on the question instead.
 Two tests, both must pass. CONTENT: the anchor, the problem and the think question are built from THIS account and read nothing like the exemplar's. SHAPE: your sentence count, your order, and where you fuse beats are your own, not a trace of the exemplar's outline. A draft with a fresh anchor is still a clone if it walks the exemplar's shape sentence for sentence. If either fails, go back to STEP 3.
 
 STEP 8 — COUNT THE CHARACTERS. If you are over budget, cut in this order until you fit:
-  1. The verification detail that trails the ask ("X shows up in your dashboard").
+  1. The verification detail that trails the ask — the clause telling them where they could see the result for themselves.
   2. Adjectives and any clause that restates something already said.
   3. The credibility sentence. It is the most expendable of the four parts; a message with a sharp trigger and a sharp question still works with no cred at all.
 Never cut the question to fit. Never cut the trigger to fit.
@@ -195,7 +227,8 @@ STEP 9 — CHECK BEFORE YOU OUTPUT. Any "no" means rewrite.
 - Check every dated fact the message references: does any sentence imply an old event just happened?
 - Does the anchor reach the problem in one hop?
 - Is there a question they can answer from memory in one line, and is it about THEIR situation rather than the exemplar's?
-- Does the message open on them?
+- Does the message open on them, and does that first sentence have a subject and a verb?
+- Read the LAST sentence on its own. Does it have a subject? If it starts with a verb, it is a fragment — fix it.
 - Is the pitch one sentence or less, and does it come after the question?
 - Can I source every number and claim?
 - Is it under the character budget?
@@ -216,7 +249,29 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
       const templatesBlock = templates
         .map((t, i) => `[${i + 1}] ${t.label}\n    AUDIENCE: ${t.audience}\n    EXEMPLAR: "${t.body}"${t.anatomy ? `\n    ANATOMY: ${t.anatomy}` : ''}`)
         .join('\n\n');
+      // The menu STEP 4 refers to. Both are derived from the workspace's own
+      // ABOUT at setup and were being computed, stored, passed in here, and then
+      // dropped — this branch used to return without ever rendering them, so the
+      // exemplars were the only content the model had and every draft converged
+      // on the one argument they carry. Neither list is a credibility claim: the
+      // constitution still governs what may be asserted.
+      const pains = (opts.pain_points ?? []).filter((s) => s.trim().length > 0);
+      const values = (opts.value_props ?? []).filter((s) => s.trim().length > 0);
+      const menuBlock = (pains.length || values.length)
+        ? `\n${pains.length ? `PROBLEMS WE SOLVE — pick the ONE this account's anchor actually points at, and build your Think question from it. Never default to the first, and never list more than one in a message.\n${pains.map((p) => `  - ${p}`).join('\n')}\n` : ''}${values.length ? `\nWHAT IT ACTUALLY DOES — true behaviors you may state. Pick the one that answers the problem you chose; the exemplar's wording is one option, not the required one.\n${values.map((v) => `  - ${v}`).join('\n')}\n` : ''}`
+        : '';
+      const scope = (opts.out_of_scope ?? []).filter((s) => s.trim().length > 0);
+      const scopeBlock = scope.length
+        ? `\nSTEP 0 — CAN WE EVEN SERVE THEM? Do this before reading anything else.
+These conditions mean this account is not sellable, whatever their fit score says:
+${scope.map((s) => `  - ${s}`).join('\n')}
+Check each one against the account's facts. If one clearly applies, stop and output:
+{"action":"request_gate","body":"<the condition, and the fact that shows it>","policy":"account_out_of_scope"}
+Only stop on evidence in the facts, never on an assumption about what a company like this probably does. If the facts don't settle it, carry on and draft.
+`
+        : '';
       return `A new high-fit signal matched your saved filter rule. Write the LinkedIn DM for this account, following the workspace templates below.
+${scopeBlock}
 
 ${outreachCraft(opts.trigger_max_age_days ?? 90, opts.trigger_fresh_days ?? 14)}
 
@@ -226,16 +281,18 @@ ${rulesBlock}
 - No subject line — set "subject" to null in your output.
 - Do NOT mention "our system", "your profile", "according to our data", or any internal field name.
 ${toneBlock}
-TEMPLATES:
+TEMPLATES — these set the SHAPE and the audience. The content comes from the account and from the menu below, never from the exemplar.
+An exemplar may deliberately be written about a different industry from the one you are selling into. That is not a mistake and it is not a hint to change subject: it is there so you take the rhythm, the sentence count and the order of beats, and nothing else. If a phrase from an exemplar would fit in your message unchanged, you are copying rather than writing.
 
 ${templatesBlock}
-
+${menuBlock}
 LEAD-FACT SELECTION — prefer the RECOMMENDED FACTS shortlist when the user message includes one.
 
-REQUEST_GATE — when STEP 1, STEP 2 or STEP 7 tells you to stop, output exactly:
+REQUEST_GATE — when STEP 0, STEP 1, STEP 2 or STEP 7 tells you to stop, output exactly:
 {"action":"request_gate","body":"<one sentence: the fact you would need>","policy":"facts_insufficient_for_draft"}
 
 REASONING — include a "reasoning" field: name the template you chose, the mode (trigger-led or theme-led), the anchor (the event and its date, or the theme and the dated facts behind it), and why this recipient fits that template's audience. Shown in the audit channel, never sent to the recipient.
+Also name which problem from the menu you built the question on, and say in a few words why the OTHER problems fit this account less well. If you cannot give a reason the others lose, you did not choose — you took the first one. Go back and read the account's facts against all of them before writing.
 
 CITE_QUOTES — for each id in "cites", also add an entry to "cite_quotes" giving the exact phrase copied verbatim from your "body" that reflects that fact (a few words, not the whole sentence). This is what lets the UI underline the claim in place — the phrase must appear in "body" character-for-character.
 

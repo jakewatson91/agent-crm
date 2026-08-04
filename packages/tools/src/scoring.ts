@@ -84,6 +84,15 @@ export const ADMIN_PREDICATES = new Set([
   // A workspace that renames the fact passes the custom name to
   // isSubstantiveFact / scoreEntity instead.
   'outreach_stage',
+  // Text that was filed as a fact about the ACCOUNT but describes a PERSON —
+  // usually a contact's profile bio landing in company_description, where the
+  // ICP rubric then reads it as the company's business. Minutus Computing was
+  // scored industry_match 0 ("a consulting firm focused on packaging and
+  // sustainability") off one such bio. Parked here rather than deleted so the
+  // text stays auditable, and listed as admin so parking it cannot inflate the
+  // evidence_depth of the very accounts it was polluting.
+  // See scripts/_sweep_company_description.ts and scripts/fix_misfiled_facts.ts.
+  'misfiled_person_bio',
 ]);
 
 // True when a fact is real evidence about the account (not bookkeeping, not a
@@ -115,6 +124,13 @@ export function scoreInputsHash(input: {
   icp: unknown;
   about: string | undefined;
   persona: unknown;
+  /** policy.drafter.out_of_scope, which reaches the rubric prompt as a veto
+   *  list. Editing a condition changes the VERDICT, not just the ranking, so it
+   *  belongs in the hash the way icp/about do: an account judged serviceable
+   *  under the old list has to be re-judged under the new one. The cost is a
+   *  full re-rubric of the book on every condition edit, which is the same
+   *  price an ICP edit already pays. Absent = no conditions configured. */
+  outOfScope?: string[];
 }): string {
   // Only what the rubric prompt actually contains. Scoring weights and
   // scoring_config_state.changed_at deliberately do NOT go in here: neither
@@ -132,8 +148,33 @@ export function scoreInputsHash(input: {
     i: input.icp ?? {},
     b: input.about ?? '',
     p: input.persona ?? {},
+    // Not sorted: order is the contract. The rubric answers with a 1-based
+    // index into this list, so reordering the conditions changes what a stored
+    // answer means and has to read as a new question.
+    s: input.outOfScope ?? [],
   });
   return createHash('sha256').update(payload).digest('hex').slice(0, 32);
+}
+
+/**
+ * Turn the rubric's out-of-scope answer into the breakdown string, or null when
+ * nothing fired. Pure so the index guard is testable without a DB or an LLM.
+ *
+ * The guard matters because the veto deletes a prospect from the book: the model
+ * returns a 1-based condition NUMBER, and only a number that lands inside the
+ * configured list is honoured. An out-of-range index means the model invented a
+ * condition that was never configured, and inventing one must not cost a real
+ * account, so it is dropped and the account scores normally.
+ */
+export function resolveOutOfScope(
+  conditions: string[],
+  hit: { condition?: number; evidence?: string } | null | undefined,
+): string | null {
+  if (!conditions.length || !hit || typeof hit.condition !== 'number') return null;
+  const idx = hit.condition - 1;
+  if (!Number.isInteger(idx) || idx < 0 || idx >= conditions.length) return null;
+  const evidence = (hit.evidence ?? '').toString().trim().slice(0, 200);
+  return `${conditions[idx]}${evidence ? ` — ${evidence}` : ''}`;
 }
 
 export interface ScoreBreakdown {
@@ -162,6 +203,13 @@ export interface ScoreBreakdown {
    * which facts the rubric leaned on.
    */
   evidence_fact_ids?: { graph_proximity?: string[] };
+  /**
+   * Set when a policy.drafter.out_of_scope condition matched: the condition
+   * text, followed by the fact that triggered it. Its presence means icp_total
+   * was vetoed to 0 and the sub-scores above are evidence only — they describe
+   * an account we still cannot serve. Absent on every account that passed.
+   */
+  out_of_scope?: string;
 }
 
 export interface EntityScore {
@@ -417,6 +465,14 @@ export async function scoreEntity(
   // Fingerprint the rubric's real inputs up front. Used twice: to reuse the
   // stored judgment below, and by scoreAndAssert to drop a write that would
   // re-roll an identical question (see the race note there).
+  // Conditions that make an account unserviceable regardless of fit. Read here
+  // rather than at the rubric below because it feeds the hash: a condition edit
+  // has to invalidate every stored judgment, or accounts judged under the old
+  // list would keep a score the new list would have vetoed.
+  const outOfScope = Array.isArray(ws.policy?.drafter?.out_of_scope)
+    ? (ws.policy!.drafter!.out_of_scope as string[]).filter((s) => s.trim())
+    : [];
+
   const inputs_hash = scoreInputsHash({
     factIds: facts.filter((f) => substantive(f.predicate)).map((f) => f.id),
     contactFactIds: contactSignalFacts.map((f) => f.id),
@@ -424,6 +480,7 @@ export async function scoreEntity(
     icp: ws.icp,
     about: ws.about,
     persona: ws.persona,
+    outOfScope,
   });
 
   // Skip-when-stale guard: if a prior score_total exists and no substantive
@@ -447,7 +504,26 @@ export async function scoreEntity(
       (ws.policy?.scoring_config_state as { changed_at?: string } | undefined)?.changed_at ?? '',
     );
     const icpChangedSinceScore = Number.isFinite(cfgChangedAt) && cfgChangedAt > scoreTs;
-    if (!hasNewerSubstantive && !icpChangedSinceScore) return null;
+
+    // Derived backstop for the line above. changed_at only works if whoever
+    // edited the config remembered to bump it, and most writers don't: a
+    // settings save, a wizard step or a one-off script can all change icp,
+    // about, persona or out_of_scope and leave the timestamp untouched, after
+    // which every account skips here and the edit silently never applies.
+    // inputs_hash already fingerprints exactly those inputs, so comparing it
+    // against the stored one detects the change without anyone opting in.
+    // Unknown (no stored breakdown, or unparseable) means we cannot rule out a
+    // change, so we score rather than skip — the safe direction.
+    const priorHashFact = facts.find((f) => f.predicate === 'icp_fit_breakdown');
+    let inputsChanged = false;
+    if (priorHashFact?.object_text) {
+      try {
+        const storedHash = (JSON.parse(priorHashFact.object_text) as { inputs_hash?: string }).inputs_hash;
+        inputsChanged = typeof storedHash !== 'string' || storedHash !== inputs_hash;
+      } catch { inputsChanged = true; }
+    }
+
+    if (!hasNewerSubstantive && !icpChangedSinceScore && !inputsChanged) return null;
   }
 
   // ---- Deterministic sub-scores ----
@@ -513,6 +589,22 @@ export async function scoreEntity(
           unknown_dims,
           evidence_fact_ids: { graph_proximity: graphRes.evidence_fact_ids },
         };
+        // A stored veto survives reuse. Without this the recombine below would
+        // hand back a passing total from the same sub-scores that were already
+        // judged unserviceable, so the account would quietly re-qualify on the
+        // next run that hit the cache.
+        if (typeof prior.out_of_scope === 'string' && prior.out_of_scope.trim()) {
+          breakdown.out_of_scope = prior.out_of_scope;
+          return {
+            icp_total: 0,
+            icp_fit: 0,
+            breakdown,
+            reasoning: prior.reasoning ?? `Out of scope: ${prior.out_of_scope}`,
+            llm_called: false,
+            inputs_hash,
+            reused: true,
+          };
+        }
         const icp_total = combineSubScores(breakdown, weights);
         return {
           icp_total,
@@ -602,6 +694,10 @@ export async function scoreEntity(
   // the real value prop, no separate list to maintain. Empty = generic rubric.
   const valueProps = Array.isArray(ws.policy?.drafter?.value_props) ? (ws.policy!.drafter!.value_props as string[]) : [];
   const painPoints = Array.isArray(ws.policy?.drafter?.pain_points) ? (ws.policy!.drafter!.pain_points as string[]) : [];
+  const scopeBlock = outOfScope.length
+    ? `\nOUT OF SCOPE (conditions we cannot serve — check these FIRST, before scoring anything):\n${outOfScope.map((s, i) => `  [${i + 1}] ${s}`).join('\n')}\n`
+    : '';
+
   const sellBlock = (valueProps.length || painPoints.length)
     ? `\nWHAT WE SELL (judge signal_strength against THIS — a signal is strong only when it connects to a pain we solve or value we deliver, weak when it doesn't):\n${painPoints.length ? `  Pains we solve:\n${painPoints.map((p) => `    - ${p}`).join('\n')}\n` : ''}${valueProps.length ? `  Value we deliver:\n${valueProps.map((v) => `    - ${v}`).join('\n')}\n` : ''}`
     : '';
@@ -638,16 +734,23 @@ DIMENSIONS:
    - 0.0: noise (mentioned in passing in unrelated content)
 
 REASONING: 1–2 sentences citing the SPECIFIC ground-truth fields and facts that drove each score. No filler. No template phrases.
-
+${outOfScope.length ? `
+OUT OF SCOPE CHECK — do this before the three dimensions.
+The OUT OF SCOPE list in the user message holds conditions we cannot serve. Read every one against this account's facts.
+If a condition clearly applies, set "out_of_scope" to the condition's number and quote the fact that shows it: {"condition": <number>, "evidence": "<the fact, quoted>"}.
+Otherwise set "out_of_scope" to null.
+BE CONSERVATIVE. Only fire when a fact SHOWS the condition, never on an assumption about the industry or on what a company with that name probably does. Missing information is not evidence: if the facts do not settle it, the answer is null. A wrong "out of scope" silently deletes a real prospect from the book.
+Score the three dimensions honestly either way — they are the audit trail for why the account looked like a fit.
+` : ''}
 Output JSON only:
-{"industry_match": 0.0-1.0, "stage_match": 0.0-1.0, "signal_strength": 0.0-1.0, "reasoning": "<1-2 sentences>"}`;
+{"industry_match": 0.0-1.0, "stage_match": 0.0-1.0, "signal_strength": 0.0-1.0, ${outOfScope.length ? '"out_of_scope": null | {"condition": <number>, "evidence": "<quoted fact>"}, ' : ''}"reasoning": "<1-2 sentences>"}`;
 
   const userPrompt = `WORKSPACE ABOUT:
 ${(ws.about ?? '').slice(0, 800)}
 
 WORKSPACE ICP:
 ${JSON.stringify(ws.icp ?? {}, null, 2)}
-${sellBlock}
+${scopeBlock}${sellBlock}
 ACCOUNT: ${entity.name}${entityTypes.length ? ` (${entityTypes.join(', ')})` : ''}
 
 COMPANY GROUND TRUTH (hard facts about the account — trust over inference):
@@ -667,7 +770,10 @@ PRE-COMPUTED SIGNALS (for context, not to copy):
 
 Score this account on the three rubric dimensions.`;
 
-  let parsed: { industry_match?: number; stage_match?: number; signal_strength?: number; reasoning?: string };
+  let parsed: {
+    industry_match?: number; stage_match?: number; signal_strength?: number; reasoning?: string;
+    out_of_scope?: { condition?: number; evidence?: string } | null;
+  };
   try {
     const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
       model: SCORE_MODEL,
@@ -695,6 +801,25 @@ Score this account on the three rubric dimensions.`;
     unknown_dims,
     evidence_fact_ids: { graph_proximity: graphRes.evidence_fact_ids },
   };
+
+  // Out-of-scope veto. Only a condition the model actually returned by number,
+  // and only one that exists in the configured list, can fire — a hallucinated
+  // index is dropped rather than deleting a real prospect. The sub-scores stay
+  // on the breakdown as the record of why the account looked like a fit; the
+  // total goes to 0 because "we cannot serve them" is not a degree of fit.
+  const scopeVeto = resolveOutOfScope(outOfScope, parsed.out_of_scope);
+  if (scopeVeto) {
+    breakdown.out_of_scope = scopeVeto;
+    return {
+      icp_total: 0,
+      icp_fit: 0,
+      breakdown,
+      reasoning: `Out of scope: ${breakdown.out_of_scope}`.slice(0, 400),
+      llm_called: true,
+      inputs_hash,
+      reused: false,
+    };
+  }
 
   const icp_total = combineSubScores(breakdown, weights);
   return {

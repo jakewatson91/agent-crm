@@ -178,10 +178,16 @@ async function main() {
     const beforeFact = fs.find((f) => f.predicate === 'icp_fit');
     const before = beforeFact?.object_text ? parseFloat(beforeFact.object_text) : NaN;
 
+    // outOfScope must be passed here too, or this hash disagrees with the one
+    // scoring.ts computes and the alreadyDone guard below can never match —
+    // every run would write a redundant supersede row per entity.
     const hash = scoreInputsHash({
       factIds: real.map((f) => f.id),
       attributes: attrs,
       icp: ws.icp, about: ws.about, persona: ws.persona,
+      outOfScope: Array.isArray(ws.policy?.drafter?.out_of_scope)
+        ? (ws.policy!.drafter!.out_of_scope as string[]).filter((s) => s.trim())
+        : [],
     });
     // Already recombined under this formula and the number hasn't moved: skip,
     // so re-running (or resuming after an interrupted pass) doesn't append a

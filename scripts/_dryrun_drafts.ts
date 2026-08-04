@@ -50,6 +50,7 @@ async function main() {
     char_budget: policy.drafter?.char_budget,
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
+    out_of_scope: policy.drafter?.out_of_scope,
   });
   log(`system prompt: ${system.length} chars\n`);
 
@@ -110,12 +111,30 @@ async function main() {
       f.recorded_date = f.observed_at;
     }
 
-    const { data: contactRows } = await sb
-      .from('entities').select('name, attributes').eq('workspace_id', WS)
-      .contains('attributes', { works_at: acct.id }).limit(5);
-    const contacts = ((contactRows ?? []) as any[])
-      .map((c) => ({ name: c.name, email: c.attributes?.email ?? '', role: c.attributes?.role ?? c.attributes?.title ?? '' }))
-      .filter((c) => c.email);
+    // works_at is a FACT (what create_contact writes and action_selector reads),
+    // not an attribute. This used to query attributes.works_at, which nothing
+    // sets, so every account graded as having zero contacts. Email is not
+    // required on the linkedin channel — the templates need a name and a role.
+    const { data: waFacts } = await sb.from('facts').select('subject_entity')
+      .eq('workspace_id', WS).eq('predicate', 'works_at').eq('object_entity', acct.id).is('supersedes', null);
+    const contactIds = [...new Set(((waFacts ?? []) as any[]).map((r) => r.subject_entity).filter(Boolean))].slice(0, 5);
+    let contacts: Array<{ name: string; email: string; role: string }> = [];
+    if (contactIds.length) {
+      const { data: cEnts } = await sb.from('entities').select('id, name, attributes').in('id', contactIds);
+      const { data: cFacts } = await sb.from('facts').select('subject_entity, predicate, object_text')
+        .eq('workspace_id', WS).in('subject_entity', contactIds).in('predicate', ['role', 'email']).is('supersedes', null);
+      const byId = new Map<string, { role?: string; email?: string }>();
+      for (const f of (cFacts ?? []) as any[]) {
+        const e = byId.get(f.subject_entity) ?? {};
+        if (f.predicate === 'role') e.role = f.object_text; else e.email = f.object_text;
+        byId.set(f.subject_entity, e);
+      }
+      contacts = ((cEnts ?? []) as any[]).map((c) => ({
+        name: c.name,
+        email: byId.get(c.id)?.email ?? c.attributes?.email ?? '',
+        role: byId.get(c.id)?.role ?? c.attributes?.role ?? c.attributes?.title ?? '',
+      }));
+    }
 
     const { data: sig } = await sb.from('signals').select('*').eq('entity_id', acct.id).order('observed_at', { ascending: false }).limit(1).maybeSingle();
 

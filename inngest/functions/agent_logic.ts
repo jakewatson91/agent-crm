@@ -765,6 +765,7 @@ export async function runAgent(
     char_budget: policy.drafter?.char_budget,
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
+    out_of_scope: policy.drafter?.out_of_scope,
   });
   // Compute the deterministic shortlist for drafters. ~30 token addition; the
   // drafter prompt is told to prefer these but can override when context demands.
@@ -1318,6 +1319,7 @@ interface DrafterPromptFields {
   char_budget?: number;
   trigger_max_age_days?: number;
   trigger_fresh_days?: number;
+  out_of_scope?: string[];
 }
 
 /**
@@ -1387,6 +1389,7 @@ export function buildSystemPrompt(
     forbidden_phrases: drafterPolicy?.forbidden_phrases,
     forbidden_field_terms: drafterPolicy?.forbidden_field_terms,
     market_brief: drafterPolicy?.market_brief,
+    out_of_scope: drafterPolicy?.out_of_scope,
   });
 
   const decisionBlock = behavior === 'drafter' ? drafterDecision
