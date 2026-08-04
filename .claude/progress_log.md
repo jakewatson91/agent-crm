@@ -2473,3 +2473,9 @@ Three levers, none of them a prompt change: get the domain backfill firing again
 Ran it manually (`scripts/_run_domain_backfill_now.ts`, new, dry run by default). ShowMax sorted first and Cineverse third, exactly as designed. 43 of 75 resolved, 32 no_match, 0 errors, about $0.53 of Exa: **ShowMax → showmax.com, Cineverse → cineverse.com**. Both are now research candidates for the first time.
 
 The durable lesson, now in `project_state.md`: any job whose ordering depends on scores is stale until it next runs, so a full-book rescore should be followed by a backfill run. Four wrong-looking things this session (a "dead" pipeline, a 1343-account sweep, a veto that "missed", and a top account with no domain) turned out to be three measurement errors and one sequencing accident. None was the bug it looked like.
+
+**Last change of the session: `research.max_age_days` 30 → 90.** Research was dropping at ingestion the material the drafter would have used. The drafter's `trigger_max_age_days` is 90 and it will build a theme-led message on a 60-day-old fact; it only needs 14 days for something it presents as news. The freshness floor was tuned for the trigger case and was quietly costing the theme case. Across the 8-account run: 29 results fetched, paid for, and binned as stale.
+
+After the bump, re-running the top 4: Cineverse 0 → 3 signals, Ab Films stale drops 5 → 1, Weyyak 2 → 1. No extra search spend, since these are results already fetched; the cost is more surviving signals to enrich.
+
+ShowMax dropped 10 as stale both before and after the threshold moved, which means all ten are over 90 days old, and 7 more were filtered as off-topic. It has no recent web material matching Sudden's angles, so the drafter gating it is correct. Worth recording so nobody spends another session on it: giving it a domain was still the right fix (it was invisible to research entirely), it just was not the blocker anyone assumed.
