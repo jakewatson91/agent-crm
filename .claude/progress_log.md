@@ -2479,3 +2479,77 @@ The durable lesson, now in `project_state.md`: any job whose ordering depends on
 After the bump, re-running the top 4: Cineverse 0 → 3 signals, Ab Films stale drops 5 → 1, Weyyak 2 → 1. No extra search spend, since these are results already fetched; the cost is more surviving signals to enrich.
 
 ShowMax dropped 10 as stale both before and after the threshold moved, which means all ten are over 90 days old, and 7 more were filtered as off-topic. It has no recent web material matching Sudden's angles, so the drafter gating it is correct. Worth recording so nobody spends another session on it: giving it a domain was still the right fix (it was invisible to research entirely), it just was not the blocker anyone assumed.
+
+---
+
+## 2026-08-04 (later session) — the relevance filter was right; Exa was returning the wrong company
+
+Picked up the open thread from `research_queries_review.md`: was the same-name / relevance
+filter rejecting genuinely wrong-company results, or being too strict on the new OR-heavy
+queries? It was neither of the things the handoff suspected.
+
+**The measurement first.** The gate had recorded a per-test breakdown since 07-29 but nobody
+had read it. Across 219 runs and 1780 drops: identity 901 (55%), substance 301 (18%),
+relevance 177 (11%), unreported 252 (15%). So the filter was not rejecting on relevance at
+all — it was rejecting on identity, and the accounts yielding nothing were rejecting on
+identity almost exclusively (Ab Films TV 12 of 12, Simple Plus 10 of 10, PTC Punjabi 5 of 5).
+
+First hypothesis was wrong and worth recording: thin entities getting the harsh unsure-rule.
+Checked it (`_chk_gate_context.ts`) and every one of those accounts had 500-600 characters of
+context and the lenient rule. The gate was rejecting *despite* good grounding.
+
+**What it was actually rejecting.** Dumping every candidate with its verdict
+(`_chk_gate_verdicts.ts`, which needed a new per-page reject reason out of
+`filterResultsByEntity`) settled it in one read. For Weyyak: UFC fight ratings, Kai Cenat's
+Twitch numbers, Naver Chzzk concurrency records. For Ab Films TV: ABS-CBN, Canal+/MultiChoice,
+three unrelated production companies, and a handful of bare LinkedIn profiles. The gate was
+correct every single time.
+
+**Root cause.** Every off-domain angle already sends Exa `includeText: [entity name]`. Exa
+only honours it on keyword routes. Probed on one query (`_chk_exa_includetext.ts`):
+`type: 'neural'` returned 0 of 3 results naming the target — identical to sending no filter —
+`type: 'auto'` (what the runner sends) honoured it on 2 of 3, and `type: 'keyword'` returned
+0 results, which is the truthful answer. For a small brand plus topic words the embedding is
+dominated by the topic, so Exa returns the best pages about *concurrent viewers*. We paid Exa
+for them and then paid the gate to reject them.
+
+Also killed a plausible-sounding theory before acting on it: the handoff flagged the OR-heavy
+templates as a possible query-quality problem. On Cineverse all five query shapes tested
+returned 5/5 on-topic (`_chk_query_shapes.ts`). Query shape is not the lever on an account
+with real coverage; the junk only appears when there is nothing to find and neural search
+fills the slots.
+
+**The fix: `pageMentionsEntity`.** Re-imposes `includeText` locally, for free, before the LLM
+gate. Off-domain results only — own-domain is exempt because the host already proves identity.
+Live: Ab Films TV 12 candidates killed with 0 reaching the LLM, Weyyak 6, while Cineverse and
+Astro (sooka) lost nothing.
+
+**Four abstain rules, every one of them earned by a false kill caught in testing.** This is
+the part worth remembering, because the naive version of this check quietly destroys signal:
+- Wrote the assertion suite first and it immediately failed on `CBC/Radio-Canada` at cbc.ca —
+  an acronym domain root gets dropped as non-discriminating, leaving only the run-together
+  legal name that no page ever writes.
+- Ran the check over the stored corpus and got 6.9% "off-company", then read the list instead
+  of reporting the number: `videotron.com`'s own pages flagged against "Videotron/Quebecor",
+  every OSN page flagged against "OSN+", every ShareChat page flagged against
+  "ShareChat / QuickTV". A slash means two brands; a short brand has a short form the coverage
+  actually uses. Fixing both took the real number to 3.2%.
+- A live run then showed Warner Brothers Discovery killing 4 real articles: no domain on the
+  record, so the only token left was the exact registered name, and the press writes "Warner
+  Bros. Discovery" — no shared substring. With no domain to anchor on, abstain. That account
+  produces a signal again.
+- `attributes.aliases` covers what no string surgery reaches: Crazy Maple Studio is covered
+  exclusively as "ReelShort". Entity data, so a new account is fixed by editing the record.
+
+`scripts/check_name_gate.ts` pins all of it and runs inside `pnpm check`.
+
+**Two things found and deliberately not fixed.** The `social` angle returns bare LinkedIn
+profile pages on every account checked — the person genuinely works there, so the name gate
+can't catch them and they reach the LLM to be rejected. That is ~20% of the per-account search
+budget spent on pages that can never carry a dated event. And 54 of 1662 stored research
+signals (3.2%, all July) never name their own company; the enricher has already turned them
+into facts. Nothing deleted — both are Jake's call and are written up in `project_state.md`.
+
+Shipped as `4655448`, pushed to origin/main. Diagnostics kept: `_chk_filter_breakdown.ts`,
+`_chk_gate_verdicts.ts`, `_chk_gate_context.ts`, `_chk_exa_includetext.ts`,
+`_chk_query_shapes.ts`, `_chk_signal_corpus_quality.ts`, `_run_research_named.ts`.
