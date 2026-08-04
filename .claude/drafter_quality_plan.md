@@ -687,6 +687,55 @@ Worth checking: whether `research_strategy.ts` angles bias toward "what is this 
 "what did this company just do", and whether the freshness window is dropping events that were
 found but judged stale.
 
+### MEASURED 2026-08-04. Both guesses above were wrong. The cap is coverage, not extraction.
+
+Neither the angles nor the freshness window is the problem. Research works well when it runs.
+It hardly runs.
+
+**1. 57% of the book cannot be researched at all.** 1127 of 1961 accounts have no
+`attributes.domain`, and the dispatcher skips a domainless account by design (`entity_research_
+dispatcher.ts:365`, `skipped_no_domain`) because there is no own-site angle and no contact pull
+to be had. **ShowMax, the highest-scored account in the entire book at 1.00, is one of them, and
+so is Cineverse at 0.95.** Both have `researched=never`. That is the direct cause of the
+"ShowMax has no recent dated event" gate that started this whole section.
+
+`domain-backfill-daily` exists to fix exactly this and is configured at 75/day, which would
+clear the backlog in about 15 days for roughly $11 of Exa. It last ran **2026-08-01**. Its cron
+is `0 11 * * *`, so it has missed three days.
+
+**2. Among the 834 accounts that CAN be researched, coverage is one visit per ~116 days.**
+49 distinct accounts touched in 6.8 days. A trigger-led draft needs an event from the last 14
+days. An account visited twice a year will almost never have one.
+
+**3. When research does run it is finding fresh, dated material — the 07-29 freshness fix
+worked.** Of research signals ingested since that fix, 53% come from pages 30 days old or
+newer, against 9% across the whole corpus. Of the top 15 accounts that HAVE been researched, the
+newest page held is 1 day old (Globoplay), 6 (M6+), 7 (Stingray), 8 (GoodShort, Kuku,
+FloSports). That is exactly the material a trigger-led draft wants.
+
+**4. Extraction shape is not the problem either.** The facts pulled off the freshest signals
+include `news_event`, `recent_event`, `pain_observed`, `streaming_scale`, `subscriber_count`.
+The corpus looks profile-heavy only because 2536 of 4226 signals are the CSV import, which is
+0% dated by nature.
+
+**5. Two days of total silence.** Zero `research_triggered` on 08-02 and 08-03; 18 on 08-04.
+`domain_resolved` last fired 08-01. `pipeline_status` reads `ok` with a run at 14:39 today. This
+is the shape of the recurring host/keepalive failure in `project_state.md`, not a code bug —
+worth confirming the cron-job.org keepalive is still active before assuming it is fixed.
+
+**Levers, cheapest first. None of them is a prompt change:**
+
+- Get `domain-backfill-daily` running again. It is already configured; it just is not firing.
+  Biggest single unlock — it doubles the researchable book and includes the top-scored account.
+- `research.searches_per_run` is unset (default 30 per 4h tick). Each +10 is about +60 searches
+  a day, roughly $0.60/day at Exa list price.
+- `selection_mix` is unset (default 55% high_value / 30% active_comms / 15% exploration).
+  Shifting toward high_value costs nothing and concentrates the existing budget on the accounts
+  that would actually be drafted.
+
+The old note below is kept for the record, but "the research planner is finding descriptions of
+companies, not events" is not what the data says.
+
 ### 2a. Contacts from notes. DONE — 50 created, 48 accounts unblocked
 
 `scripts/extract_contacts_from_notes.ts` (dry run by default, `--apply` to write). Pulls people

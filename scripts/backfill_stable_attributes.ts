@@ -117,7 +117,14 @@ async function main() {
   const tally = new Map<string, number>();
   let asserted = 0, unknowns = 0, rejected = 0;
 
-  for (const t of targets) {
+  // 1900 accounts one at a time is over an hour of wall clock for a job that is
+  // entirely network wait. A small pool keeps it under half that without
+  // pushing the provider into rate limiting.
+  const POOL = Number(argOf('--concurrency') ?? 5);
+  let cursor = 0;
+  let done = 0;
+
+  const processOne = async (t: typeof targets[number]) => {
     const { data: ent } = await sb.from('entities').select('name').eq('id', t.id).maybeSingle();
     const name = (ent as any)?.name ?? t.id;
     const factLines = t.facts
@@ -153,7 +160,7 @@ Output strictly valid JSON: {"answers": [{"n": <question number>, "value": "<one
       parsed = JSON.parse(String((llm as any).text ?? '').replace(/^```json\s*|\s*```$/g, '').trim());
     } catch (e) {
       console.log(`  ${name}: SKIPPED (${e instanceof Error ? e.message.slice(0, 60) : 'call failed'})`);
-      continue;
+      return;
     }
 
     const answers = Array.isArray(parsed.answers) ? parsed.answers : [];
@@ -184,9 +191,18 @@ Output strictly valid JSON: {"answers": [{"n": <question number>, "value": "<one
         if (res.ok) asserted++;
       }
     }
-    console.log(`  ${name}`);
+    done++;
+    console.log(`  [${done}/${targets.length}] ${name}`);
     for (const l of lines) console.log(l);
-  }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, async () => {
+    while (cursor < targets.length) {
+      const t = targets[cursor++]!;
+      try { await processOne(t); }
+      catch (e) { console.log(`  worker error on ${t.id}: ${e instanceof Error ? e.message.slice(0, 80) : e}`); }
+    }
+  }));
 
   console.log(`\n=== ${APPLY ? 'written' : 'dry run'} ===`);
   for (const [k, n] of [...tally].sort((a, b) => b[1] - a[1])) console.log(`  ${n}×  ${k}`);
