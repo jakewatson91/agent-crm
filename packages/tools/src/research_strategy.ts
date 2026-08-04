@@ -140,6 +140,12 @@ export interface PlannerContext {
   // planner prompt; empty keeps the scope out of the prompt entirely so the
   // model never plans angles the runner would skip.
   social_domains?: string[];
+  // policy.research.max_age_days — the workspace's ingestion floor. The prompt
+  // used to state a hardcoded 30 here, so on a workspace that had moved its
+  // floor the planner authored angles against a number that was no longer
+  // true, and any angle wider than the real floor bought results the runner
+  // then binned. Stating the actual floor is what keeps the two in step.
+  max_age_days?: number;
 }
 
 async function loadContext(supabase: SupabaseClient, workspace_id: string): Promise<{ ctx: PlannerContext; policy: WorkspacePolicy }> {
@@ -154,11 +160,18 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
     guidance: (policy.research?.guidance ?? '').trim(),
     always_include: (policy.research?.always_include ?? []).filter(Boolean),
     social_domains: (policy.research?.social_domains ?? []).filter(Boolean),
+    max_age_days: policy.research?.max_age_days,
   };
   return { ctx, policy };
 }
 
-const SYS_PROMPT = `You design a small set of WEB SEARCH ANGLES an AI sales agent runs, per prospect company, to find concrete outreach hooks: what the company shipped, who they sell to, what they wrote, recent moves. Each angle becomes one Exa web search per company.
+// The floor is interpolated rather than written as a literal: it is the
+// workspace's policy.research.max_age_days, and a prompt that states a
+// different number teaches the planner to author angles whose results the
+// runner will bin. DEFAULT is only the fallback when the workspace has not set
+// one.
+const DEFAULT_PROMPT_FLOOR_DAYS = 30;
+const sysPrompt = (floorDays = DEFAULT_PROMPT_FLOOR_DAYS) => `You design a small set of WEB SEARCH ANGLES an AI sales agent runs, per prospect company, to find concrete outreach hooks: what the company shipped, who they sell to, what they wrote, recent moves. Each angle becomes one Exa web search per company.
 
 Return 3 to 5 angles. Fewer, sharper angles beat many overlapping ones.
 
@@ -176,7 +189,7 @@ Each angle has:
     "own_site"  -> restricted to the company's own website (blog, launches, customers). Highest signal.
     "news"      -> press / news coverage about the company by others.
     "open_web"  -> the open web (third-party write-ups, customer lists, comparisons).
-- "recency_days": a hard freshness floor — any dated result older than this (or older than 30 days if omitted on a non-evergreen angle) is dropped, regardless of domain_scope. Set it to 30 for news, launches, and "own_site" angles that target recent posts. Omit ONLY for a deliberately evergreen "own_site" angle (customer lists, general product pages) — an omitted value exempts UNDATED results from the floor, but a dated result on that same angle is still held to 30 days.
+- "recency_days": a hard freshness floor — any dated result older than this (or older than ${floorDays} days if omitted on a non-evergreen angle) is dropped, regardless of domain_scope. NEVER set it above ${floorDays}: this workspace bins anything older than that on ingestion, so a wider window only buys results that cannot survive. Set it to 30 for news, launches, and "own_site" angles that target recent posts. Omit ONLY for a deliberately evergreen "own_site" angle (customer lists, general product pages) — an omitted value exempts UNDATED results from the floor, but a dated result on that same angle is still held to ${floorDays} days.
 - "id": short slug. "label": short human title. "num_results": 3-5.
 
 Do NOT search for jobs/careers/hiring — a separate connector covers hiring. Avoid aggregator, profile, and directory pages (funding databases, professional-network company pages) — they restate what we already know and give no hook.
@@ -226,8 +239,8 @@ export async function planResearchAngles(
         {
           role: 'system',
           content: ctx.social_domains?.length
-            ? `${SYS_PROMPT}\n\n${socialScopeAddendum(ctx.social_domains)}`
-            : SYS_PROMPT,
+            ? `${sysPrompt(ctx.max_age_days)}\n\n${socialScopeAddendum(ctx.social_domains)}`
+            : sysPrompt(ctx.max_age_days),
         },
         { role: 'user', content: buildUserPayload(ctx) },
       ],

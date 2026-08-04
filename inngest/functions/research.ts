@@ -126,6 +126,14 @@ export function buildAngleRequest(
   // The linked account's name, for a contact-kind angle's {company} token.
   // Unused (and harmless to omit) for account-kind angles.
   company?: string,
+  // The workspace's ingestion floor (policy.research.max_age_days). An angle
+  // asking Exa for a wider window than the floor is buying results the gate
+  // below will bin: Sudden's peak-viewers angle asked for 365 days against a
+  // 90-day floor, so everything from 91 to 365 days old was fetched, paid for
+  // and dropped. Two of its five angles had this shape, i.e. 40% of the search
+  // budget on that account could not survive ingestion no matter what it found.
+  // Omit to keep the angle's own window (the checks call it that way).
+  maxAgeDays?: number,
 ): { query: string; params: Parameters<typeof runExaSearch>[1] } | null {
   const query = angle.query_template
     .replaceAll('{entity}', entity_name)
@@ -137,8 +145,16 @@ export function buildAngleRequest(
     .slice(0, 300);
   if (!query) return null;
 
-  const start_published_date = angle.recency_days
-    ? new Date(Date.now() - angle.recency_days * 86400 * 1000).toISOString()
+  // Never ask for a window the ingestion floor will reject. An angle that sets
+  // NO window is left alone on purpose: that is the deliberately evergreen case
+  // (a customer or case-study list), where the value is undated pages, and
+  // undated pages are exempt from the floor. Clamping there would exclude the
+  // only results that angle exists to find.
+  const windowDays = angle.recency_days && maxAgeDays
+    ? Math.min(angle.recency_days, maxAgeDays)
+    : angle.recency_days;
+  const start_published_date = windowDays
+    ? new Date(Date.now() - windowDays * 86400 * 1000).toISOString()
     : undefined;
   const num_results = angle.num_results ?? 3;
 
@@ -366,7 +382,7 @@ export async function runEntityResearch(
       const ownSiteSnippets: string[] = [];
       let filtered_stale = 0;
       for (const angle of toRun) {
-        const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains, kind === 'contact' ? contactAccountName : undefined);
+        const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains, kind === 'contact' ? contactAccountName : undefined, maxAgeDays);
         if (!built) continue;
         searches++;
         const res = await runExaSearch(apiKey, built.params);
