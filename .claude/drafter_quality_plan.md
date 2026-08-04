@@ -393,6 +393,59 @@ both Jake's:
 2. Accept some convergence as mandated: the constitution allows exactly two credibility claims
    and one of them IS the 1:1 claim. That was a deliberate choice and this does not change it.
 
+### The menu rewrite. DONE 2026-08-04, and it turned on one product fact
+
+Jake: **offload needs viewers watching the same title at the same time**, and the product is
+aimed at back catalogue, not live. That answer killed half of what was drafted for this menu and
+is worth writing down, because the same wrong ideas will look attractive again later:
+
+- **Anything about a premiere, a live match or a launch peak is out**, and not only because the
+  product targets catalogue. `out_of_scope` condition 1 already vetoes live-only accounts, so a
+  pain point about live events would have aimed the drafter at the exact accounts the veto
+  exists to exclude. A menu entry and a veto pointing opposite directions is worse than either.
+- **Binge viewing and long-tail library rewatch are out** for the mechanism reason: both are
+  viewing spread over time, and spread-out viewing forms no swarm.
+- **A minimum-concurrency floor exists and its value is unknown.** Do NOT make it a fourth
+  `out_of_scope` condition — that is the same shape as the web-share condition deleted this
+  morning, a binary test that cannot fire because peak concurrency is not a fact the book holds
+  for most accounts. It belongs as a research question first, so the number gets collected, and
+  a scoring input once there is coverage. Not built.
+
+`scripts/_set_sudden_pitch_menu.ts` (dry run by default, `--apply` to write). Applied.
+
+`pain_points` 4 → 3. Dropped the 1:1 entry entirely: it is the constitution's credibility claim,
+not a problem the buyer has, and leaving it on the menu handed the model the answer to ask back
+as a question. The three that remain are the concurrent-views repeat share, ad-funded margin,
+and an unowned cost line.
+
+`value_props` 4 → 5. Only entry 1 was reworded (it now says what it removes and carries the
+simultaneity the mechanism needs); the three objection handlers are untouched. The new entry,
+"runs without anyone on the video team owning it day to day", exists because the old menu had a
+pain about an understaffed team and **nothing that answered it** — a draft picking that problem
+had nothing to offer.
+
+**Measured, same 8 accounts:** 3 distinct problems across 6 picks, 2 accounts `no_problem_fits`,
+one draft pair over 45% overlap. Intigral now asks whether the delivery cost line has a single
+owner or is split across groups; Cineverse asks whether delivery eats the ad yield per view.
+Neither question was reachable from the old menu. The one draft still leading with the plain 1:1
+question is idilio TV, which is precisely the account where the picker declined and the prompt
+fell back to the full menu. That is the mechanism working, visible in a negative case.
+
+**A measurement I got wrong and am correcting here:** "distinct problems chosen" is not a score.
+A product that does one thing for one situation SHOULD converge on one argument, and five
+accounts landing on the same problem is the menu being honest. What has to vary is the anchor
+and the numbers, which the word-overlap check grades. `_dryrun_drafts.ts` now labels the spread
+as diagnostic and says what to read it for: the picker refusing outright, or a problem nothing
+ever selects.
+
+**Loose end, not chased:** OVI Technologies scored 0.95 and the angle picker's rationale cited
+"live streams with more than 5M viewers". If OVI is live-only, the out-of-scope veto should have
+caught it and did not. One account, unverified, worth a look before the next send.
+
+**CAUTION for whoever touches this next:** `pain_points` and `value_props` are re-derived from
+the workspace About text by `deriveDefaults`, so saving About in Settings overwrites both lists.
+If this menu survives contact with real replies, fold it back into About.
+
 Watch on the first automated cycle after deploy: `angle_outcome` on `drafter_shortlist_pick`.
 A run where most rows say `no_problem_fits` means the picker is refusing rather than choosing,
 and the whole thing has quietly reverted to the old prompt.

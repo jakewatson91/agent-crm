@@ -79,8 +79,12 @@ async function main() {
 
   let drafted = 0, gated = 0;
   const bodies: Array<{ name: string; body: string }> = [];
-  // Every account landing on the same problem is the sameness this whole change
-  // is aimed at, and it is visible before you read a single draft.
+  // Diagnostic, NOT a score. Sudden's product does one thing for one situation,
+  // so most accounts landing on the same problem is the menu being honest, not
+  // a defect. Read it for two things only: the picker refusing outright (every
+  // row "none"), and a problem that never gets chosen by anything. What has to
+  // vary between drafts is the anchor and the numbers, and the word-overlap
+  // check below is what grades that.
   const angleCounts = new Map<string, number>();
 
   for (const row of ranked) {
@@ -219,7 +223,7 @@ async function main() {
   // the last batch had (ten messages, one message with the nouns swapped).
   log(`\n=== ${drafted} drafted, ${gated} gated ===`);
   if (angleCounts.size) {
-    log('angle spread:');
+    log('problems chosen (diagnostic, not a score — see the note at angleCounts):');
     for (const [problem, n] of [...angleCounts].sort((a, b) => b[1] - a[1])) log(`  ${n}×  ${problem.slice(0, 100)}`);
   }
   for (let i = 0; i < bodies.length; i++) {
