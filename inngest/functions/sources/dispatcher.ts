@@ -10,6 +10,41 @@ import { getConnector } from './registry.js';
  * 6-hour Exa source ran every hour — paying for 6× the queries the connector
  * author specified. Same problem for daily YC + ProductHunt.
  */
+export type DueSourceRow = { id: string; workspace_id: string; connector_type: string; last_run_at: string | null };
+
+// A workspace paused with scope 'all' means "spend nothing on metered APIs":
+// sources that hit a paid API themselves (Exa) or that reliably fan out to
+// enrichers burning LLM tokens should stop. Narrower scopes (research,
+// contacts) don't block ingestion. A manual `source.run` event still bypasses
+// this — an explicit operator kick is deliberate.
+//
+// Free connectors (ats, hn, yc, github, producthunt, webhooks, ...) are
+// exempt: they cost nothing to run, and CSV import / inbound webhooks already
+// ingest signals through this exact pause with no gate at all (see
+// packages/tools/src/ingest.ts) — a downstream agent run that can't reach the
+// LLM records `agent_llm_failed` and skips instead of erroring, the same as
+// any other LLM outage. Blanket-skipping free sources bought nothing but
+// silence: this is what stalled ats_hiring_main for the entire length of the
+// 2026-08-01 DeepSeek credit wall, mirroring the auto-deactivate bug in
+// sourceRun below that the same isMetered split already fixed once.
+export function selectDueSources(rows: DueSourceRow[], pausedAll: Set<string>, now: number) {
+  const out: Array<{ id: string; workspace_id: string }> = [];
+  let skipped = 0;
+  for (const s of rows) {
+    const conn = getConnector(s.connector_type);
+    if (!conn) continue;
+    if (conn.meta.cost === 'metered' && pausedAll.has(s.workspace_id)) { skipped++; continue; }
+    const intervalMin = cronToMinIntervalMinutes(conn.meta.schedule_cron);
+    if (s.last_run_at) {
+      const ageMin = (now - Date.parse(s.last_run_at)) / 60000;
+      // 10% slack so we don't miss a tick when both crons fire close together.
+      if (ageMin < intervalMin * 0.9) { skipped++; continue; }
+    }
+    out.push({ id: s.id, workspace_id: s.workspace_id });
+  }
+  return { due: out, skipped };
+}
+
 export const sourceDispatcher = inngest.createFunction(
   { id: 'source-dispatcher' },
   { cron: '0 * * * *' },
@@ -21,35 +56,15 @@ export const sourceDispatcher = inngest.createFunction(
         .select('id, workspace_id, connector_type, last_run_at')
         .eq('active', true);
       if (error) throw error;
-      const now = Date.now();
-      const out: Array<{ id: string; workspace_id: string }> = [];
-      let skipped = 0;
 
-      // A workspace paused with scope 'all' means "spend nothing": sources
-      // feed signals that fan out to enrichers (LLM tokens) and can hit
-      // metered connector APIs themselves. Narrower scopes (research,
-      // contacts) don't block ingestion. A manual `source.run` event still
-      // bypasses this — an explicit operator kick is deliberate.
-      const rows = (data ?? []) as Array<{ id: string; workspace_id: string; connector_type: string; last_run_at: string | null }>;
+      const rows = (data ?? []) as DueSourceRow[];
       const pausedAll = new Set<string>();
       for (const wsId of new Set(rows.map((r) => r.workspace_id))) {
         const status = await getPipelineStatus(supabase, wsId);
         if (status?.state === 'paused' && (status.scope ?? 'all') === 'all') pausedAll.add(wsId);
       }
 
-      for (const s of rows) {
-        if (pausedAll.has(s.workspace_id)) { skipped++; continue; }
-        const conn = getConnector(s.connector_type);
-        if (!conn) continue;
-        const intervalMin = cronToMinIntervalMinutes(conn.meta.schedule_cron);
-        if (s.last_run_at) {
-          const ageMin = (now - Date.parse(s.last_run_at)) / 60000;
-          // 10% slack so we don't miss a tick when both crons fire close together.
-          if (ageMin < intervalMin * 0.9) { skipped++; continue; }
-        }
-        out.push({ id: s.id, workspace_id: s.workspace_id });
-      }
-      return { due: out, skipped };
+      return selectDueSources(rows, pausedAll, Date.now());
     });
 
     if (!due.due.length) return { dispatched: 0, skipped: due.skipped };
