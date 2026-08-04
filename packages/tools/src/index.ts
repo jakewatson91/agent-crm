@@ -24,7 +24,7 @@ export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
 export { runExaSearch, fetchPageText, type ExaResult, type ExaSearchParams, type ExaSearchResult, type ExaContentsResult } from './exa_search.ts';
 export { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate, unreadableContentDate, type ResolvedPublishedDate } from './published_date.ts';
-export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, resolveStrategy, resolveContactStrategy, filterResultsByEntity, fetchEntityGrounding, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type RelevanceResult, type RelevanceTarget } from './research_strategy.ts';
+export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, resolveStrategy, resolveContactStrategy, filterResultsByEntity, fetchEntityGrounding, pageMentionsEntity, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type RelevanceResult, type RelevanceTarget } from './research_strategy.ts';
 export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';

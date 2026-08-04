@@ -100,7 +100,106 @@ own, once it was told the real floor. `research.always_include` carries the peak
 requirement (added because the product needs simultaneous viewers and the floor below which the
 swarm does not form is unknown; it is a number to collect, not a veto condition).
 
-## The open thread: the relevance filter is now what rejects everything
+## RESOLVED 2026-08-04 (second session): the filter was right, the searches were wrong
+
+The open thread below asked whether the filter was rejecting genuinely wrong-company
+results or being too strict. Answer: **genuinely wrong-company, and it is not the filter's
+fault.** Dumping every candidate with its verdict (`_chk_gate_verdicts.ts`) showed what the
+gate was binning for Weyyak: UFC fight ratings, Kai Cenat's Twitch numbers, Naver Chzzk.
+For Ab Films TV: ABS-CBN, Canal+/MultiChoice, three unrelated production companies. The
+gate was correct every time.
+
+**Why those results came back at all.** Every off-domain angle already sends Exa
+`includeText: [entity name]`. Exa only honours that on keyword routes. Measured on one
+query (`_chk_exa_includetext.ts`):
+
+| search type | results naming the target |
+|---|---|
+| `neural` | 0 of 3 — identical to sending no filter |
+| `auto` (what the runner sends) | 2 of 3 |
+| `keyword` | 0 results, which is the truthful answer |
+
+So for a small brand plus topic words, the embedding is dominated by the topic and Exa
+returns the best pages about *concurrent viewers*, not about *Weyyak*. We paid Exa for
+them, then paid the relevance gate to reject them. That is why identity was 55% of all
+1780 drops across 219 runs, against 18% substance and 11% relevance.
+
+**Fix: the name gate (`pageMentionsEntity`).** Re-imposes `includeText` locally, for free,
+before the LLM gate runs. Off-domain results only; own-domain is exempt because the host
+already proves identity. Live results:
+
+| account | killed free, never hit the LLM | reached the LLM |
+|---|---|---|
+| Ab Films TV | 12 | 0 |
+| Weyyak | 6 | 5 |
+| Cineverse | 0 | 10 |
+| Astro (sooka) | 0 | 6 |
+
+Cineverse at 0 is the point: an account with real coverage is untouched.
+
+**It abstains far more than it judges, on purpose.** Letting junk through costs one LLM
+call (the status quo); dropping a real page costs a signal. Four abstain rules, each one
+put there by a false kill caught in testing, not by theory:
+
+- **no domain → abstain.** "Warner Brothers Discovery" is reported as "Warner Bros.
+  Discovery"; no shared run-together substring. Killed 4 real articles in a live run
+  before this rule. That account now produces a signal again.
+- **acronym domain (cbc.ca, wbd.com) → abstain.** "cbc" is a substring of too much, and
+  the full name is no help since coverage writes "CBC".
+- **short brand (OSN+, M6) → abstain.** Coverage says "OSN", never "osnplus".
+- **slash or bracket = two brands.** "Videotron/Quebecor" and "Astro (sooka)" are each
+  written as only one half. Before this, videotron.com's *own* pages were flagged as the
+  wrong company and every sooka article was dropped.
+
+For the case no string surgery reaches, `entity.attributes.aliases` feeds extra names in.
+Crazy Maple Studio is covered exclusively as "ReelShort", so all 4 of its real articles are
+still dropped until someone sets `aliases: ["ReelShort"]` on that record. **Not yet set —
+it is production data.** Worth a sweep for other accounts known by a product name.
+
+`scripts/check_name_gate.ts` locks all of this in and runs inside `pnpm check`.
+
+## The signal corpus already holds wrong-company material
+
+`_chk_signal_corpus_quality.ts` runs the same check over stored signals: **54 of 1662
+research signals (3.2%) never name the company they are attached to.** All 54 are from
+July; August is 0 of 80, so the 07-29 gate tightening plus this fix closed it going
+forward. The July ones are still there and the enricher has already turned them into facts
+the scorer and drafter read — Ab Films TV alone carries `ablfilms.com`, `abfilms.ca`,
+`shots.com` and `linkedin.com/company/bliss-point-media`. Nothing has been deleted.
+Cleaning them up is a separate decision.
+
+Read that number as a floor, not a total. The check abstains on acronym domains, on
+domainless accounts and on short brands, so wrong-company signals on those accounts are
+invisible to it.
+
+## Still open: one angle in five buys nothing, on every account
+
+The `social` angle (`exec_cdn_talks`) returns bare LinkedIn *profile* pages —
+`linkedin.com/in/...` for Volker Brack, Rohit Arora, Nadine Samra, Yoko Chen — on every
+account checked. A profile page carries no dated event, so it can never become a signal.
+The name gate does not catch them, because the person genuinely works there and the
+company name is on the page; they reach the LLM and get rejected. That is roughly 20% of
+the per-account search budget plus an LLM judgement, spent to learn nothing, every run.
+
+Same shape on `own_site`: GoodShort's `customers` angle returned its own privacy policy,
+user agreement and homepage; `own_launches` returned three drama-title catalog pages.
+
+Worth knowing before changing the queries: on an account **with** coverage, query shape
+barely matters. All five shapes tested against Cineverse returned 5/5 on-topic
+(`_chk_query_shapes.ts`). The OR-heavy templates are not what is hurting the covered
+accounts. What they do cost is variety — four of the five shapes collapsed onto the same
+earnings-report cluster, which dedup then folds to about one signal, while a bare-name
+query returned five distinct stories.
+
+## Also unresolved: 15% of drops record no reason
+
+`droppedBy.unreported` was 252 of 1780. The pattern in the event log is distinctive: when
+`unreported` is non-zero, every other bucket is zero and signals still got created (Sport
+TV 10 created / 10 unreported, ViX 4/10, M6+ 6/10). That is the model returning its
+`matches` array and omitting `rejects` entirely, not a truncation — a truncated response
+would fail to parse and create nothing. Telemetry gap only; no signal is lost.
+
+## The original open thread (superseded by the section above)
 
 Same 4 accounts, after the clamp and the angle regeneration:
 
@@ -118,18 +217,19 @@ in that run.
 ShowMax's remaining 8 stale drops come from the evergreen `customers` angle returning old dated
 own-site pages, which is the one case the clamp intentionally does not touch.
 
-**Start here next session.** The filter lives in `filterResultsByEntity` and the relevance-check
-prompt tightened on 07-29 (which was an LLM prompt change never verified in production). Worth
-knowing whether it is rejecting genuinely wrong-company results or being too strict on the new
-OR-heavy queries.
+**Answered above.** It was rejecting genuinely wrong-company results, and the reason they
+arrived at all was Exa ignoring `includeText` on neural routes.
 
 ## What is NOT proven
 
-I changed two things at once in the last test: the clamp AND the regenerated angle queries. So
-the drop in `signals_created` to zero cannot be attributed. The new queries are OR-heavy keyword
-lists and may simply be pulling more off-topic results, which would be a query-quality problem
-rather than a filter problem. **Do a clean before/after on one variable before concluding
-anything about the new angles.**
+The earlier worry that the new OR-heavy queries were pulling off-topic results turned out to
+be the wrong suspect: on Cineverse every query shape returned 5/5 on-topic. The off-topic
+results were coming from Exa filling slots on accounts with no real coverage.
+
+Still unproven: whether the OR-heavy templates cost signal *variety* on covered accounts.
+Four shapes collapsed onto one earnings cluster while a bare-name query returned five
+distinct stories, but that is one account and one angle. Test it properly before rewriting
+any template.
 
 ## ShowMax is closed, do not re-open it
 
@@ -146,6 +246,15 @@ pnpm tsx scripts/_run_domain_backfill_now.ts --apply    # spends 1 guarded searc
 pnpm tsx scripts/_run_research_now.ts 8                 # dry list of top researchable accounts
 pnpm tsx scripts/_run_research_now.ts 8 --apply         # ~5 searches per account
 pnpm research:check                                     # enrichment loop health
+
+# added this session (all read-only unless noted)
+pnpm tsx scripts/_chk_filter_breakdown.ts 10            # which gate test is doing the rejecting, from the event log
+pnpm tsx scripts/_chk_gate_verdicts.ts "Weyyak"         # per-result verdicts. SPENDS ~5 searches/account
+pnpm tsx scripts/_chk_signal_corpus_quality.ts --list   # stored signals that never name their company
+pnpm tsx scripts/_chk_exa_includetext.ts "Weyyak"       # proves neural ignores includeText. ~4 searches
+pnpm tsx scripts/_chk_query_shapes.ts "Cineverse"       # compare query shapes. ~6 searches
+pnpm tsx scripts/_chk_gate_context.ts --zero            # what grounding the gate actually gets
+pnpm tsx scripts/_run_research_named.ts "Weyyak"        # real runner on named accounts. SPENDS + creates signals
 ```
 
 **Local runs cannot dispatch.** `_trigger_research_sudden.ts` reports `dispatched: 0,

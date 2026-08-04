@@ -7,7 +7,7 @@
     "dev": "pnpm --filter web dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "check": "tsx scripts/check_score_formula.ts && tsx scripts/check_out_of_scope.ts && tsx scripts/check_domain_guard.ts && tsx scripts/check_published_date.ts && tsx scripts/check_source_dispatcher.ts",
+    "check": "tsx scripts/check_score_formula.ts && tsx scripts/check_out_of_scope.ts && tsx scripts/check_domain_guard.ts && tsx scripts/check_published_date.ts && tsx scripts/check_name_gate.ts && tsx scripts/check_source_dispatcher.ts",
     "verify": "pnpm typecheck && pnpm check",
     "db:migrate": "supabase db push",
     "db:reset": "supabase db reset",

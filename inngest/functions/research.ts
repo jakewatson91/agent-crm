@@ -16,7 +16,7 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   callTool, recordActivityMarker, latestMarkerAt, ACTIVITY_MARKERS,
-  getPolicy, resolveEnvVar, resolveStrategy, resolveContactStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding,
+  getPolicy, resolveEnvVar, resolveStrategy, resolveContactStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding, pageMentionsEntity,
   dedupeResearchCandidates, DUP_LOOKBACK_DAYS, ageDecay,
   resolveDomainViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
@@ -49,6 +49,21 @@ function normalizeUrl(u: string): string {
     return u.trim().toLowerCase();
   }
 }
+/**
+ * Is this URL on the entity's own domain (or a subdomain of it)? Same host test
+ * the relevance gate uses to auto-confirm identity, so the name gate below
+ * exempts exactly the pages the gate would have trusted anyway.
+ */
+function isOwnDomain(u: string, domain: string): boolean {
+  if (!domain) return false;
+  try {
+    const host = new URL(u).hostname.replace(/^www\./, '').toLowerCase();
+    return host === domain || host.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+}
+
 // A failed domain resolution cools the entity down this long before another
 // search is spent on it (the name simply may not resolve to a safe host).
 const RESOLVE_RETRY_DAYS = 30;
@@ -263,6 +278,12 @@ export async function runEntityResearch(
       let domain = '';
       let contactAccountName = '';
       let contactRole = '';
+      // Other names this company is written under. Needed when the press never
+      // uses the registered name — Crazy Maple Studio is only ever covered as
+      // "ReelShort" — so the name gate below would otherwise drop every genuine
+      // article about it. Entity data, so a new account is fixed by editing the
+      // record rather than shipping code.
+      let aliases: string[] = [];
       if (kind === 'contact') {
         const worksAt = await supabase.from('facts').select('object_entity')
           .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
@@ -287,7 +308,11 @@ export async function runEntityResearch(
         }
       } else {
         const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
-        domain = ((ent.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+        const attrs = ent.data?.attributes as { domain?: string; aliases?: unknown } | null;
+        domain = (attrs?.domain ?? '').trim().toLowerCase();
+        aliases = Array.isArray(attrs?.aliases)
+          ? attrs.aliases.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+          : [];
       }
 
       let searches = 0;
@@ -381,6 +406,11 @@ export async function runEntityResearch(
       const candidates: Candidate[] = [];
       const ownSiteSnippets: string[] = [];
       let filtered_stale = 0;
+      // Off-company pages Exa returned despite includeText, killed before the
+      // LLM gate ever sees them. Counted apart from filtered_out so a collapse
+      // in yield can be read as "the searches came back wrong" rather than
+      // "the gate got stricter" — those need opposite fixes.
+      let filtered_no_name = 0;
       for (const angle of toRun) {
         const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains, kind === 'contact' ? contactAccountName : undefined, maxAgeDays);
         if (!built) continue;
@@ -405,6 +435,17 @@ export async function runEntityResearch(
           if (er.publishedDate) {
             const pub = Date.parse(er.publishedDate);
             if (Number.isFinite(pub) && pub < staleCutoffMs) { filtered_stale++; continue; }
+          }
+          // Name gate: Exa only honours `includeText` on keyword routes, so a
+          // neural/auto search for a small brand plus topic words returns the
+          // best pages about the TOPIC — "Weyyak concurrent viewers" came back
+          // as Naver Chzzk and UFC ratings. Those cannot become signals, but
+          // without this they still cost an LLM judgement each. Own-domain
+          // pages are exempt: the host already proves identity, and a company's
+          // own page need not repeat its name in the crawled excerpt.
+          if (!isOwnDomain(er.url, domain) && !pageMentionsEntity(entity_name, domain, er, aliases)) {
+            filtered_no_name++;
+            continue;
           }
           seenIds.add(er.id); // dedup within this run too
           candidates.push({ angleId: angle.id, scope: angle.domain_scope, er });
@@ -625,15 +666,16 @@ export async function runEntityResearch(
         filtered_out,
         filtered_by,
         filtered_stale,
+        filtered_no_name,
         same_url_dropped,
         duplicates_dropped,
         per_angle: perAngle,
         per_class: perClass,
         ...(resolver_spent ? { domain_resolved: domain || null } : {}),
-        summary: `${created} results from ${searches} search(es)${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${filtered_stale ? `, ${filtered_stale} stale dropped` : ''}${(same_url_dropped + duplicates_dropped) ? `, ${same_url_dropped + duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
+        summary: `${created} results from ${searches} search(es)${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${filtered_no_name ? `, ${filtered_no_name} never named the company` : ''}${filtered_stale ? `, ${filtered_stale} stale dropped` : ''}${(same_url_dropped + duplicates_dropped) ? `, ${same_url_dropped + duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
       });
 
-      return { ok: true, searches, signals_created: created, filtered_out, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, per_class: perClass, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
+      return { ok: true, searches, signals_created: created, filtered_out, filtered_no_name, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, per_class: perClass, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
     }
   }
 }

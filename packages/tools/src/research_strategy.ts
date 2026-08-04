@@ -285,6 +285,75 @@ function hostOf(url: string): string | null {
 }
 
 /**
+ * Does this page actually name the company anywhere in its title, body or URL?
+ *
+ * Every off-domain angle already sends Exa `includeText: [entity name]`, but Exa
+ * only honours that on keyword routes. Measured 2026-08-04 on the same query:
+ * `type: 'neural'` returned 3/3 pages with no mention of the target at all —
+ * identical to sending no filter — and `type: 'auto'` (what the runner sends)
+ * honoured it on 2 of 3. So a search for a small brand plus topic words comes
+ * back filled with the best pages about the TOPIC: "Weyyak concurrent viewers"
+ * returned Naver Chzzk and UFC ratings. The LLM gate then correctly rejects
+ * them, which is why identity was 55% of all drops — we were paying twice
+ * (Exa, then the gate) for pages that never had a chance.
+ *
+ * This re-imposes the filter locally, for free, before the gate runs.
+ * Deliberately loose — it is a junk filter, not a relevance judgement. Letting
+ * junk through costs one LLM judgement, which is the status quo; dropping a real
+ * page costs a signal, so every ambiguous case abstains. Measured on 65 live
+ * candidates across 6 accounts, this dropped 0 pages the gate would have kept.
+ *
+ * A page matches on either the company name or the domain root, compared with
+ * case and punctuation stripped, so "AB Films TV" matches "abfilmstv".
+ *
+ * A slash or a bracket means two brands, not one: "Videotron/Quebecor" and
+ * "Astro (sooka)" are each written as only one half on any real page, so each
+ * half is its own way in. Without that split, videotron.com's own pages were
+ * flagged as the wrong company, and every article about sooka was dropped.
+ *
+ * `aliases` covers the case no string surgery can reach: a company the press
+ * only ever calls by its product. Crazy Maple Studio (crazymaplestudios.com) is
+ * covered as "ReelShort", so every genuine article about it fails both the name
+ * and the domain test. Put the product name in the entity's
+ * `attributes.aliases` and its coverage comes back — data, not a code change.
+ *
+ * Anything that short-circuits to a name people actually use makes the test
+ * unsafe, so these abstain rather than judge:
+ *   - an acronym domain (cbc.ca, wbd.com) — "cbc" is a substring of too much,
+ *     and the full name is no help either, because a page about CBC/Radio-Canada
+ *     writes "CBC" and never the run-together legal name
+ *   - a short brand ("OSN+", "M6") — coverage says "OSN", so testing for
+ *     "osnplus" would throw away every genuine page
+ */
+const MIN_DISCRIMINATING_CHARS = 4;
+
+export function pageMentionsEntity(
+  name: string,
+  domain: string,
+  page: { title?: string | null; url: string; text?: string },
+  aliases: string[] = [],
+): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const root = norm(domain.split('.')[0] ?? '');
+  // The domain root is what makes this test trustworthy. With no domain the only
+  // token left is the registered name, and coverage rarely writes that exactly:
+  // "Warner Brothers Discovery" is reported as "Warner Bros. Discovery", which
+  // shares no run-together substring, so testing anyway dropped four real
+  // articles in a live run. An account with no domain also has no own_site angle
+  // to protect, so abstaining costs nothing.
+  if (!root) return true;
+  // An acronym domain (cbc.ca) cannot be tested without dropping real pages.
+  if (root.length < MIN_DISCRIMINATING_CHARS) return true;
+  const parts = name.split(/[/()[\]]/).map(norm).filter(Boolean);
+  // A brand whose usual short form is too generic to test for (OSN+, M6).
+  if (parts.some((p) => p.length < MIN_DISCRIMINATING_CHARS)) return true;
+  const tokens = [...parts, ...aliases.map(norm), root].filter((t) => t.length >= MIN_DISCRIMINATING_CHARS);
+  if (!tokens.length) return true; // nothing discriminating to test against
+  const hay = norm(`${page.title ?? ''} ${page.text ?? ''} ${page.url}`);
+  return tokens.some((t) => hay.includes(t));
+}
+
+/**
  * Fetch the company's own homepage/about text to use as disambiguation grounding.
  * Critical when the entity is thin (no descriptive facts) and the name is common — the
  * bare domain string alone ("usehatch.com") doesn't tell the gate what the company does,
@@ -330,6 +399,13 @@ export interface RelevanceResult {
    * the rejects list, and the error fallback.
    */
   droppedBy: { identity: number; substance: number; relevance: number; unreported: number };
+  /**
+   * Per-page reject reason, same vocabulary as `droppedBy`. The counts say which
+   * test moved; this says WHICH pages it moved on, which is the only way to judge
+   * whether a drop was correct without re-running the searches. Diagnostics read
+   * it; the runner only needs the counts.
+   */
+  rejectReasonById: Map<string, 'identity' | 'substance' | 'relevance' | 'unreported'>;
 }
 
 /**
@@ -379,7 +455,7 @@ export async function filterResultsByEntity(
     else toCheck.push({ r, own: onOwnDomain });
   }
   const auto = accepted.size;
-  if (!toCheck.length) return { accepted, classById, checked: 0, auto, dropped: 0, droppedBy: { identity: 0, substance: 0, relevance: 0, unreported: 0 } };
+  if (!toCheck.length) return { accepted, classById, checked: 0, auto, dropped: 0, droppedBy: { identity: 0, substance: 0, relevance: 0, unreported: 0 }, rejectReasonById: new Map() };
 
   // With real grounding (own-site snippets / descriptive facts) an unsure-but-fitting
   // page is probably right, so lean toward matching. With nothing to test against,
@@ -451,13 +527,14 @@ Return JSON only:
     const droppedBy = { identity: 0, substance: 0, relevance: 0, unreported: 0 };
     const reasonById = new Map<string, string>();
     for (const rj of parsed.rejects ?? []) if (rj?.id) reasonById.set(String(rj.id), String(rj.failed ?? ''));
+    const rejectReasonById = new Map<string, 'identity' | 'substance' | 'relevance' | 'unreported'>();
     for (const { r } of toCheck) {
       if (matchSet.has(r.id)) continue;
       const reason = reasonById.get(r.id);
-      if (reason === 'identity' || reason === 'substance' || reason === 'relevance') droppedBy[reason] += 1;
-      else droppedBy.unreported += 1;
+      if (reason === 'identity' || reason === 'substance' || reason === 'relevance') { droppedBy[reason] += 1; rejectReasonById.set(r.id, reason); }
+      else { droppedBy.unreported += 1; rejectReasonById.set(r.id, 'unreported'); }
     }
-    return { accepted, classById, checked: toCheck.length, auto, dropped: toCheck.length - kept, droppedBy };
+    return { accepted, classById, checked: toCheck.length, auto, dropped: toCheck.length - kept, droppedBy, rejectReasonById };
   } catch {
     // Fail: keep identity-confirmed own-domain results (only their relevance was in
     // question, and losing real own-site context is worse than one off-topic page), but
@@ -466,10 +543,12 @@ Return JSON only:
     let keptOnErr = 0;
     for (const { r, own } of toCheck) if (own) { accepted.add(r.id); keptOnErr++; }
     const dropped = toCheck.length - keptOnErr;
+    const rejectReasonById = new Map<string, 'identity' | 'substance' | 'relevance' | 'unreported'>();
+    for (const { r, own } of toCheck) if (!own) rejectReasonById.set(r.id, 'unreported');
     // The gate never ran, so no page failed a named test. Counting these as
     // `unreported` keeps "a gate outage looks like an outage" rather than
     // manufacturing a spike in one of the three real reasons.
-    return { accepted, classById, checked: toCheck.length, auto, dropped, droppedBy: { identity: 0, substance: 0, relevance: 0, unreported: dropped } };
+    return { accepted, classById, checked: toCheck.length, auto, dropped, droppedBy: { identity: 0, substance: 0, relevance: 0, unreported: dropped }, rejectReasonById };
   }
 }
 
