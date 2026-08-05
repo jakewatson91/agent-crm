@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed, vectorLiteral } from '@agent-crm/primitives';
-import { entityIdsOfType } from '@agent-crm/tools';
+import { entityIdsOfType, readEntityAliases } from '@agent-crm/tools';
 
 /**
  * Compute and upsert a default-perspective embedding for an entity. Connectors
@@ -122,7 +122,7 @@ export async function getWatchedAccounts(
       return {
         entity_id: r.id,
         name: r.name,
-        aliases: buildAliases(r.name, domain),
+        aliases: buildAliases(r.name, domain, readEntityAliases(r.attributes)),
       };
     });
 }
@@ -139,6 +139,11 @@ export async function getWatchedAccounts(
  *    common stylistic variant where people insert a space the brand omits
  *  - the full cleaned domain (alice.tech → "alice.tech") — catches direct
  *    domain mentions like "check out alice.tech"
+ *  - `extra`: the curated names off the entity's `attributes.aliases`. No
+ *    string surgery on "Crazy Maple Studio" can produce "ReelShort", which is
+ *    the only name its coverage uses, so the record has to carry it. Passing
+ *    them through here rather than concatenating at the call site means they
+ *    get the same lowercasing, dedupe and 3-char floor as a derived variant.
  *
  * DELIBERATELY EXCLUDED:
  *  - First chunk of CamelCase ("FurtherAI" → "further" alone). Strips the
@@ -158,7 +163,11 @@ export async function getWatchedAccounts(
  * the AI suffix) won't match FurtherAI. False positives are much worse
  * than occasional missed mentions, and most coverage uses the full name.
  */
-export function buildAliases(name: string, domain: string | null | undefined): string[] {
+export function buildAliases(
+  name: string,
+  domain: string | null | undefined,
+  extra: string[] = [],
+): string[] {
   const aliases = new Set<string>();
   const add = (s: string) => {
     const t = s.trim().toLowerCase();
@@ -166,6 +175,7 @@ export function buildAliases(name: string, domain: string | null | undefined): s
   };
 
   add(name);
+  for (const e of extra) add(e);
 
   if (domain) {
     const cleaned = domain.toLowerCase().replace(/^www\./, '');

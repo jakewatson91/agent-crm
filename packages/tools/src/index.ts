@@ -18,13 +18,15 @@ import { selectAction, loadActionContext } from './action_selector.ts';
 import { graphProximity } from './graph.ts';
 import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.ts';
 import { getPolicy, DEFAULT_POLICY, resolveEnvVar } from './policy.ts';
+import { ALIAS_MIN_CHARS } from './aliases.ts';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
 export { runExaSearch, fetchPageText, type ExaResult, type ExaSearchParams, type ExaSearchResult, type ExaContentsResult } from './exa_search.ts';
 export { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate, unreadableContentDate, type ResolvedPublishedDate } from './published_date.ts';
-export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, resolveStrategy, resolveContactStrategy, filterResultsByEntity, fetchEntityGrounding, pageMentionsEntity, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type RelevanceResult, type RelevanceTarget } from './research_strategy.ts';
+export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, resolveStrategy, resolveContactStrategy, filterResultsByEntity, fetchEntityGrounding, pageMentionsEntity, readEntityAliases, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type RelevanceResult, type RelevanceTarget } from './research_strategy.ts';
+export { resolveAliasesViaSearch, backfillAliases, validateAliases, usedAsProperNoun, ALIAS_MIN_CHARS, MAX_ALIASES, type AliasResolveOutcome, type AliasResolveStatus, type AliasRejection, type AliasRejectReason, type AliasValidation, type AliasBackfillResult } from './aliases.ts';
 export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
@@ -201,6 +203,53 @@ export async function callTool(
           ...meta,
         });
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
+      }
+
+      case 'set_entity_aliases': {
+        // Read-modify-write: attributes also carries domain (and merge bookkeeping),
+        // so replacing the whole object would silently drop the domain the research
+        // runner and every contact lookup depend on.
+        const a = args as { entity_id: string; aliases: string[]; prior_state: Record<string, unknown>; reasoning: string };
+        const ent = await supabase.from('entities').select('attributes')
+          .eq('id', a.entity_id).eq('workspace_id', actor.workspace_id).maybeSingle();
+        if (ent.error) return { ok: false, error: `entity read failed: ${ent.error.message}` };
+        if (!ent.data) return { ok: false, error: `set_entity_aliases: entity ${a.entity_id} not found in this workspace` };
+        const attributes = (ent.data.attributes ?? {}) as Record<string, unknown>;
+
+        // The name gate discards any token under its 4-character floor, so an
+        // alias below it is a fix that would never fire. Reject loudly instead
+        // of storing something inert the caller believes is working.
+        const cleaned: string[] = [];
+        const tooShort: string[] = [];
+        const seen = new Set<string>();
+        for (const raw of a.aliases) {
+          const alias = raw.trim();
+          if (!alias) continue;
+          const key = alias.toLowerCase().replace(/[^a-z0-9]+/g, '');
+          if (key.length < ALIAS_MIN_CHARS) { tooShort.push(alias); continue; }
+          if (seen.has(key)) continue;
+          seen.add(key);
+          cleaned.push(alias);
+        }
+        if (tooShort.length) {
+          return { ok: false, error: `set_entity_aliases: ${tooShort.map((s) => `"${s}"`).join(', ')} under ${ALIAS_MIN_CHARS} characters — the name gate ignores tokens that short, so storing them would do nothing` };
+        }
+
+        // An empty list is a legitimate write: it removes aliases that turned
+        // out to admit junk. Drop the key entirely rather than storing [], so a
+        // cleared account is indistinguishable from one never given aliases.
+        const { aliases: _prior, ...rest } = attributes;
+        const nextAttributes: Record<string, unknown> = cleaned.length ? { ...rest, aliases: cleaned } : rest;
+        const upd = await supabase.from('entities').update({ attributes: nextAttributes })
+          .eq('id', a.entity_id).eq('workspace_id', actor.workspace_id);
+        if (upd.error) return { ok: false, error: `entities update failed: ${upd.error.message}` };
+        const r = await act(supabase, actor, {
+          tool: 'set_entity_aliases',
+          target_id: a.entity_id,
+          args: { entity_id: a.entity_id, aliases: cleaned, prior_state: a.prior_state, reasoning: a.reasoning },
+          ...meta,
+        });
+        return { ok: true, event_id: r.event_id, target_id: r.target_id, data: { aliases: cleaned } };
       }
 
       case 'create_signal': {
@@ -405,6 +454,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     score_entity: 'Score an entity for ICP fit using workspace.icp + workspace.about + entity facts. Returns icp_fit in [0,1] + breakdown + reasoning. With assert=true, also asserts icp_fit + icp_fit_breakdown facts (idempotent via supersede).',
     token_summary: 'Aggregate token usage across recent agent runs. Returns totals + per-model + per-behavior breakdown. Reads from agent_run_metrics events. Tokens only, no pricing.',
     update_source: 'Mutate a source row (active flag, config). Caller must pass prior_state so the resulting event row is undo-ready. Used by the source curator to deactivate dead sources and rewrite queries.',
+    set_entity_aliases: 'Set the other names an account is covered under, so research stops dropping articles that never use its registered name (Crazy Maple Studio is written about as "ReelShort"). Replaces the whole list, so pass every alias to keep and an empty list to clear one that was letting junk through. Each must be at least 4 characters. Pass prior_state so the event row is undo-ready.',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({

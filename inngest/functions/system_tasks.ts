@@ -5,7 +5,7 @@ import {
   recordActivityMarker, ACTIVITY_MARKERS, isSubstantiveFact,
   getPolicy, resolveEnvVar, resolveDomainViaSearch,
   getPipelineStatus, setPipelineStatus,
-  backfillAccountDomainsFromContactEmails,
+  backfillAccountDomainsFromContactEmails, backfillAliases,
 } from '@agent-crm/tools';
 import { isHaltingError } from './advance_accounts.js';
 import { inngest } from '../client.js';
@@ -660,6 +660,75 @@ export const domainBackfillDaily = inngest.createFunction(
       for (const w of r.paused_workspaces) pausedWs.add(w);
     }
     return { free_resolved: freeResolved, candidates: candidates.length, ...totals };
+  },
+);
+
+/**
+ * alias-backfill-daily: read the other names each account's coverage runs under.
+ *
+ * Same shape and reasoning as the domain backfill above. Resolution otherwise
+ * only happens when the research dispatcher happens to pick an account, so every
+ * account imported before this existed stays blind: the name gate keeps dropping
+ * real articles about any company the press calls by its product name, and the
+ * account reads as having no coverage rather than as misconfigured.
+ *
+ * Paced by policy.research.alias_backfill_per_day (0/unset = off) because each
+ * account costs one Exa search plus one model call. Skips workspaces paused for
+ * research, and pauses one that hits a credit wall mid-run exactly like the
+ * domain path does.
+ */
+export const aliasBackfillDaily = inngest.createFunction(
+  { id: 'alias-backfill-daily' },
+  { cron: '30 11 * * *' }, // 30m after the domain backfill: an account resolved there is eligible here today
+  async ({ step }) => {
+    const workspaces = await step.run('scan-workspaces', async () => {
+      const supabase = createServerClient();
+      const { data } = await supabase.from('workspaces').select('id');
+      const eligible: Array<{ id: string; per_day: number; key: string }> = [];
+      for (const ws of (data ?? []) as Array<{ id: string }>) {
+        const policy = await getPolicy(supabase, ws.id);
+        const perDay = Math.floor(policy.research?.alias_backfill_per_day ?? 0);
+        if (perDay <= 0) continue;
+        const key = resolveEnvVar(policy, 'EXA_API_KEY');
+        if (!key) continue;
+        const pipe = await getPipelineStatus(supabase, ws.id);
+        if (pipe?.state === 'paused' && (pipe.scope ?? 'all') !== 'contacts') continue;
+        eligible.push({ id: ws.id, per_day: perDay, key });
+      }
+      return eligible;
+    });
+    if (!workspaces.length) return { workspaces: 0, resolved: 0, skipped: 0, errors: 0 };
+
+    const totals = { resolved: 0, skipped: 0, errors: 0 };
+    for (const ws of workspaces) {
+      const r = await step.run(`aliases-${ws.id}`, async () => {
+        const supabase = createServerClient();
+        const res = await backfillAliases(supabase, {
+          workspace_id: ws.id,
+          exa_api_key: ws.key,
+          limit: ws.per_day,
+          actor_id: 'alias_backfill',
+        });
+        const halting = res.errors.find((e) => isHaltingError(e));
+        if (halting) {
+          const credit = /credit|402|payment/i.test(halting);
+          await setPipelineStatus(supabase, ws.id, {
+            state: 'paused',
+            scope: 'research',
+            provider: 'exa',
+            reason: credit
+              ? 'Exa (web research) is out of credit. Research is paused; scoring, contact pulls, and drafting continue. Add credits at dashboard.exa.ai, then click Continue.'
+              : `Exa (web research) returned an error and research is paused: ${halting.slice(0, 140)}. Fix it, then click Continue.`,
+            paused_at: new Date().toISOString(),
+          });
+        }
+        return res;
+      });
+      totals.resolved += r.resolved;
+      totals.skipped += r.skipped;
+      totals.errors += r.failed;
+    }
+    return { workspaces: workspaces.length, ...totals };
   },
 );
 

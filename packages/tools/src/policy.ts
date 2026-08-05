@@ -514,6 +514,18 @@ export interface ResearchAngle {
  *                      same guard as resolve_domains). 0 / unset = off.
  *                      Each attempt spends real search credit, so the
  *                      operator sets the pace explicitly.
+ *   resolve_aliases  : once an account has a domain but no aliases, spend one
+ *                      budgeted search reading its own site for the other names
+ *                      its coverage runs under (the press calls Crazy Maple
+ *                      Studio "ReelShort"). Without them the name gate drops
+ *                      every genuine article about such a company. Default true;
+ *                      spends from the existing research budget. Guards are in
+ *                      aliases.ts and abstain rather than guess.
+ *   alias_backfill_per_day : how many accounts the daily backfill may read for
+ *                      aliases (one Exa search + one model call each). 0 /
+ *                      unset = off, same as domain_backfill_per_day — accounts
+ *                      imported before this existed are only swept when the
+ *                      operator sets a pace.
  *   social_domains   : hosts the `social` domain_scope searches within (e.g. a
  *                      professional network the workspace's buyers post on).
  *                      Empty/unset = social angles are skipped entirely. The
@@ -546,6 +558,8 @@ export interface ResearchPolicy {
   strategy_generated_at?: string;
   resolve_domains?: boolean;
   domain_backfill_per_day?: number;
+  resolve_aliases?: boolean;
+  alias_backfill_per_day?: number;
   social_domains?: string[];
   contact_signal_share?: number;
   contact_signal_account_icp?: number;

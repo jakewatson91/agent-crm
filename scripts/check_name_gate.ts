@@ -17,7 +17,8 @@
  *
  * Run: tsx scripts/check_name_gate.ts   (exits non-zero on failure)
  */
-import { pageMentionsEntity } from '../packages/tools/src/research_strategy.ts';
+import { pageMentionsEntity, readEntityAliases } from '../packages/tools/src/research_strategy.ts';
+import { buildAliases, matchAlias } from '../inngest/functions/sources/utils.ts';
 
 let fail = 0;
 function eq(label: string, got: unknown, want: unknown) {
@@ -85,6 +86,30 @@ eq('acronym domain abstains regardless of name length', pageMentionsEntity('Warn
 console.log('\nmalformed input never throws:');
 eq('unparseable url is still searched as text', pageMentionsEntity('Weyyak', 'weyyak.com', page('x', 'not a url', 'weyyak launches')), true);
 eq('missing title and text', pageMentionsEntity('Weyyak', 'weyyak.com', { url: 'https://example.com/none' }), false);
+
+// An alias is only worth adding to an account if every check that account goes
+// through can see it. Before 2026-08-05 only the research gate read
+// attributes.aliases: the watch-mode connectors derived their own list from the
+// name and domain, so "ReelShort" on the record fixed research and left HN, Exa
+// watch, GitHub and Product Hunt still blind to it.
+console.log('\nattributes.aliases is read the same way everywhere:');
+eq('a well-formed list comes back trimmed', readEntityAliases({ aliases: [' ReelShort ', 'Crazy Maple'] }), ['ReelShort', 'Crazy Maple']);
+eq('no attributes at all', readEntityAliases(null), []);
+eq('the key is absent', readEntityAliases({ domain: 'crazymaplestudios.com' }), []);
+eq('a non-array value is ignored, not coerced', readEntityAliases({ aliases: 'ReelShort' }), []);
+eq('non-strings and blanks inside the list are dropped', readEntityAliases({ aliases: ['ReelShort', '', '  ', 42, null] }), ['ReelShort']);
+
+console.log('\nconnectors match on curated aliases, not just derived ones:');
+eq('the curated name joins the derived set', buildAliases('Crazy Maple Studio', 'crazymaplestudios.com', ['ReelShort']),
+  ['crazy maple studio', 'reelshort', 'crazymaplestudios.com']);
+eq('a curated alias matches a mention the name never would',
+  matchAlias('ReelShort tops the US app charts', buildAliases('Crazy Maple Studio', 'crazymaplestudios.com', ['ReelShort'])), 'reelshort');
+eq('an unrelated page still does not match',
+  matchAlias('DramaBox raises a round', buildAliases('Crazy Maple Studio', 'crazymaplestudios.com', ['ReelShort'])), null);
+// The 3-char floor and the word-boundary rule are what stop short aliases from
+// matching English fragments; a curated alias gets them too, not a bypass.
+eq('a curated alias under 3 chars is dropped like any other', buildAliases('M6', 'm6plus.fr', ['M6']), ['m6plus.fr']);
+eq('no aliases on the record behaves exactly as before', buildAliases('Cineverse', 'cineverse.com'), ['cineverse', 'cineverse.com']);
 
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);

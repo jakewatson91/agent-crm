@@ -197,6 +197,19 @@ export const UpdateSourceSchema = z.object({
   reasoning: z.string().min(1),
 });
 
+// Set the other names an account's coverage is written under. This is the only
+// supported write path for attributes.aliases — before it existed the field
+// could only be filled by editing the database by hand, which no customer can
+// do. Replaces the list outright rather than appending so an agent can also
+// REMOVE an alias that turned out to admit junk; pass the current value in
+// prior_state so the event row alone is enough to undo it.
+export const SetEntityAliasesSchema = z.object({
+  entity_id: UuidSchema,
+  aliases: z.array(z.string().min(1)).max(10),
+  prior_state: z.record(z.unknown()),
+  reasoning: z.string().min(1),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -224,6 +237,7 @@ export const TOOL_SCHEMAS = {
   score_entity: ScoreEntitySchema,
   token_summary: TokenSummarySchema,
   update_source: UpdateSourceSchema,
+  set_entity_aliases: SetEntityAliasesSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

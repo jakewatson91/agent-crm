@@ -16,9 +16,9 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   callTool, recordActivityMarker, latestMarkerAt, ACTIVITY_MARKERS,
-  getPolicy, resolveEnvVar, resolveStrategy, resolveContactStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding, pageMentionsEntity,
+  getPolicy, resolveEnvVar, resolveStrategy, resolveContactStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding, pageMentionsEntity, readEntityAliases,
   dedupeResearchCandidates, DUP_LOOKBACK_DAYS, ageDecay,
-  resolveDomainViaSearch, getPipelineStatus, setPipelineStatus,
+  resolveDomainViaSearch, resolveAliasesViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
 import { isPersistentWall } from './advance_accounts.js';
@@ -297,6 +297,11 @@ export async function runEntityResearch(
           ]);
           contactAccountName = (acct.data?.name as string) ?? '';
           domain = ((acct.data?.attributes as { domain?: string } | null)?.domain ?? '').trim().toLowerCase();
+          // A contact's searches run against the employer's domain, so they hit
+          // the same gate the account does and need the same alias list. Without
+          // this, a Crazy Maple Studio exec's coverage under "ReelShort" is
+          // dropped even after the account itself is fixed.
+          aliases = readEntityAliases(acct.data?.attributes);
           contactRole = (roleF.data?.object_text as string) ?? '';
         }
         if (!contactAccountName) {
@@ -310,9 +315,7 @@ export async function runEntityResearch(
         const ent = await supabase.from('entities').select('attributes').eq('id', entity_id).maybeSingle();
         const attrs = ent.data?.attributes as { domain?: string; aliases?: unknown } | null;
         domain = (attrs?.domain ?? '').trim().toLowerCase();
-        aliases = Array.isArray(attrs?.aliases)
-          ? attrs.aliases.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
-          : [];
+        aliases = readEntityAliases(attrs);
       }
 
       let searches = 0;
@@ -337,6 +340,27 @@ export async function runEntityResearch(
           const resolved = await resolveDomainViaSearch(supabase, { workspace_id, entity_id, entity_name, exa_api_key: apiKey });
           if (resolved.status === 'resolved' && resolved.domain) domain = resolved.domain;
           else if (resolved.status === 'search_error') errors.push(`domain_resolve: ${resolved.error ?? 'Exa error'}`);
+        }
+      }
+
+      // Aliases: the other names this account's coverage is published under.
+      // Runs after the domain resolver because it reads the company's OWN site,
+      // so an account that just got a domain can be read in the same tick. Costs
+      // one search, spent from the same budget, and only ever once per account —
+      // a success stores the names, a failure writes a marker that cools the
+      // account down for RESOLVE_RETRY_DAYS.
+      //
+      // This is what stops the gate below from dropping every real article about
+      // a company the press calls by its product name.
+      if (kind === 'account' && domain && !aliases.length && policy.research?.resolve_aliases !== false) {
+        const failedAt = await latestMarkerAt(supabase, workspace_id, entity_id, [ACTIVITY_MARKERS.ALIASES_RESOLVE_FAILED]);
+        const coolingDown = !!failedAt && Date.now() - Date.parse(failedAt) < RESOLVE_RETRY_DAYS * 86400 * 1000;
+        if (!coolingDown) {
+          resolver_spent += 1;
+          searches++;
+          const resolvedAliases = await resolveAliasesViaSearch(supabase, { workspace_id, entity_id, entity_name, exa_api_key: apiKey });
+          if (resolvedAliases.status === 'resolved') aliases = resolvedAliases.aliases;
+          else if (resolvedAliases.status === 'search_error') errors.push(`alias_resolve: ${resolvedAliases.error ?? 'Exa error'}`);
         }
       }
 

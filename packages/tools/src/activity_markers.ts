@@ -35,6 +35,12 @@ export const ACTIVITY_MARKERS = {
   // cooldown so they don't re-spend a search on the same account every tick.
   DOMAIN_RESOLVED: 'domain_resolved',
   DOMAIN_RESOLVE_FAILED: 'domain_resolve_failed',
+  // resolveAliasesViaSearch stored the other names this account's coverage runs
+  // under / found nothing on its own site that passed the alias guards. The
+  // backfill reads the FAILED marker as a cooldown, the same way the domain
+  // sweep does, so repeat runs spend their searches on untried accounts.
+  ALIASES_RESOLVED: 'aliases_resolved',
+  ALIASES_RESOLVE_FAILED: 'aliases_resolve_failed',
 } as const;
 
 export type ActivityMarker = (typeof ACTIVITY_MARKERS)[keyof typeof ACTIVITY_MARKERS];

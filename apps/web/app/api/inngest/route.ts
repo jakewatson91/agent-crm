@@ -38,6 +38,7 @@ function getHandlers(): Promise<ServeReturn> {
         fns.entityArchiveSweep,
         fns.retentionSweep,
         fns.domainBackfillDaily,
+        fns.aliasBackfillDaily,
         fns.sourceCurator,
         fns.subscriptionDriftLearner,
         fns.healthSweepCron,

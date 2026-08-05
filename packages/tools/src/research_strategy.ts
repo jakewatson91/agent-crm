@@ -327,6 +327,22 @@ function hostOf(url: string): string | null {
  */
 const MIN_DISCRIMINATING_CHARS = 4;
 
+/**
+ * The other names an entity is written under, read off `attributes.aliases`.
+ *
+ * One reader for every caller, so an alias added to an account behaves the same
+ * everywhere it is checked: the research name gate, the contacts that work at
+ * that account, and the watch-mode connectors. `attributes` is free-form JSON,
+ * so anything that is not a non-empty string is ignored rather than trusted.
+ */
+export function readEntityAliases(attributes: unknown): string[] {
+  const raw = (attributes as { aliases?: unknown } | null | undefined)?.aliases;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+    .map((a) => a.trim());
+}
+
 export function pageMentionsEntity(
   name: string,
   domain: string,
