@@ -258,7 +258,7 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
           edit
         </button>
         <button
-          onClick={() => setMode('rejecting')}
+          onClick={() => { setRejectReason(note); setMode('rejecting'); }}
           disabled={busy}
           style={{ ...PILL_BASE, background: 'transparent', color: 'var(--accent-coral)', border: '1px solid var(--accent-coral)' }}
         >

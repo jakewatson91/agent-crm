@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * Renders draft text with inline citation highlighting. When the drafter
@@ -66,6 +66,17 @@ function findSpans(text: string, facts: Fact[], citeQuotes: CiteQuote[]): Span[]
 export function CitedText({ text, cites, citeQuotes = [] }: { text: string; cites: string[]; citeQuotes?: CiteQuote[] }) {
   const [facts, setFacts] = useState<Fact[] | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function openHover(id: string) {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
+    setHovered(id);
+  }
+  function scheduleClose(id: string) {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => setHovered((h) => (h === id ? null : h)), 150);
+  }
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
   useEffect(() => {
     if (cites.length === 0) return;
@@ -92,8 +103,8 @@ export function CitedText({ text, cites, citeQuotes = [] }: { text: string; cite
       <span
         key={`s${i}`}
         style={{ position: 'relative', display: 'inline' }}
-        onMouseEnter={() => setHovered(`${i}`)}
-        onMouseLeave={() => setHovered((h) => (h === `${i}` ? null : h))}
+        onMouseEnter={() => openHover(`${i}`)}
+        onMouseLeave={() => scheduleClose(`${i}`)}
       >
         <mark style={{
           background: 'var(--accent-blue-soft)', color: 'inherit',
@@ -102,14 +113,17 @@ export function CitedText({ text, cites, citeQuotes = [] }: { text: string; cite
           {text.slice(s.start, s.end)}
         </mark>
         {hovered === `${i}` && (
-          <span style={{
-            position: 'absolute', left: 0, top: '100%', zIndex: 20, marginTop: 4,
-            width: 320, padding: '.5rem .6rem', background: 'var(--panel-2)',
-            border: '1px solid var(--border)', borderLeft: '3px solid var(--accent-blue)',
-            borderRadius: 6, fontSize: '.74rem', lineHeight: 1.45,
-            fontFamily: 'var(--font-sans)', whiteSpace: 'normal',
-            boxShadow: '0 4px 14px rgba(0,0,0,.18)',
-          }}>
+          <span
+            onMouseEnter={() => openHover(`${i}`)}
+            onMouseLeave={() => scheduleClose(`${i}`)}
+            style={{
+              position: 'absolute', left: 0, top: '100%', zIndex: 20, marginTop: 4,
+              width: 320, padding: '.5rem .6rem', background: 'var(--panel-2)',
+              border: '1px solid var(--border)', borderLeft: '3px solid var(--accent-blue)',
+              borderRadius: 6, fontSize: '.74rem', lineHeight: 1.45,
+              fontFamily: 'var(--font-sans)', whiteSpace: 'normal',
+              boxShadow: '0 4px 14px rgba(0,0,0,.18)',
+            }}>
             <span className="mono" style={{ color: 'var(--badge-blue-fg)', fontSize: '.66rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>
               cited fact
             </span>
