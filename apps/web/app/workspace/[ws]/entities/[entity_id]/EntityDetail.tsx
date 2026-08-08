@@ -1,7 +1,7 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import { EntityLink } from '../../../../_components/drawer/EntityLink';
 import { CiteChain } from '../../../../_components/CiteChain';
 import { Timestamp } from '../../../../_components/Timestamp';
 import { WhyThis } from '../../../../_components/WhyThis';
@@ -9,8 +9,9 @@ import { CitedText } from '../../../../_components/CitedText';
 import { DraftActions } from '../../../../_components/DraftActions';
 import { lowConfLabel } from '../../../../_lib/confidence';
 import { bandOf, bandColor, BAND_HEADLINE, BAND_VERDICT } from '../../../../_lib/bands';
-import { humanizePredicate, looksLikeCode, stripActionTag } from '../../../../_lib/labels';
-import { SCORE_DIMENSIONS, scoreWord } from '../../../../_lib/score_labels';
+import { humanizePredicate, stripActionTag } from '../../../../_lib/labels';
+import { scoreWord } from '../../../../_lib/score_labels';
+import { FAMILY_LABEL, predicateLabel, groupVisibleFacts, buildScoreCard } from '../../../../_lib/facts_view';
 import { ScoreTimeline } from './ScoreTimeline';
 import { AttributeGrid } from './AttributeGrid';
 import { RelationshipGraph } from './RelationshipGraph';
@@ -86,42 +87,6 @@ const KIND_LABEL: Record<GroupedItem['kind'], { label: string; cls: string }> = 
   system:       { label: 'system',         cls: 'badge-mute' },
   question:     { label: 'question',       cls: 'badge-amber' },
 };
-
-const FAMILY_LABEL: Record<string, string> = {
-  firmographics: 'Firmographics',
-  scoring:       'Scoring',
-  engagement:    'Engagement',
-  other:         'Other',
-};
-
-// Renders a fact predicate as a human role label. Pattern-shaped; no
-// vertical-specific values baked in.
-function predicateLabel(predicate: string): string {
-  if (predicate === 'works_at') return 'works at';
-  if (predicate === 'advises') return 'advises';
-  const m = predicate.match(/^is_(.+)_of$/);
-  if (m && m[1]) return m[1].replace(/_/g, ' ');
-  return predicate.replace(/_/g, ' ');
-}
-
-// Score-related facts get their own clean card, not a row in the facts list.
-function isScoreFact(p: string): boolean {
-  return p === 'icp_fit' || p === 'score_total' || p === 'icp_fit_breakdown' || p === 'contact_score' || p.startsWith('score_');
-}
-
-// Facts a human can't read: the type fact (shown as a badge), the score
-// internals (shown in the score card), raw JSON / error blobs, and bare codes.
-// Entity-reference facts always stay — they render as a link.
-function isMachineFact(f: { predicate: string; object_text: string | null; object_entity: string | null }): boolean {
-  if (f.object_entity) return false;
-  if (f.predicate === 'is_a') return true;
-  if (isScoreFact(f.predicate)) return true;
-  const v = (f.object_text ?? '').trim();
-  if (v.startsWith('{') || v.startsWith('[')) return true;
-  if (/^error[:\s]/i.test(v)) return true;
-  if (looksLikeCode(f.predicate, f.object_text)) return true;
-  return false;
-}
 
 export function EntityDetail({
   ws,
@@ -244,38 +209,12 @@ export function EntityDetail({
   // Human facts view: drop machine facts (type, score internals, raw blobs,
   // codes) and skip families that empty out. Everything stays in the bottom
   // audit stream + the API.
-  const visibleFacts: Record<string, Fact[]> = {};
-  for (const [fam, arr] of Object.entries(currentFacts)) {
-    const keep = arr.filter((f) => !isMachineFact(f));
-    if (keep.length) visibleFacts[fam] = keep;
-  }
+  const { visibleFacts, families } = groupVisibleFacts(currentFacts);
 
   // Score card: a plain verdict + the agent's own words, instead of the 8 raw
   // score_* rows + JSON blob it writes. The numeric dimensions move into an
   // audit expander, each explained in plain language.
-  const allFacts = Object.values(currentFacts).flat();
-  const scoreComponents = allFacts
-    .filter((f) => f.predicate.startsWith('score_') && f.predicate !== 'score_total' && f.object_text != null)
-    .map((f) => {
-      const key = f.predicate.replace(/^score_/, '');
-      const meta = SCORE_DIMENSIONS[key];
-      return { key, id: f.id, label: meta?.label ?? humanizePredicate(key), help: meta?.help ?? null, value: parseFloat(f.object_text as string) };
-    })
-    .filter((c) => Number.isFinite(c.value));
-  // The scorer's plain-language explanation, stored on the breakdown fact. This
-  // is the part that actually tells a human *why* the score is what it is.
-  const scoreReasoning = (() => {
-    const f = allFacts.find((x) => x.predicate === 'icp_fit_breakdown');
-    if (!f?.object_text) return null;
-    try {
-      const j = JSON.parse(f.object_text) as { reasoning?: unknown };
-      return typeof j.reasoning === 'string' && j.reasoning.trim() ? j.reasoning.trim() : null;
-    } catch { return null; }
-  })();
-  const families = Object.keys(visibleFacts).sort((a, b) => {
-    const order = ['firmographics', 'scoring', 'engagement', 'other'];
-    return order.indexOf(a) - order.indexOf(b);
-  });
+  const { score, scoreReasoning, scoreComponents } = buildScoreCard(currentFacts);
 
   const countsLine = data
     ? `${data.counts.facts_active} facts · ${data.counts.recent} recent · ${data.counts.history} historical`
@@ -291,16 +230,8 @@ export function EntityDetail({
     .map((n) => ({ entity_id: n.entity_id, name: n.name, kind: n.kind, rel: predicateLabel(n.via_predicate), confidence: n.confidence, via_fact_id: n.via_fact_id }))
     .sort((a, b) => b.confidence - a.confidence);
 
-  // Identity strip: linked domain + score chip, derived from attributes/facts.
+  // Identity strip: linked domain, derived from attributes.
   const domain = typeof entityAttributes.domain === 'string' ? entityAttributes.domain : null;
-  const scoreStr = (() => {
-    for (const arr of Object.values(currentFacts)) {
-      const f = arr.find((x) => x.predicate === 'icp_fit') ?? arr.find((x) => x.predicate === 'score_total');
-      if (f?.object_text) return f.object_text;
-    }
-    return null;
-  })();
-  const score = scoreStr != null && Number.isFinite(parseFloat(scoreStr)) ? parseFloat(scoreStr) : null;
 
   return (
     <section>
@@ -350,10 +281,7 @@ export function EntityDetail({
                   <div key={c.key}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
                       <span style={{ fontSize: '.78rem', color: 'var(--text)', minWidth: 130 }}>{c.label}</span>
-                      <div style={{ flex: 1, height: 6, background: 'var(--panel-2)', borderRadius: 3, overflow: 'hidden', minWidth: 50 }}>
-                        <div style={{ width: `${Math.round(c.value * 100)}%`, height: '100%', background: bandColor(c.value) }} />
-                      </div>
-                      <span className="subtle mono" style={{ fontSize: '.72rem', minWidth: 50, textAlign: 'right' }}>{scoreWord(c.value)}</span>
+                      <span className="mono" style={{ fontSize: '.72rem', fontWeight: 600, color: bandColor(c.value) }}>{scoreWord(c.value)}</span>
                     </div>
                     {c.help && (
                       <div className="subtle" style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.12rem' }}>{c.help}</div>
@@ -393,9 +321,7 @@ export function EntityDetail({
               </div>
             )}
             {related && neighborCount > 0 && (
-              <div className="card" style={{ padding: '.5rem' }}>
-                <RelationshipGraph ws={ws} centerName={entityName} centerKind={entityKind} neighbors={graphNeighbors} />
-              </div>
+              <RelationshipGraph centerName={entityName} centerKind={entityKind} neighbors={graphNeighbors} />
             )}
           </div>
         )}
@@ -451,9 +377,9 @@ export function EntityDetail({
                         <span className="subtle" style={{ color: 'var(--text-2)', minWidth: 160 }} title={f.predicate}>{humanizePredicate(f.predicate)}</span>
                         <span style={{ color: 'var(--text)', flex: 1, minWidth: 0 }}>
                           {f.object_entity && f.object_entity_name ? (
-                            <Link href={`/workspace/${ws}/entities/${f.object_entity}`} style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}>
+                            <EntityLink id={f.object_entity} label={f.object_entity_name} style={{ color: 'var(--accent-blue)' }}>
                               {f.object_entity_name}
-                            </Link>
+                            </EntityLink>
                           ) : (
                             f.object_text ?? '—'
                           )}

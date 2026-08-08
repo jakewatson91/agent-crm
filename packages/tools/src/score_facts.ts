@@ -9,7 +9,10 @@
  *
  *   pitch_relevance  RRF-fused cosine of fact embedding vs the 4 ICP perspective
  *                    vectors (using the same cache icp_embeddings populates).
- *   recency          exp(-age_days / τ_recency)
+ *   recency          exp(-age_days / τ_recency), aged from the SOURCE's
+ *                    publication date. A fact with no source date is timeless
+ *                    (state, not an event) and scores a flat 1 rather than
+ *                    being aged by when we happened to record it.
  *   confidence       facts.confidence as stored
  *   over_used        sum over prior cites of exp(-days_since_cite / τ_overuse),
  *                    capped at 1. Scoped to THIS account's channel.
@@ -71,6 +74,13 @@ export interface FactRow {
   confidence: number;
   observed_at: string;
   source_event_id?: number | null;
+  /**
+   * When the SOURCE was published, not when we extracted the fact. Resolved
+   * from the fact's signal (structured_tags.published_at) by the caller; absent
+   * when the fact has no signal or the page carried no date. See the recency
+   * term below for why the distinction decides the ranking.
+   */
+  source_date?: string | null;
 }
 
 export interface FactScoreComponents {
@@ -249,7 +259,27 @@ export async function scoreFacts(
         .map((p) => Math.max(0, cosine(factVectors[i]!, icpPerspectives!.vectors[p])));
       pitch = rrfFuse(cosines);
     }
-    const age_days = (now - new Date(f.observed_at).getTime()) / 86400_000;
+    // Age a fact by when its SOURCE was published, and only when it HAS one.
+    //
+    // Two different things were wrong with reading facts.observed_at here.
+    // assert_fact stamps it now(), so a claim pulled out of a 2013 forum post
+    // scored as fresh as this morning's funding announcement. And on the other
+    // side, a CSV attribute imported six months ago decayed to nothing, when
+    // "they are a broadcaster" is not a claim that gets less true with time.
+    //
+    // Undated therefore means timeless, not ancient and not brand new: those
+    // facts sit at a flat 1 and are ranked on relevance and confidence alone.
+    // That matches the craft rules the drafter runs on — age kills events, not
+    // state — and it keeps this term from quietly deciding whether background
+    // evidence clears min_score based on an import date.
+    //
+    // Freshness is what makes a fact usable as an opening line, and the drafter
+    // enforces that directly: an undated fact can never be the trigger, and a
+    // dated event past trigger_max_age_days is dead weight. This term only
+    // orders the shortlist; it is not the freshness gate and must not act like
+    // one.
+    const sourceMs = f.source_date ? Date.parse(f.source_date) : NaN;
+    const age_days = Number.isFinite(sourceMs) ? Math.max(0, (now - sourceMs) / 86400_000) : 0;
     const recency = Math.exp(-age_days / cfg.tau_recency_days);
     const used = overuse.get(f.id) ?? 0;
     const boost = boostById.get(f.id) ?? 1;

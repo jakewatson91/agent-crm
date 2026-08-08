@@ -21,11 +21,13 @@ import { DraftActions } from '../../_components/DraftActions';
 import { CitedText } from '../../_components/CitedText';
 import { CiteChain } from '../../_components/CiteChain';
 import { WhyThis } from '../../_components/WhyThis';
+import { EntityLink } from '../../_components/drawer/EntityLink';
+import { useDrawer } from '../../_components/Drawer';
 import { useSetPageContext, type PageContext } from '../../_components/PageContext';
 import { bandOf, BAND_HEADLINE, bandColor } from '../../_lib/bands';
 import { humanizeKey } from '../../_lib/labels';
 import { SCORE_DIMENSIONS } from '../../_lib/score_labels';
-import { DailyBars, YieldMeter } from './TodayCharts';
+import { DailyBars } from './TodayCharts';
 import type {
   TodayData, TodayMove, TodayRun, TodaySignal, TodayLearned, TodayContact,
   TodayDraft, TodayDecline, TodayConnector, TodaySource, TodayAlert, TodayTrendPoint,
@@ -151,7 +153,7 @@ export function TodayClient({
       {today.learned.length > 0 && (
         <Section id="learned" title="What it learned" count={c.factsLearned}
           hint="New facts on file, by company. These are what the drafts get written from.">
-          <div style={{ display: 'grid', gap: '.5rem', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
             {today.learned.map((l) => <LearnedCard key={l.entity_id} row={l} ws={ws} />)}
           </div>
           {today.learnedMore > 0 && (
@@ -182,8 +184,6 @@ export function TodayClient({
           color: var(--text-2); text-decoration: none;
         }
         .jump-chip:hover { border-color: var(--border-strong); color: var(--text); }
-        .today-row { border-top: 1px solid var(--border); }
-        .today-row:first-child { border-top: none; }
         .link-row:hover { background: var(--panel-2); }
       `}</style>
     </section>
@@ -364,6 +364,9 @@ const RUN_TONE: Record<TodayRun['kind'], string> = {
 
 function RunCard({ run, ws }: { run: TodayRun; ws: string }) {
   const sameMinute = run.startedAt.slice(0, 16) === run.endedAt.slice(0, 16);
+  const [open, setOpen] = useState(false);
+  const hasResults = run.learned.length > 0 || run.signals.length > 0 || run.contacts.length > 0
+    || run.drafts.length > 0 || run.declines.length > 0 || run.domains.length > 0;
   return (
     <div className="card" style={{ padding: '.75rem 1rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', flexWrap: 'wrap' }}>
@@ -386,11 +389,26 @@ function RunCard({ run, ws }: { run: TodayRun; ws: string }) {
       {run.accounts.length > 0 && (
         <div style={{ marginTop: '.5rem', display: 'flex', gap: '.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
           {run.accounts.map((a) => (
-            <Link key={a.id} href={`/workspace/${ws}/entities/${a.id}`} className="chip">
+            <EntityLink key={a.id} id={a.id} label={a.name} className="chip">
               {a.name}
-            </Link>
+            </EntityLink>
           ))}
           {run.accountsMore > 0 && <span className="muted" style={{ fontSize: '.72rem' }}>+{run.accountsMore} more</span>}
+        </div>
+      )}
+
+      {hasResults && (
+        <button
+          onClick={() => setOpen((v) => !v)}
+          style={{ marginTop: '.55rem', background: 'none', border: 'none', color: 'var(--link)', fontSize: '.78rem', padding: 0 }}
+        >
+          {open ? 'Hide results' : 'Show results'}
+        </button>
+      )}
+
+      {open && (
+        <div style={{ marginTop: '.6rem', display: 'flex', flexDirection: 'column', gap: '.75rem' }}>
+          <RunResults run={run} ws={ws} />
         </div>
       )}
 
@@ -400,6 +418,73 @@ function RunCard({ run, ws }: { run: TodayRun; ws: string }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * A run's own output, capped to a handful per kind, reusing the exact row
+ * components the full-day sections below use — so drilling into one pass
+ * looks like a scoped slice of the same list, not a different feature.
+ */
+function RunResults({ run, ws }: { run: TodayRun; ws: string }) {
+  return (
+    <>
+      {run.learned.length > 0 && (
+        <div>
+          <div className="muted" style={{ fontSize: '.74rem', marginBottom: '.35rem' }}>Facts learned this pass</div>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            {run.learned.map((l) => <LearnedCard key={l.entity_id} row={l} ws={ws} />)}
+          </div>
+        </div>
+      )}
+      {run.signals.length > 0 && (
+        <div>
+          <div className="muted" style={{ fontSize: '.74rem', marginBottom: '.35rem' }}>Articles this pass read</div>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            {run.signals.map((s) => <SignalRow key={s.id} sig={s} ws={ws} />)}
+          </div>
+        </div>
+      )}
+      {run.contacts.length > 0 && (
+        <div>
+          <div className="muted" style={{ fontSize: '.74rem', marginBottom: '.35rem' }}>People found this pass</div>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            {run.contacts.map((p, i) => <ContactRow key={p.entity_id} person={p} ws={ws} first={i === 0} />)}
+          </div>
+        </div>
+      )}
+      {run.drafts.length > 0 && (
+        <div>
+          <div className="muted" style={{ fontSize: '.74rem', marginBottom: '.35rem' }}>Messages this pass wrote</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
+            {run.drafts.map((d) => <DraftRow key={d.post_id} draft={d} ws={ws} />)}
+          </div>
+        </div>
+      )}
+      {run.declines.length > 0 && (
+        <div>
+          <div className="muted" style={{ fontSize: '.74rem', marginBottom: '.35rem' }}>Passed on this pass</div>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            {run.declines.map((d, i) => <DeclineRow key={`${d.entity_id}-${d.at}-${i}`} row={d} ws={ws} />)}
+          </div>
+        </div>
+      )}
+      {run.domains.length > 0 && (
+        <div>
+          <div className="muted" style={{ fontSize: '.74rem', marginBottom: '.35rem' }}>Websites found this pass</div>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            {run.domains.map((d) => (
+              <div key={d.entity_id} className="list-row" style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', padding: '.5rem .85rem' }}>
+                <EntityLink id={d.entity_id} label={d.name} style={{ fontSize: '.85rem', fontWeight: 500, color: 'var(--text)' }}>
+                  {d.name}
+                </EntityLink>
+                <span className="mono muted" style={{ fontSize: '.78rem' }}>{d.domain}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -431,9 +516,9 @@ function MoverCard({ move, ws }: { move: TodayMove; ws: string }) {
   return (
     <div className="card" style={{ padding: '.85rem 1rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.55rem', flexWrap: 'wrap' }}>
-        <Link href={`/workspace/${ws}/entities/${move.entity_id}`} style={{ fontWeight: 600, color: 'var(--text)' }}>
+        <EntityLink id={move.entity_id} label={move.name} style={{ fontWeight: 600, color: 'var(--text)' }}>
           {move.name}
-        </Link>
+        </EntityLink>
         <ScoreShift prev={move.scorePrev} next={move.scoreNew} />
         <span style={{ marginLeft: 'auto', display: 'flex', gap: '.3rem' }}>
           {move.hasContact && <span className="badge badge-mute">person found</span>}
@@ -478,15 +563,14 @@ function MoverCard({ move, ws }: { move: TodayMove; ws: string }) {
       )}
 
       {move.facts.length > 0 && (
-        <div style={{ marginTop: '.5rem', display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
+        <div style={{ marginTop: '.5rem', display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
           {move.facts.map((f) => (
-            <div key={f.id}>
-              <span className="chip" title={f.object}>
-                {humanizeKey(f.predicate)}: {f.object.length > 42 ? `${f.object.slice(0, 42)}…` : f.object}
-              </span>
-              <div style={{ marginTop: '.15rem' }}>
+            <div key={f.id} style={{ fontSize: '.82rem', lineHeight: 1.4 }}>
+              <span className="subtle" style={{ marginRight: '.4rem' }}>{humanizeKey(f.predicate)}:</span>
+              <span style={{ color: 'var(--text-2)' }}>{f.object}</span>
+              <span style={{ marginLeft: '.4rem' }}>
                 <CiteChain fact_id={f.id} label="trace" />
-              </div>
+              </span>
             </div>
           ))}
         </div>
@@ -516,7 +600,7 @@ function OutreachPanel({ today, ws }: { today: TodayData; ws: string }) {
           <div className="subtle" style={{ fontSize: '.8rem', marginBottom: '.4rem' }}>Your decisions</div>
           <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
             {today.decided.map((d, i) => (
-              <div key={`${d.entity_name}-${d.at}`} className="today-row" style={{ display: 'flex', gap: '.6rem', alignItems: 'center', padding: '.5rem .85rem', fontSize: '.84rem' }}>
+              <div key={`${d.entity_name}-${d.at}`} className="list-row" style={{ display: 'flex', gap: '.6rem', alignItems: 'center', padding: '.5rem .85rem', fontSize: '.84rem' }}>
                 <span className={`badge ${d.decision === 'approve' ? 'badge-green' : 'badge-coral'}`}>{d.decision === 'approve' ? 'approved' : d.decision}</span>
                 <span style={{ color: 'var(--text)' }}>{d.entity_name}</span>
                 {d.edited && <span className="badge badge-mute">you edited it first</span>}
@@ -553,9 +637,9 @@ function DraftRow({ draft, ws }: { draft: TodayDraft; ws: string }) {
   return (
     <div className="card" style={{ padding: '.75rem .95rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.4rem', flexWrap: 'wrap' }}>
-        <Link href={`/workspace/${ws}/entities/${draft.entity_id}`} style={{ fontWeight: 600, color: 'var(--text)', fontSize: '.9rem' }}>
+        <EntityLink id={draft.entity_id} label={draft.entity_name} style={{ fontWeight: 600, color: 'var(--text)', fontSize: '.9rem' }}>
           {draft.entity_name}
-        </Link>
+        </EntityLink>
         <span className={`badge ${draft.pending ? 'badge-amber' : 'badge-mute'}`}>
           {draft.pending ? 'waiting on you' : 'decided'}
         </span>
@@ -585,11 +669,11 @@ function DraftRow({ draft, ws }: { draft: TodayDraft; ws: string }) {
 
 function DeclineRow({ row, ws }: { row: TodayDecline; ws: string }) {
   return (
-    <div className="today-row" style={{ padding: '.55rem .85rem' }}>
+    <div className="list-row" style={{ padding: '.55rem .85rem' }}>
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
-        <Link href={`/workspace/${ws}/entities/${row.entity_id}`} style={{ fontSize: '.86rem', fontWeight: 500, color: 'var(--text)' }}>
+        <EntityLink id={row.entity_id} label={row.entity_name} style={{ fontSize: '.86rem', fontWeight: 500, color: 'var(--text)' }}>
           {row.entity_name}
-        </Link>
+        </EntityLink>
         {row.tag && <span className="badge badge-mute">{humanizeKey(row.tag).toLowerCase()}</span>}
         <span className="muted" suppressHydrationWarning style={{ marginLeft: 'auto', fontSize: '.72rem' }}>{clock(row.at)}</span>
       </div>
@@ -617,18 +701,20 @@ function ReadPanel({ today, ws }: { today: TodayData; ws: string }) {
           <div className="subtle" style={{ fontSize: '.8rem', marginBottom: '.5rem' }}>
             What each line of search turned up
           </div>
-          {today.signalAngles.map((a) => (
-            <YieldMeter
-              key={a.angle}
-              label={humanizeKey(a.angle)}
-              value={a.withFacts}
-              total={a.count}
-              caption={`${a.withFacts} of ${a.count} useful`}
-            />
-          ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
+            {today.signalAngles.map((a) => (
+              <div key={a.angle} style={{ display: 'flex', gap: '.5rem', fontSize: '.82rem' }}>
+                <span style={{ color: 'var(--text)', flex: 1 }}>{humanizeKey(a.angle)}</span>
+                <span className="mono muted" style={{ fontSize: '.78rem' }}>
+                  {a.withFacts} of {a.count} useful
+                  {a.count > 0 && ` · ${Math.round((a.withFacts / a.count) * 100)}%`}
+                </span>
+              </div>
+            ))}
+          </div>
           <div className="muted" style={{ fontSize: '.72rem', marginTop: '.5rem' }}>
-            The bar is the share of pages that produced at least one new fact. A low share means that
-            angle is spending searches for little return.
+            Share of pages that produced at least one new fact. A low share means that angle is
+            spending searches for little return.
           </div>
         </div>
       )}
@@ -658,14 +744,25 @@ function ReadPanel({ today, ws }: { today: TodayData; ws: string }) {
 
 function SignalRow({ sig, ws }: { sig: TodaySignal; ws: string }) {
   const out = OUTCOME_LABEL[sig.outcome];
+  const { push } = useDrawer();
   return (
-    <div className="today-row" style={{ padding: '.6rem .85rem' }}>
+    <div className="list-row" style={{ padding: '.6rem .85rem' }}>
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
         {sig.entity_id
-          ? <Link href={`/workspace/${ws}/entities/${sig.entity_id}`} style={{ fontSize: '.85rem', fontWeight: 500, color: 'var(--text)' }}>{sig.entity_name}</Link>
+          ? <EntityLink id={sig.entity_id} label={sig.entity_name} style={{ fontSize: '.85rem', fontWeight: 500, color: 'var(--text)' }}>{sig.entity_name}</EntityLink>
           : <span style={{ fontSize: '.85rem', color: 'var(--text-2)' }}>{sig.entity_name}</span>}
         <span className="badge badge-mute">{humanizeKey(sig.angle)}</span>
-        <span className={`badge ${out.cls}`}>{sig.factCount > 0 ? `${sig.factCount} facts` : out.text}</span>
+        {sig.factCount > 0 ? (
+          <button
+            onClick={() => push({ kind: 'signal_facts', id: sig.id, label: `${sig.factCount} facts` })}
+            className={`badge ${out.cls}`}
+            style={{ border: 'none' }}
+          >
+            {sig.factCount} facts
+          </button>
+        ) : (
+          <span className={`badge ${out.cls}`}>{out.text}</span>
+        )}
         <span className="muted" suppressHydrationWarning style={{ marginLeft: 'auto', fontSize: '.72rem' }}>{clock(sig.createdAt)}</span>
       </div>
       <div style={{ fontSize: '.84rem', color: 'var(--text)', marginTop: '.2rem' }}>
@@ -689,10 +786,10 @@ function SignalRow({ sig, ws }: { sig: TodaySignal; ws: string }) {
 
 function LearnedCard({ row, ws }: { row: TodayLearned; ws: string }) {
   return (
-    <div className="card" style={{ padding: '.7rem .9rem' }}>
-      <Link href={`/workspace/${ws}/entities/${row.entity_id}`} style={{ fontWeight: 600, fontSize: '.88rem', color: 'var(--text)' }}>
+    <div className="list-row" style={{ padding: '.65rem .9rem' }}>
+      <EntityLink id={row.entity_id} label={row.name} style={{ fontWeight: 600, fontSize: '.88rem', color: 'var(--text)' }}>
         {row.name}
-      </Link>
+      </EntityLink>
       <div style={{ marginTop: '.4rem', display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
         {row.facts.map((f) => (
           <div key={f.id} style={{ fontSize: '.82rem', lineHeight: 1.4 }}>
@@ -714,15 +811,15 @@ function LearnedCard({ row, ws }: { row: TodayLearned; ws: string }) {
 
 function ContactRow({ person, ws, first }: { person: TodayContact; ws: string; first: boolean }) {
   return (
-    <div className={first ? '' : 'today-row'} style={{ display: 'flex', gap: '.6rem', alignItems: 'baseline', flexWrap: 'wrap', padding: '.55rem .85rem' }}>
-      <Link href={`/workspace/${ws}/entities/${person.entity_id}`} style={{ fontSize: '.86rem', fontWeight: 500, color: 'var(--text)' }}>
+    <div className={first ? '' : 'list-row'} style={{ display: 'flex', gap: '.6rem', alignItems: 'baseline', flexWrap: 'wrap', padding: '.55rem .85rem' }}>
+      <EntityLink id={person.entity_id} label={person.name} style={{ fontSize: '.86rem', fontWeight: 500, color: 'var(--text)' }}>
         {person.name}
-      </Link>
+      </EntityLink>
       {person.role && <span style={{ fontSize: '.82rem', color: 'var(--text-2)' }}>{person.role}</span>}
       {person.account_name && person.account_id && (
-        <Link href={`/workspace/${ws}/entities/${person.account_id}`} className="chip">
+        <EntityLink id={person.account_id} label={person.account_name} className="chip">
           {person.account_name}
-        </Link>
+        </EntityLink>
       )}
       {person.email && <span className="mono muted" style={{ fontSize: '.74rem' }}>{person.email}</span>}
       {person.score !== null && (
@@ -812,7 +909,7 @@ function ConnectorLine({ conn }: { conn: TodayConnector }) {
   const tone = conn.health === 'error' ? 'badge-coral' : conn.health === 'connected' ? 'badge-green' : 'badge-mute';
   const label = conn.health === 'error' ? 'problem' : conn.health === 'connected' ? 'connected' : 'not set up';
   return (
-    <div className="today-row" style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', padding: '.4rem 0', flexWrap: 'wrap' }}>
+    <div className="list-row" style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', padding: '.4rem 0', flexWrap: 'wrap' }}>
       <span style={{ fontSize: '.85rem', color: 'var(--text)' }}>{conn.name}</span>
       <span className={`badge ${tone}`}>{label}</span>
       {conn.role && <span className="badge badge-mute">{conn.role}</span>}
@@ -827,7 +924,7 @@ function SourceLine({ src }: { src: TodaySource }) {
   const tone = !src.active ? 'badge-mute' : src.status && src.status !== 'ok' ? 'badge-coral' : src.overdue ? 'badge-amber' : 'badge-green';
   const label = !src.active ? 'off' : src.status && src.status !== 'ok' ? 'failed' : src.overdue ? 'behind schedule' : 'on schedule';
   return (
-    <div className="today-row" style={{ padding: '.4rem 0' }}>
+    <div className="list-row" style={{ padding: '.4rem 0' }}>
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '.85rem', color: 'var(--text)' }}>{src.name}</span>
         <span className={`badge ${tone}`}>{label}</span>
@@ -882,9 +979,9 @@ function ApprovalCard({ item, ws, onDecided }: { item: FeedItem; ws: string; onD
   return (
     <div className="card" style={{ padding: '.95rem 1.1rem', borderColor: 'var(--accent-amber)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.55rem', flexWrap: 'wrap', marginBottom: '.55rem' }}>
-        <Link href={`/workspace/${ws}/entities/${item.entity_id}`} style={{ fontWeight: 600, color: 'var(--text)', fontSize: '.95rem' }}>
+        <EntityLink id={item.entity_id} label={item.entity_name} style={{ fontWeight: 600, color: 'var(--text)', fontSize: '.95rem' }}>
           {item.entity_name}
-        </Link>
+        </EntityLink>
         <span className="badge badge-green">outreach</span>
         {item.icp_fit !== null && (
           <span className="mono" style={{ fontSize: '.72rem', color: bandColor(item.icp_fit) }}>

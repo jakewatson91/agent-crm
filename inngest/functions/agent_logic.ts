@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, type WorkspacePolicy, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, type WorkspacePolicy, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -754,6 +754,9 @@ export async function runAgent(
         facts: activeFacts.map((f) => ({
           id: f.id, predicate: f.predicate, object_text: f.object_text,
           confidence: f.confidence, observed_at: f.observed_at, source_event_id: f.source_event_id,
+          // Resolved just above from each fact's signal. Without it the recency
+          // term ages every fact from its extraction time, which is always ~now.
+          source_date: f.source_date,
         })),
         config: (policy as Record<string, unknown>).fact_ranking as Record<string, unknown> | undefined,
       });
@@ -1070,6 +1073,18 @@ export async function runAgent(
         }).eq('id', sigData.id);
         if (upd.error) console.warn(`[enricher] unreadable source date write failed for signal ${sigData.id}: ${upd.error.message}`);
       } else if (corrected) {
+        // Correcting the date is the whole job here. Do NOT also drop the
+        // facts: the drafter's craft rules already say age kills events, not
+        // state, and a case study from 2022 naming the encoder they run on is
+        // still true about their stack today. A drop would delete exactly the
+        // evidence those rules keep, and it would delete it silently.
+        //
+        // What the correction has to do is reach everything downstream that
+        // judges age, which now means two writes rather than one. Magnitude was
+        // computed at signal creation from the provider's date and never
+        // revisited, so a page the provider dated to last week kept a
+        // fresh-signal magnitude even after the dateline said 2020.
+        const halfLifeDays = policy.research?.decay_half_life_days ?? DEFAULT_DECAY_HALF_LIFE_DAYS;
         const upd = await supabase.from('signals').update({
           structured_tags: {
             ...tags,
@@ -1077,6 +1092,7 @@ export async function runAgent(
             published_at_source: 'content',
             ...(tags.published_at ? { published_at_reported: tags.published_at } : {}),
           },
+          magnitude: researchSignalMagnitude(corrected, halfLifeDays, tags.hook_class as string | undefined),
         }).eq('id', sigData.id);
         if (upd.error) console.warn(`[enricher] source date write-back failed for signal ${sigData.id}: ${upd.error.message}`);
       }
@@ -1509,6 +1525,7 @@ DEPTH (when the signal carries a rich payload — a long post, a detailed listin
 
 SOURCE DATE — include a "source_published_date" field: the date this SOURCE was published, in YYYY-MM-DD form, but ONLY if the content itself states it. Read it off a byline, a dateline, a "Posted on", a press-release header, or an explicit sentence about when the piece was written. Use "" when the content does not say. This matters because search engines routinely report the date they crawled a page instead of the date it was written, which has put years-old articles in front of prospects as if they were this week's news; the date printed on the page is the reliable one.
 Rules: report the date the SOURCE was published, never a date it merely mentions. "Launched in November 2022", "the 2024 season", or a conference happening next March are events being described, NOT the publication date. If the page only carries an event date and no publication date, return "". Do not estimate, infer from context, or guess a year. If the page shows only a day and month with no year, return "".
+More than one date: forums, aggregators and scraper sites republish an article under their own timestamp, so the page carries the copier's date above the original writer's byline. When two or more dates on a page could each be a publication date, report the EARLIEST one. A copy is always stamped after the thing it copied, so the oldest of them is the closest to when the piece was actually written. Observed live: a FloSports story published 2025-03-28, reposted by a user account on 2026-07-28, where taking the top date turned a 16-month-old deal into last week's news. This does not loosen the rule above: an event the piece merely describes is still never the publication date, however early on the page it appears.
 Format: pages almost never print a date the way this field wants it, so converting it is your job. "23/04/2026" becomes "2026-04-23"; "7 juillet 2025" becomes "2025-07-07"; "July 7, 2025" becomes "2025-07-07". Anything that is not four-digit year, two-digit month, two-digit day is thrown away as if the page had carried no date at all. For an all-numeric date, read the day/month order the way the page's own language and country write it: French, Spanish, German and British English put the day first, US English puts the month first, and any number above 12 can only be the day. If both numbers are 12 or under and nothing on the page settles the order, return "".
 
 REASONING — include a "reasoning" field explaining why you picked these facts (or why you skipped). 1-2 sentences. This becomes a separate "decision" post so the audit trail explains the extraction.

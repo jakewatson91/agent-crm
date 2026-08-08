@@ -27,9 +27,9 @@ import type { ResearchAngle, WorkspacePolicy } from './policy.ts';
 // puts the drafter on pro. A few cents per regeneration buys much better angles.
 const PLANNER_MODEL = 'deepseek-v4-pro';
 const STRATEGY_STALE_DAYS = 14;
-// Each fetched result costs a contents-text page on top of the search itself,
-// so the default stays lean; angles that need more set num_results explicitly.
-const DEFAULT_NUM_RESULTS = 3;
+// Exa bundles page content for the first 10 results into the search price for
+// free, so there's no cost reason to stay lean — take the full 10 every time.
+const DEFAULT_NUM_RESULTS = 10;
 
 /**
  * Neutral fallback when there's nothing to plan from (empty About + guidance) or the
@@ -43,7 +43,7 @@ export const BASELINE_ANGLES: ResearchAngle[] = [
     query_template: '{entity} blog OR launch OR announcement OR customer OR case study OR changelog OR product',
     domain_scope: 'own_site',
     recency_days: 30,
-    num_results: 5,
+    num_results: 10,
   },
   {
     id: 'in_the_news',
@@ -51,14 +51,14 @@ export const BASELINE_ANGLES: ResearchAngle[] = [
     query_template: '{entity}',
     domain_scope: 'news',
     recency_days: 30,
-    num_results: 5,
+    num_results: 10,
   },
   {
     id: 'who_they_sell_to',
     label: 'Who they sell to',
     query_template: '{entity} customers OR case study OR "trusted by" OR partners with',
     domain_scope: 'open_web',
-    num_results: 4,
+    num_results: 10,
   },
 ];
 
@@ -93,7 +93,7 @@ export function resolveContactStrategy(maxAgeDays: number): ResearchAngle[] {
       query_template: '{entity} {company} post OR interview OR talk OR wrote OR announced',
       domain_scope: 'open_web',
       recency_days: maxAgeDays,
-      num_results: 3,
+      num_results: 10,
       enabled: true,
     },
   ];
@@ -190,7 +190,7 @@ Each angle has:
     "news"      -> press / news coverage about the company by others.
     "open_web"  -> the open web (third-party write-ups, customer lists, comparisons).
 - "recency_days": a hard freshness floor — any dated result older than this (or older than ${floorDays} days if omitted on a non-evergreen angle) is dropped, regardless of domain_scope. NEVER set it above ${floorDays}: this workspace bins anything older than that on ingestion, so a wider window only buys results that cannot survive. Set it to 30 for news, launches, and "own_site" angles that target recent posts. Omit ONLY for a deliberately evergreen "own_site" angle (customer lists, general product pages) — an omitted value exempts UNDATED results from the floor, but a dated result on that same angle is still held to ${floorDays} days.
-- "id": short slug. "label": short human title. "num_results": 3-5.
+- "id": short slug. "label": short human title. "num_results": 10 (page content for up to 10 results per search is bundled free — always ask for the full 10).
 
 Do NOT search for jobs/careers/hiring — a separate connector covers hiring. Avoid aggregator, profile, and directory pages (funding databases, professional-network company pages) — they restate what we already know and give no hook.
 

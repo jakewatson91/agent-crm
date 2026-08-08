@@ -28,6 +28,55 @@ const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
 const RECENCY_TAU_DAYS = 45;    // exponential decay constant
 
 /**
+ * Freshness defaults for the research path (policy.research.max_age_days /
+ * decay_half_life_days / contact_signal_max_age_days override each one).
+ *
+ * These live here rather than in functions/research.ts because the search-time
+ * gate is no longer the only place that judges a source's age: the enricher is
+ * the first step that reads the whole page, so it is the first step that can
+ * discover the real dateline, and it has to apply the SAME floor the search-time
+ * gate did. Two copies of the number would drift.
+ *
+ * An undated page stays exempt from the floor (own-site evergreen pages such as
+ * customer lists and product pages legitimately carry no date), but a page that
+ * does carry a date is held to the month-scale bar an outreach hook needs.
+ */
+export const DEFAULT_MAX_AGE_DAYS = 30;
+export const DEFAULT_DECAY_HALF_LIFE_DAYS = 90;
+/**
+ * People post far less often than companies publish, so a contact-kind run gets
+ * its own, wider floor by default.
+ */
+export const DEFAULT_CONTACT_MAX_AGE_DAYS = 60;
+
+/**
+ * How much a signal's magnitude is worth by what the source is good for: a
+ * dated event is a hook, a statement of direction is weaker, a profile page is
+ * background. Shared with the enricher so a magnitude recomputed after a date
+ * correction lands on the same scale as the original.
+ */
+export const HOOK_CLASS_WEIGHT: Record<string, number> = { event: 1, direction: 0.85, profile: 0.5 };
+
+/** Base magnitude for a research signal before age decay and hook-class weight. */
+export const RESEARCH_SIGNAL_BASE_MAGNITUDE = 0.6;
+
+/**
+ * A research signal's magnitude: base × age decay × what the source is good for.
+ * Exported so the enricher can recompute it when it corrects a source's date,
+ * instead of leaving a magnitude that was earned by a date we now know was wrong.
+ */
+export function researchSignalMagnitude(
+  publishedAt: string | null | undefined,
+  halfLifeDays: number,
+  hookClass: string | null | undefined,
+): number {
+  return Number(
+    (RESEARCH_SIGNAL_BASE_MAGNITUDE * ageDecay(publishedAt, halfLifeDays) * (HOOK_CLASS_WEIGHT[hookClass ?? ''] ?? 1))
+      .toFixed(3),
+  );
+}
+
+/**
  * Age weight in (0,1] for a source published at `publishedAt`, halving every
  * `halfLifeDays`. Unknown/unparseable date returns 1 (an undated evergreen page
  * isn't penalized). Floored at 0.05 so a very old source that slips a hard gate
@@ -774,20 +823,37 @@ Score this account on the three rubric dimensions.`;
     industry_match?: number; stage_match?: number; signal_strength?: number; reasoning?: string;
     out_of_scope?: { condition?: number; evidence?: string } | null;
   };
-  try {
-    const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
-      model: SCORE_MODEL,
-      behavior: 'scoring',
-      max_tokens: 350,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: sysPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-    });
-    parsed = JSON.parse(llm.text);
-  } catch {
-    return null;
+  {
+    let llm;
+    try {
+      llm = await chatCompleteForWorkspace(supabase, workspace_id, {
+        model: SCORE_MODEL,
+        behavior: 'scoring',
+        max_tokens: 350,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: sysPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+    } catch (e) {
+      await recordScorerCall(supabase, workspace_id, entity_id, { ok: false, reason: 'llm_error', message: (e as Error)?.message ?? String(e) });
+      return null;
+    }
+    try {
+      parsed = JSON.parse(llm.text);
+    } catch {
+      // Almost always truncation: max_tokens spent reasoning, JSON cut mid-object.
+      await recordScorerCall(supabase, workspace_id, entity_id, {
+        ok: false, reason: 'unparseable_json', output_tokens: llm.output_tokens,
+        message: (llm.text ?? '').slice(0, 300),
+      });
+      return null;
+    }
+    // Metrics only once the call fully succeeded, matching agent_logic.ts. A run is
+    // either a metrics row or a failure row, never both — the llm_failures check
+    // divides failures by the sum of the two.
+    await recordScorerCall(supabase, workspace_id, entity_id, { ok: true, llm });
   }
 
   const breakdown: ScoreBreakdown = {
@@ -1083,6 +1149,69 @@ export async function scoreContact(
 }
 
 /**
+ * Book the scorer's LLM call against the workspace, in the same `agent_run_metrics`
+ * shape agent_logic.ts writes for the enricher and drafter.
+ *
+ * Without this the scorer was invisible to every cost surface in the system. It is
+ * the busiest LLM caller there is — a day with 2,380 score writes reported "41
+ * enricher runs, 50 drafter runs" and about 17 cents of spend, because the rubric
+ * call was never recorded. The digest's spend line, the sweep's cost_per_claim and
+ * cost_per_unique_signal checks, and token_summary all read this event, so all of
+ * them were measuring a fraction of the bill and could not have caught a scoring
+ * loop burning tokens.
+ *
+ * Failures land as `agent_llm_failed` for the same reason: the rubric call sits in
+ * a `catch { return null }`, so a dead model or an exhausted balance looked exactly
+ * like a quiet day. That is what the llm_failures check exists to see.
+ *
+ * Both writes are best-effort — scoring is not worth failing over its own metrics.
+ */
+async function recordScorerCall(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  entity_id: string | null,
+  outcome:
+    | { ok: true; llm: { model: string; provider: string; input_tokens: number; output_tokens: number; cached_input_tokens: number } }
+    | { ok: false; reason: 'llm_error' | 'unparseable_json'; message: string; output_tokens?: number | null },
+): Promise<void> {
+  try {
+    const base = {
+      workspace_id,
+      actor_kind: 'system' as const,
+      actor_id: 'scorer',
+      target_kind: entity_id ? ('entity' as const) : ('workspace' as const),
+      target_id: entity_id ?? workspace_id,
+    };
+    await supabase.from('events').insert(
+      outcome.ok
+        ? {
+            ...base,
+            action: 'agent_run_metrics',
+            payload: {
+              behavior: 'scoring', agent: 'scorer', entity_id,
+              model: outcome.llm.model, provider: outcome.llm.provider,
+              input_tokens: outcome.llm.input_tokens,
+              output_tokens: outcome.llm.output_tokens,
+              cached_input_tokens: outcome.llm.cached_input_tokens,
+              ok: true,
+            },
+          }
+        : {
+            ...base,
+            action: 'agent_llm_failed',
+            payload: {
+              reason: outcome.reason, behavior: 'scoring', model: SCORE_MODEL,
+              output_tokens: outcome.output_tokens ?? null,
+              message: outcome.message.slice(0, 400),
+            },
+          },
+    );
+  } catch {
+    // Non-fatal: the score itself is what matters.
+  }
+}
+
+/**
  * Rate a contact's content signal 0..1 for buying intent vs the workspace pitch.
  * One tiny LLM call (max ~6 tokens out). Called only when there is content to
  * judge. Falls back to a neutral 0.4 on any failure so scoring never breaks.
@@ -1112,10 +1241,21 @@ async function rateContactSignal(
         { role: 'user', content },
       ],
     });
-    const parsed = JSON.parse(llm.text) as { score?: number };
+    let parsed: { score?: number };
+    try {
+      parsed = JSON.parse(llm.text) as { score?: number };
+    } catch {
+      await recordScorerCall(supabase, workspace_id, null, {
+        ok: false, reason: 'unparseable_json', output_tokens: llm.output_tokens,
+        message: (llm.text ?? '').slice(0, 300),
+      });
+      return 0.4;
+    }
+    await recordScorerCall(supabase, workspace_id, null, { ok: true, llm });
     const n = typeof parsed.score === 'number' ? parsed.score : NaN;
     return Number.isFinite(n) ? clamp01(n) : 0.4;
-  } catch {
+  } catch (e) {
+    await recordScorerCall(supabase, workspace_id, null, { ok: false, reason: 'llm_error', message: (e as Error)?.message ?? String(e) });
     return 0.4;
   }
 }

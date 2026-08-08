@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { CiteChain } from './CiteChain';
+import { EntityLink } from './drawer/EntityLink';
+import { useDrawer } from './Drawer';
 import { lowConfLabel } from '../_lib/confidence';
 import { humanizePredicate } from '../_lib/labels';
 
@@ -54,6 +54,7 @@ export function WhyThis({
   reasoning: string | null;
   cites: string[];
 }) {
+  const { push } = useDrawer();
   const [open, setOpen] = useState(false);
   const [facts, setFacts] = useState<CitedFact[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -132,9 +133,9 @@ export function WhyThis({
                   <span style={{ color: 'var(--text)' }}>
                     {humanizePredicate(f.predicate)} ={' '}
                     {f.object_entity && f.object_entity_name ? (
-                      <Link href={`/workspace/${workspace_id}/entities/${f.object_entity}`} style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}>
+                      <EntityLink id={f.object_entity} label={f.object_entity_name} style={{ color: 'var(--accent-blue)' }}>
                         {f.object_entity_name}
-                      </Link>
+                      </EntityLink>
                     ) : (
                       f.object_text ?? '—'
                     )}
@@ -155,7 +156,15 @@ export function WhyThis({
                       ↗ {prettyUrl(f.source_signal.source_url)}
                     </a>
                   )}
-                  <CiteChain fact_id={f.id} label="chain" />
+                  <button
+                    onClick={() => push({ kind: 'fact', id: f.id, label: humanizePredicate(f.predicate) })}
+                    style={{
+                      padding: '2px 8px', background: 'var(--accent-blue-soft)', color: 'var(--badge-blue-fg)',
+                      border: 'none', borderRadius: 999, fontSize: '.7rem', cursor: 'pointer',
+                    }}
+                  >
+                    trace
+                  </button>
                 </div>
               ))}
             </div>

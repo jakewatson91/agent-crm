@@ -193,6 +193,7 @@ const EXA: ConnectorDef = {
   verifiable: true,
   fields: [
     { key: 'EXA_API_KEY', label: 'API key', placeholder: 'Exa API key', type: 'secret' },
+    { key: 'EXA_SERVICE_API_KEY', label: 'Service key (optional, for real cost)', placeholder: 'Team Management service key', type: 'secret', optional: true },
   ],
 };
 

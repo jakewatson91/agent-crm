@@ -71,6 +71,13 @@ export async function POST(req: Request) {
             pain_points: derived.pain_points,
             value_props: derived.value_props,
             tone_keywords: derived.tone_keywords,
+            // All four are editable on Settings → Writing style. out_of_scope in
+            // particular is a hard veto, so it must never be a value the customer
+            // can only discover by reading their empty shortlist.
+            out_of_scope: derived.out_of_scope,
+            trigger_fresh_days: derived.trigger_fresh_days,
+            trigger_max_age_days: derived.trigger_max_age_days,
+            outreach_language: derived.outreach_language,
           },
           // Without 'contact' here, scoreAndAssert silently returns null for
           // every contact, so contact scoring never runs and the advance pass

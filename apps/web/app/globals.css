@@ -208,6 +208,12 @@ input[type="range"] {
 .badge-purple { background: var(--accent-purple-soft); color: var(--badge-purple-fg); }
 .badge-mute   { background: var(--panel-2);            color: var(--text-2); }
 
+/* Simple list: a plain stack of rows separated by a thin line, no box around
+   each item. The default way to show a set of things — reach for a grid of
+   .card boxes only when items need to stand alone (e.g. side by side). */
+.list-row { border-top: 1px solid var(--border); }
+.list-row:first-child { border-top: none; }
+
 /* Same pill shape as .badge but keeps its text's own case — for chips that
    carry a proper name (a company, a person) rather than a status word. */
 .chip {

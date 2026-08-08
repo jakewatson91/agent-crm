@@ -13,29 +13,40 @@
 // picks which workspaces to run.
 import { config } from 'dotenv';
 config({ path: '.env.local' });
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServerClient } from '@agent-crm/db';
-import { resolvePeriod, collectPeriod, renderMarkdown } from '@agent-crm/tools';
+import { resolvePeriod, collectPeriod, renderMarkdown, type PeriodWindow, type CheckResult } from '@agent-crm/tools';
 
-function argVal(args: string[], name: string): string | undefined {
+export function argVal(args: string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const wsFilter = argVal(args, 'ws') ?? null;
-  const asJson = args.includes('--json');
-  const window = resolvePeriod({
+export function windowFromArgs(args: string[]): PeriodWindow {
+  return resolvePeriod({
     since: argVal(args, 'since'),
     until: argVal(args, 'until'),
     period: argVal(args, 'period'),
     hours: argVal(args, 'hours') ? Number(argVal(args, 'hours')) : undefined,
   });
+}
 
-  const sb = createServerClient();
+/**
+ * Render the digest for every matching workspace. `checksOf` lets a caller that
+ * already ran the sweep (scripts/recap.ts) pass those results through, so the
+ * health section doesn't re-run every check.
+ */
+export async function runReport(
+  sb: SupabaseClient,
+  window: PeriodWindow,
+  opts: { wsFilter?: string | null; asJson?: boolean; checksOf?: Map<string, CheckResult[]> } = {},
+): Promise<void> {
+  const { wsFilter = null, asJson = false, checksOf } = opts;
   const { data: workspaces, error } = await sb.from('workspaces').select('id, name');
   if (error) throw error;
-  const targets = (workspaces ?? []).filter((w: any) => !wsFilter || w.id === wsFilter || w.name.toLowerCase().includes(wsFilter.toLowerCase()));
+  const targets = (workspaces ?? []).filter((w: { id: string; name: string }) => !wsFilter || w.id === wsFilter || w.name.toLowerCase().includes(wsFilter.toLowerCase()));
   if (!targets.length) { console.error(`No workspace matches "${wsFilter}"`); process.exit(1); }
 
   const collected: unknown[] = [];
@@ -45,7 +56,7 @@ async function main() {
       const { count } = await sb.from('events').select('id', { count: 'exact', head: true }).eq('workspace_id', w.id).gte('created_at', window.since).lt('created_at', window.until);
       if (!count) continue;
     }
-    const data = await collectPeriod(sb, w.id, w.name, window);
+    const data = await collectPeriod(sb, w.id, w.name, window, { checks: checksOf?.get(w.id) });
     if (asJson) { collected.push(data); continue; }
     console.log(renderMarkdown(data));
     console.log('\n---\n');
@@ -53,4 +64,15 @@ async function main() {
   if (asJson) console.log(JSON.stringify(collected.length === 1 ? collected[0] : collected, null, 2));
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+async function main() {
+  const args = process.argv.slice(2);
+  await runReport(createServerClient(), windowFromArgs(args), {
+    wsFilter: argVal(args, 'ws') ?? null,
+    asJson: args.includes('--json'),
+  });
+}
+
+// Only run when invoked directly; scripts/recap.ts imports runReport instead.
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}

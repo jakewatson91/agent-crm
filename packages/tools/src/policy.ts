@@ -252,6 +252,16 @@ export interface DrafterPolicy {
   /** Tone keywords baked into the prompt: ["casual", "direct", "concrete"]. */
   tone_keywords?: string[];
   /**
+   * Language every outgoing message is written in. Was `Write in English,
+   * always` hardcoded in the shared craft block, which is a workspace fact and
+   * not craft — a customer selling into Germany wants German even when the
+   * prospect's own site happens to be in English. The rule itself stays in code
+   * (the model must not code-switch to match the source it just read); only the
+   * language is config. Default 'English', so nothing changes for a workspace
+   * that never sets it.
+   */
+  outreach_language?: string;
+  /**
    * Example ask phrasings. Drafter picks one or rephrases.
    * ["Worth exploring?", "Open to a 15-min chat?", "Want to see it run?"]
    */
@@ -530,6 +540,10 @@ export interface ResearchAngle {
  *                      professional network the workspace's buyers post on).
  *                      Empty/unset = social angles are skipped entirely. The
  *                      contents are workspace config, never code.
+ *   exclude_domains  : hosts the `news` / `open_web` angles must never return,
+ *                      for repost aggregators whose own timestamp hides the
+ *                      original byline and defeats every date check downstream.
+ *                      Empty/unset by default and never populated in code.
  *   contact_signal_share : share of searches_per_run spent searching what
  *                      linked PEOPLE (not companies) have posted publicly,
  *                      taken off the top before the account buckets above run
@@ -561,6 +575,26 @@ export interface ResearchPolicy {
   resolve_aliases?: boolean;
   alias_backfill_per_day?: number;
   social_domains?: string[];
+  /**
+   * Hosts the name-searched angles (`news`, `open_web`) must never return.
+   *
+   * For content farms and repost aggregators: sites that paste someone else's
+   * article under their own newer timestamp. They defeat every date defence we
+   * have, because the date on the page IS the date that copy was posted, so
+   * nothing downstream can tell it from a real byline. Observed live: a
+   * FloSports/NCAA story published 2025-03-28 reached the book through a user
+   * repost stamped 2026-07-28, and four facts were extracted from it as if the
+   * deal were ten days old.
+   *
+   * Empty/unset by default, and it stays that way. Which hosts are junk depends
+   * on what a workspace sells and where its buyers publish, so the contents are
+   * workspace config and never code.
+   *
+   * Not applied to `own_site` or `social`, which already restrict results to an
+   * explicit allowlist of hosts; nothing else can get in for an exclusion to
+   * remove.
+   */
+  exclude_domains?: string[];
   contact_signal_share?: number;
   contact_signal_account_icp?: number;
   contact_signal_cadence_days?: number;

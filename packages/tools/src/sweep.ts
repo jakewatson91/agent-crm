@@ -11,7 +11,7 @@ import { cronToMinIntervalMinutes } from './cron.ts';
 import { getSourceMetrics } from './source_metrics.ts';
 import { fetchAll } from './paginate.ts';
 import { ACTIVITY_MARKERS } from './activity_markers.ts';
-import { isSubstantiveFact } from './scoring.ts';
+import { ADMIN_PREDICATES } from './scoring.ts';
 
 export type Severity = 'red' | 'yellow' | 'green';
 export type CheckResult = {
@@ -69,15 +69,14 @@ export const SWEEP_THRESHOLDS = {
   contact_error_share_red: 0.50,
   contact_min_completions: 3,
   contact_stall_hours: 48,
+  // How far back to look for enrich_contacts requests when deciding whether any
+  // are still pending. A request older than this is a backlog question, not a
+  // "did draining stop today" question.
+  contact_request_lookback_days: 90,
 };
 
 const HOUR = 3600_000;
 const DAY = 86_400_000;
-
-// "Is this fact real evidence about the account?" — imported from scoring so the
-// sweep and the scorer share one definition and can't drift (the drift is what
-// let the scorer count self-pings as evidence). See scoring.ts ADMIN_PREDICATES.
-const isSubstantive = isSubstantiveFact;
 
 function median(xs: number[]): number {
   if (!xs.length) return 0;
@@ -347,25 +346,22 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   // TIER 4 ----------------------------------------------------
 
   // Current icp_fit per entity = the row with the LATEST observed_at, exactly as
-  // the coupling check below computes it. This used to filter on
-  // `.is('supersedes', null)`, which returns the ORIGINAL of a superseded chain
-  // (a new score points BACK at the one it replaces, so the original keeps
-  // supersedes null). Every entity scored more than once was therefore measured
-  // at its first-ever score, and on a workspace that rescores daily this check
-  // was reporting the shape of a months-old book. Same root cause as the false
-  // RED the coupling check was fixed for; this one was missed.
-  const icpRows = await fetchAll<{ subject_entity: string; object_text: string | null; observed_at: string }>((f, t) => sb.from('facts')
-    .select('subject_entity, object_text, observed_at')
-    .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
-    .order('id').range(f, t));
-  const latestScore = new Map<string, { score: number; observed_at: string }>();
-  for (const r of icpRows) {
-    const score = r.object_text ? parseFloat(r.object_text) : NaN;
-    if (!Number.isFinite(score)) continue;
-    const cur = latestScore.get(r.subject_entity);
-    if (!cur || r.observed_at > cur.observed_at) latestScore.set(r.subject_entity, { score, observed_at: r.observed_at });
-  }
-  let scoreRows = [...latestScore.entries()].map(([entity, v]) => ({ entity, score: v.score, observed_at: v.observed_at }));
+  // the coupling check below computes it. Do NOT filter on `.is('supersedes',
+  // null)`: that returns the ORIGINAL of a superseded chain (a new score points
+  // BACK at the one it replaces, so the original keeps supersedes null). Every
+  // entity scored more than once would be measured at its first-ever score, and
+  // on a workspace that rescores daily this check would report the shape of a
+  // months-old book. Same root cause as the false RED the coupling check was
+  // fixed for.
+  //
+  // latest_facts_before (migration 0051) does the DISTINCT ON in Postgres. The
+  // client-side version pulled EVERY icp_fit row ever written for the workspace —
+  // ~2,400 of them land in a single day — to keep one per entity.
+  const icpRows = await fetchAll<{ subject_entity: string; object_text: string | null; observed_at: string }>((f, t) =>
+    sb.rpc('latest_facts_before', { p_workspace_id: workspace_id, p_predicate: 'icp_fit' }).range(f, t));
+  let scoreRows = icpRows
+    .map((r) => ({ entity: r.subject_entity, score: r.object_text ? parseFloat(r.object_text) : NaN, observed_at: r.observed_at }))
+    .filter((r) => Number.isFinite(r.score));
 
   // Exclude entities with zero substantive facts. They land at score=0 by design
   // (no evidence + RRF prefilter floor), and including them in the distribution
@@ -373,26 +369,25 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   // correctly on brand-new entities. Same for dropped entities — they're frozen
   // at their last score and shouldn't pollute the live shape either.
   if (scoreRows.length) {
-    // Scope by workspace_id, NOT .in(entIds): this workspace has hundreds of
-    // scored entities, and encoding every UUID into the request URL blew past
-    // PostgREST's 16KB header limit (UND_ERR_HEADERS_OVERFLOW, URL 18.8KB). The
-    // maps below are only read for entities already in scoreRows, so pulling the
-    // full workspace's live facts gives the identical result with a short URL.
-    const factRows = await fetchAll<{ subject_entity: string; predicate: string }>((f, t) => sb.from('facts')
-      .select('subject_entity, predicate')
-      .eq('workspace_id', workspace_id)
-      .is('supersedes', null)
-      .order('id').range(f, t));
-    const substantiveCount = new Map<string, number>();
-    const droppedEnts = new Set<string>();
-    for (const f of factRows) {
-      if (f.predicate === 'dropped_until') droppedEnts.add(f.subject_entity);
-      if (!isSubstantive(f.predicate)) continue;
-      substantiveCount.set(f.subject_entity, (substantiveCount.get(f.subject_entity) ?? 0) + 1);
-    }
-    scoreRows = scoreRows.filter((r) =>
-      !droppedEnts.has(r.entity) && (substantiveCount.get(r.entity) ?? 0) >= 1,
-    );
+    // One grouped read (migration 0052) instead of paging every live fact in the
+    // workspace back to count them here — ~33,000 rows on a live workspace, at
+    // every session start. The entity list goes in the RPC body, so it also
+    // sidesteps the PostgREST 16KB URL-header limit that a `.in()` of this many
+    // UUIDs used to blow (UND_ERR_HEADERS_OVERFLOW at a 18.8KB URL).
+    //
+    // ADMIN_PREDICATES travels as a parameter so isSubstantiveFact stays the one
+    // definition of "real evidence" — see the note in migration 0052.
+    const flags = await fetchAll<{ subject_entity: string; substantive_facts: number; dropped: boolean }>((f, t) =>
+      sb.rpc('entity_evidence_flags', {
+        p_workspace_id: workspace_id,
+        p_admin_predicates: [...ADMIN_PREDICATES],
+        p_entities: scoreRows.map((r) => r.entity),
+      }).range(f, t));
+    const flagOf = new Map(flags.map((f) => [f.subject_entity, f]));
+    scoreRows = scoreRows.filter((r) => {
+      const f = flagOf.get(r.entity);
+      return !!f && !f.dropped && Number(f.substantive_facts) >= 1;
+    });
   }
 
   if (scoreRows.length >= T.score_min_entities) {
@@ -430,28 +425,19 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
   const entitiesWithNewFacts = new Set<string>();
   for (const d of dispatches) if ((d.payload?.facts_asserted ?? 0) > 0 && d.target_id) entitiesWithNewFacts.add(d.target_id);
   if (entitiesWithNewFacts.size >= 5) {
-    // Current icp_fit per entity = the row with the LATEST observed_at. Do NOT
-    // reuse scoreRows here: scoreRows comes from `.is('supersedes', null)`, which
-    // returns the ORIGINAL fact in a superseded chain (a new score points BACK to
-    // the one it replaces, so the chain head keeps supersedes=null). For an entity
-    // rescored many times that original is months stale, which made this check
-    // report rescores that DID run as if they never happened — a false RED. A
-    // rescore always writes a newer observed_at than the version it supersedes, so
-    // the max observed_at is the current score. Scoped to the fact-bearing entities
-    // so the extra versions don't blow egress.
+    // Current icp_fit per entity — the row with the LATEST observed_at. A rescore
+    // always writes a newer observed_at than the version it supersedes, so the max
+    // is the current score. (Reading the chain head via supersedes=null gives the
+    // ORIGINAL instead, which is what made this check report rescores that DID run
+    // as if they never happened — a false RED.) One RPC over the fact-bearing
+    // entities; the old loop fetched every historical version of each in batches.
     const newFactIds = [...entitiesWithNewFacts];
     const latestIcp = new Map<string, string>();
-    for (let i = 0; i < newFactIds.length; i += 200) {
-      const slice = newFactIds.slice(i, i + 200);
-      const rows = await fetchAll<{ subject_entity: string; observed_at: string }>((f, t) => sb.from('facts')
-        .select('subject_entity, observed_at')
-        .eq('workspace_id', workspace_id).eq('predicate', 'icp_fit')
-        .in('subject_entity', slice).order('observed_at', { ascending: false }).range(f, t));
-      for (const r of rows) {
-        const cur = latestIcp.get(r.subject_entity);
-        if (!cur || r.observed_at > cur) latestIcp.set(r.subject_entity, r.observed_at);
-      }
-    }
+    const icpNow = await fetchAll<{ subject_entity: string; observed_at: string }>((f, t) =>
+      sb.rpc('latest_facts_before', {
+        p_workspace_id: workspace_id, p_predicate: 'icp_fit', p_entities: newFactIds,
+      }).range(f, t));
+    for (const r of icpNow) latestIcp.set(r.subject_entity, r.observed_at);
     let moved = 0;
     for (const eid of entitiesWithNewFacts) {
       const obs = latestIcp.get(eid);
@@ -513,6 +499,10 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
         .select('target_id, created_at')
         .eq('workspace_id', workspace_id).eq('target_kind', 'entity')
         .eq('action', ACTIVITY_MARKERS.CONTACTS_REQUESTED)
+        // Bounded: this read had no time filter, so every sweep pulled the entire
+        // request history and grew a little slower every day. The check asks
+        // "has draining stopped", which a recent window answers just as well.
+        .gte('created_at', new Date(now - T.contact_request_lookback_days * DAY).toISOString())
         .order('created_at', { ascending: true }).range(f, t)),
       fetchAll<{ target_id: string | null; payload: { summary?: string } | null; created_at: string }>((f, t) => sb.from('events')
         .select('target_id, payload, created_at')
@@ -563,11 +553,13 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
       .select('payload')
       .eq('workspace_id', workspace_id).eq('action', 'agent_llm_failed')
       .gte('created_at', new Date(now - DAY).toISOString()).order('id').range(f, t));
-    const llmOk = await fetchAll<{ id: number }>((f, t) => sb.from('events')
-      .select('id')
+    // Successful runs are only ever a denominator here, so count them server-side
+    // instead of paging every row back (a busy day is thousands of them).
+    const llmOk = await sb.from('events')
+      .select('id', { count: 'exact', head: true })
       .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
-      .gte('created_at', new Date(now - DAY).toISOString()).order('id').range(f, t));
-    const totalRuns = llmFails.length + llmOk.length;
+      .gte('created_at', new Date(now - DAY).toISOString());
+    const totalRuns = llmFails.length + (llmOk.count ?? 0);
     if (totalRuns >= T.llm_min_runs && llmFails.length > 0) {
       const share = llmFails.length / totalRuns;
       const sev: Severity = share >= T.llm_failure_share_red ? 'red'

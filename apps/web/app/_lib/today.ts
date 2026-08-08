@@ -77,6 +77,15 @@ export interface TodayRun {
   accountsMore: number;
   errors: string[];
   ok: boolean;
+  /** A capped sample of this pass's own output, so a stat like "18 facts learned"
+   *  can be opened up instead of taken on faith. Same row shapes as the sections
+   *  further down the page, so a run's drill-down looks like what it's a slice of. */
+  learned: TodayLearned[];
+  signals: TodaySignal[];
+  contacts: TodayContact[];
+  drafts: TodayDraft[];
+  declines: TodayDecline[];
+  domains: Array<{ entity_id: string; name: string; domain: string }>;
 }
 
 export interface TodayMove {
@@ -250,6 +259,14 @@ const LEARNED_CAP = 18;
 const CONTACTS_CAP = 20;
 const DECLINES_CAP = 12;
 
+/** How much of a single pass's own output to sample on its run card. */
+const RUN_LEARNED_ENTITIES_CAP = 4;
+const RUN_SIGNALS_CAP = 6;
+const RUN_CONTACTS_CAP = 6;
+const RUN_DRAFTS_CAP = 4;
+const RUN_DECLINES_CAP = 4;
+const RUN_DOMAINS_CAP = 10;
+
 /** Facts that identify a record rather than teach us something about it. */
 const IDENTITY_PREDICATES = new Set(['is_a', 'email', 'role', 'works_at', 'outreach_stage', 'domain', 'signal_summary']);
 
@@ -393,6 +410,104 @@ interface GateRow {
 interface SourceRow {
   id: string; name: string; connector_type: string; active: boolean; schedule_cron: string | null;
   last_run_at: string | null; last_run_status: string | null; last_run_summary: Record<string, any> | null;
+}
+
+// ---------------------------------------------------------------- row → card shape
+// Shared by the full-day sections and by each run card's own drill-down, so a
+// fact or a signal renders identically wherever it shows up on the page.
+
+function groupFactsByEntity(fs: FactRow[], N: (id: string | null | undefined) => string): TodayLearned[] {
+  const byEntity = new Map<string, TodayLearned['facts']>();
+  for (const f of fs) {
+    const list = byEntity.get(f.subject_entity) ?? [];
+    list.push({
+      id: f.id,
+      predicate: f.predicate,
+      object: (f.object_text ?? '').replace(/\s+/g, ' ').slice(0, 240),
+      pain: f.predicate === 'pain_observed',
+    });
+    byEntity.set(f.subject_entity, list);
+  }
+  return [...byEntity].map(([id, facts]) => ({ entity_id: id, name: N(id), facts: facts.slice(0, 6) }));
+}
+
+function toTodaySignal(
+  s: SignalRow,
+  bodyOf: Map<string, string>,
+  factsBySignal: Map<string, number>,
+  noFactSignals: Set<string>,
+  skippedSignals: Set<string>,
+  N: (id: string | null | undefined) => string,
+): TodaySignal {
+  const tags = s.structured_tags ?? {};
+  const { title, snippet } = pageHeadline(bodyOf.get(s.id) ?? '');
+  const factCount = factsBySignal.get(s.id) ?? 0;
+  const outcome: TodaySignal['outcome'] =
+    factCount > 0 ? 'facts'
+      : noFactSignals.has(s.id) ? 'nothing_new'
+        : skippedSignals.has(s.id) ? 'duplicate'
+          : 'unread';
+  return {
+    id: s.id,
+    entity_id: s.entity_id,
+    entity_name: N(s.entity_id),
+    angle: String(tags.research_angle ?? tags.signal_source ?? s.type ?? 'signal'),
+    source: String(tags.signal_source ?? s.type ?? 'signal'),
+    magnitude: s.magnitude,
+    url: (tags.url as string) ?? null,
+    publishedAt: (tags.published_at as string) ?? null,
+    createdAt: s.created_at,
+    title,
+    snippet,
+    outcome,
+    factCount,
+  };
+}
+
+function toTodayContact(
+  id: string,
+  roleOf: Map<string, string>,
+  emailOf: Map<string, string>,
+  worksAtOf: Map<string, string>,
+  contactScoreOf: Map<string, number>,
+  N: (id: string | null | undefined) => string,
+): TodayContact {
+  const accountId = worksAtOf.get(id) ?? null;
+  return {
+    entity_id: id,
+    name: N(id),
+    role: roleOf.get(id) ?? null,
+    email: emailOf.get(id) ?? null,
+    score: contactScoreOf.get(id) ?? null,
+    account_id: accountId,
+    account_name: accountId ? N(accountId) : null,
+  };
+}
+
+function toTodayDraft(
+  p: PostRow,
+  reasoningByParent: Map<string, string>,
+  pendingPostIds: Set<string>,
+  N: (id: string | null | undefined) => string,
+): TodayDraft {
+  return {
+    post_id: p.id,
+    entity_id: p.channels?.account_entity_id ?? '',
+    entity_name: N(p.channels?.account_entity_id),
+    body: (p.body ?? '').trim(),
+    cites: p.cites ?? [],
+    cite_quotes: p.cite_quotes ?? [],
+    reasoning: reasoningByParent.get(p.id) ?? null,
+    createdAt: p.created_at,
+    pending: pendingPostIds.has(p.id),
+  };
+}
+
+function toTodayDecline(
+  d: { entity_id: string; tag: string | null; reason: string; at: string },
+  N: (id: string | null | undefined) => string,
+): TodayDecline {
+  return { entity_id: d.entity_id, entity_name: N(d.entity_id), tag: d.tag, reason: d.reason, at: d.at };
 }
 
 // ---------------------------------------------------------------- main read
@@ -685,31 +800,8 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
 
   // ---- Signals with their metadata.
   const bodyOf = new Map(signalBodies.map((s) => [s.id, s.body_for_embedding ?? '']));
-  const todaySignals: TodaySignal[] = signals.slice(0, SIGNALS_CAP).map((s) => {
-    const tags = s.structured_tags ?? {};
-    const { title, snippet } = pageHeadline(bodyOf.get(s.id) ?? '');
-    const factCount = factsBySignal.get(s.id) ?? 0;
-    const outcome: TodaySignal['outcome'] =
-      factCount > 0 ? 'facts'
-        : noFactSignals.has(s.id) ? 'nothing_new'
-          : skippedSignals.has(s.id) ? 'duplicate'
-            : 'unread';
-    return {
-      id: s.id,
-      entity_id: s.entity_id,
-      entity_name: N(s.entity_id),
-      angle: String(tags.research_angle ?? tags.signal_source ?? s.type ?? 'signal'),
-      source: String(tags.signal_source ?? s.type ?? 'signal'),
-      magnitude: s.magnitude,
-      url: (tags.url as string) ?? null,
-      publishedAt: (tags.published_at as string) ?? null,
-      createdAt: s.created_at,
-      title,
-      snippet,
-      outcome,
-      factCount,
-    };
-  });
+  const todaySignals: TodaySignal[] = signals.slice(0, SIGNALS_CAP)
+    .map((s) => toTodaySignal(s, bodyOf, factsBySignal, noFactSignals, skippedSignals, N));
 
   const angleAgg = new Map<string, { count: number; withFacts: number }>();
   for (const s of signals) {
@@ -745,8 +837,10 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     // fold their output into the same block by timestamp (10-minute tail).
     const blockEnd = Date.parse(endedAt) + 10 * 60_000;
     const inBlock = (iso: string) => Date.parse(iso) >= Date.parse(startedAt) && Date.parse(iso) <= blockEnd;
-    const blockFacts = learnedFacts.filter((f) => inBlock(f.observed_at)).length;
+    const blockLearnedFacts = learnedFacts.filter((f) => inBlock(f.observed_at));
+    const blockFacts = blockLearnedFacts.length;
     const blockScored = new Set(facts.filter((f) => f.predicate === 'icp_fit' && inBlock(f.observed_at)).map((f) => f.subject_entity)).size;
+    const blockSignals = signals.filter((s) => inBlock(s.created_at));
     const searches = completed.reduce((n, e) => n + (e.payload?.searches ?? 0), 0);
     const results = completed.reduce((n, e) => n + (e.payload?.results_created ?? 0), 0);
     const accountIds = [...new Set(block.map((e) => e.target_id).filter(Boolean) as string[])];
@@ -767,6 +861,12 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       accountsMore: Math.max(0, accountIds.length - 6),
       errors: [...new Set(errored.map((e) => plainError(String(e.payload?.message ?? 'research failed'))))],
       ok: errored.length === 0,
+      learned: groupFactsByEntity(blockLearnedFacts, N).slice(0, RUN_LEARNED_ENTITIES_CAP),
+      signals: blockSignals.slice(0, RUN_SIGNALS_CAP).map((s) => toTodaySignal(s, bodyOf, factsBySignal, noFactSignals, skippedSignals, N)),
+      contacts: [],
+      drafts: [],
+      declines: [],
+      domains: [],
     });
   }
 
@@ -791,6 +891,12 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       const s = String(p.payload?.summary ?? '');
       if (s && !/new contact/.test(s)) failReasons.set(s, (failReasons.get(s) ?? 0) + 1);
     }
+    // Re-filter the strongly-typed source rows by the same window, rather than
+    // reading them off the polymorphic `block` array (drafted/declined there
+    // are shape-erased placeholders built just for clustering).
+    const blockContactIds = [...new Set(created.map((e) => e.target_id).filter(Boolean) as string[])];
+    const blockDrafts = draftPosts.filter((p) => p.created_at >= startedAt && p.created_at <= endedAt);
+    const blockDeclines = declineRows.filter((d) => d.at >= startedAt && d.at <= endedAt);
     runs.push({
       id: `outreach-${startedAt}`,
       kind: 'outreach',
@@ -808,12 +914,19 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       accountsMore: Math.max(0, accountIds.length - 6),
       errors: [...failReasons].filter(([r]) => /key|error|quota|credit/i.test(r)).map(([r, n]) => `${n}× ${r}`),
       ok: true,
+      learned: [],
+      signals: [],
+      contacts: blockContactIds.slice(0, RUN_CONTACTS_CAP).map((id) => toTodayContact(id, roleOf, emailOf, worksAtOf, contactScoreOf, N)),
+      drafts: blockDrafts.slice(0, RUN_DRAFTS_CAP).map((p) => toTodayDraft(p, reasoningByParent, pendingPostIds, N)),
+      declines: blockDeclines.slice(0, RUN_DECLINES_CAP).map((d) => toTodayDecline(d, N)),
+      domains: [],
     });
   }
 
   const domainEvents = [...ev('domain_resolved'), ...ev('domain_resolve_failed')];
   for (const block of clusterByGap(domainEvents, (e) => e.created_at)) {
-    const okCount = block.filter((e) => e.action === 'domain_resolved').length;
+    const resolved = block.filter((e) => e.action === 'domain_resolved');
+    const okCount = resolved.length;
     const failCount = block.length - okCount;
     const startedAt = block[0]!.created_at;
     runs.push({
@@ -827,10 +940,20 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
         { label: 'websites found', value: String(okCount) },
         { label: 'no confident match', value: String(failCount) },
       ],
-      accounts: block.filter((e) => e.action === 'domain_resolved').slice(0, 6).map((e) => ({ id: e.target_id ?? '', name: N(e.target_id) })),
+      accounts: resolved.slice(0, 6).map((e) => ({ id: e.target_id ?? '', name: N(e.target_id) })),
       accountsMore: Math.max(0, okCount - 6),
       errors: [],
       ok: true,
+      learned: [],
+      signals: [],
+      contacts: [],
+      drafts: [],
+      declines: [],
+      domains: resolved.slice(0, RUN_DOMAINS_CAP).map((e) => ({
+        entity_id: e.target_id ?? '',
+        name: N(e.target_id),
+        domain: String(e.payload?.domain ?? ''),
+      })),
     });
   }
 
@@ -849,6 +972,12 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       accountsMore: 0,
       errors: [],
       ok: true,
+      learned: [],
+      signals: [],
+      contacts: [],
+      drafts: [],
+      declines: [],
+      domains: [],
     });
   }
   runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
@@ -994,17 +1123,7 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     edited: Boolean(g.resolution?.edited),
   }));
 
-  const drafts: TodayDraft[] = draftPosts.slice(-10).reverse().map((p) => ({
-    post_id: p.id,
-    entity_id: p.channels?.account_entity_id ?? '',
-    entity_name: N(p.channels?.account_entity_id),
-    body: (p.body ?? '').trim(),
-    cites: p.cites ?? [],
-    cite_quotes: p.cite_quotes ?? [],
-    reasoning: reasoningByParent.get(p.id) ?? null,
-    createdAt: p.created_at,
-    pending: pendingPostIds.has(p.id),
-  }));
+  const drafts: TodayDraft[] = draftPosts.slice(-10).reverse().map((p) => toTodayDraft(p, reasoningByParent, pendingPostIds, N));
 
   // ---- Counters.
   const scoreUp = moverCandidates.filter((c) => c.scorePrev !== null && c.delta > 0.01).length;
@@ -1109,26 +1228,9 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     signalAngles,
     learned: learnedAll.slice(0, LEARNED_CAP),
     learnedMore: Math.max(0, learnedAll.length - LEARNED_CAP),
-    contacts: [...contactSet].slice(0, CONTACTS_CAP).map((id) => {
-      const accountId = worksAtOf.get(id) ?? null;
-      return {
-        entity_id: id,
-        name: N(id),
-        role: roleOf.get(id) ?? null,
-        email: emailOf.get(id) ?? null,
-        score: contactScoreOf.get(id) ?? null,
-        account_id: accountId,
-        account_name: accountId ? N(accountId) : null,
-      };
-    }),
+    contacts: [...contactSet].slice(0, CONTACTS_CAP).map((id) => toTodayContact(id, roleOf, emailOf, worksAtOf, contactScoreOf, N)),
     drafts,
-    declines: declineRows.slice(0, DECLINES_CAP).map((d) => ({
-      entity_id: d.entity_id,
-      entity_name: N(d.entity_id),
-      tag: d.tag,
-      reason: d.reason,
-      at: d.at,
-    })),
+    declines: declineRows.slice(0, DECLINES_CAP).map((d) => toTodayDecline(d, N)),
     decided,
     connectors,
     sources,

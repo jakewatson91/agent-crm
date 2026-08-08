@@ -260,16 +260,11 @@ export default function ReplayPage() {
                         </span>
                       </div>
                       {scoreEntries.length > 0 && (
-                        <div style={{ display: 'flex', gap: '.4rem', marginTop: '.5rem', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem', marginTop: '.5rem' }}>
                           {scoreEntries.map((s) => (
-                            <div key={s.key} style={{ display: 'flex', flexDirection: 'column', gap: '.15rem', minWidth: 72 }}>
-                              <div className="muted" style={{ fontSize: '.62rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>{s.label}</div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '.3rem' }}>
-                                <div style={{ height: 4, background: 'var(--panel-2)', borderRadius: 2, width: 48, overflow: 'hidden' }}>
-                                  <div style={{ height: '100%', width: `${Math.round(s.value * 100)}%`, background: scoreColor(s.value) }} />
-                                </div>
-                                <span className="mono" style={{ fontSize: '.7rem', color: 'var(--text-2)' }}>{s.value.toFixed(2)}</span>
-                              </div>
+                            <div key={s.key} style={{ display: 'flex', alignItems: 'baseline', gap: '.5rem', fontSize: '.75rem' }}>
+                              <span className="muted" style={{ minWidth: 70, fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>{s.label}</span>
+                              <span className="mono" style={{ fontWeight: 600, color: scoreColor(s.value) }}>{s.value.toFixed(2)}</span>
                               <CiteChain fact_id={s.fact_id} label="trace" />
                             </div>
                           ))}

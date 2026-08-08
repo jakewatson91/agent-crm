@@ -51,7 +51,7 @@ export type { PullContactsResult } from './contacts.ts';
 export { scoreEntity, scoreAndAssert, combineSubScores, scoreContact };
 export { buildContactWeights, DEFAULT_CONTACT_WEIGHTS, decisionPower, personaMatch } from './scoring.ts';
 export { selectAction, loadActionContext, loadBestContactScore, type Action, type ActionDecision, type ActionThresholds, DEFAULT_THRESHOLDS, buildThresholds } from './action_selector.ts';
-export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights, isSubstantiveFact, ADMIN_PREDICATES, type ScoreBreakdown, ageDecay, contactContentFacts } from './scoring.ts';
+export { type ScoreWeights, DEFAULT_WEIGHTS, buildScoreWeights, isSubstantiveFact, ADMIN_PREDICATES, type ScoreBreakdown, ageDecay, contactContentFacts, DEFAULT_MAX_AGE_DAYS, DEFAULT_DECAY_HALF_LIFE_DAYS, DEFAULT_CONTACT_MAX_AGE_DAYS, HOOK_CLASS_WEIGHT, RESEARCH_SIGNAL_BASE_MAGNITUDE, researchSignalMagnitude } from './scoring.ts';
 export { graphProximity, type GraphProximityResult } from './graph.ts';
 export { resolveOrCreateEntity, normalizeEntityName, trigramSim, looksLikeEntityName, type ResolveResult } from './resolve.ts';
 export { findMergeCandidatesForEntity, mergeAccounts, dismissMergeCandidate, type MergeCandidate, type MergeResult } from './merge.ts';

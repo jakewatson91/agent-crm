@@ -862,13 +862,11 @@ function ScoreChip({ value }: { value: number }) {
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
   const v = Math.max(0, Math.min(1, value));
+  const color = v >= 0.65 ? '#48a' : v >= 0.5 ? '#79a' : v >= 0.35 ? '#a92' : '#a48';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.7rem' }}>
       <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', minWidth: 110 }}>{label}</span>
-      <div style={{ flex: 1, background: 'var(--panel)', borderRadius: 2, height: 6, overflow: 'hidden' }}>
-        <div style={{ width: `${v * 100}%`, height: '100%', background: 'var(--accent)' }} />
-      </div>
-      <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-2)', minWidth: 36, textAlign: 'right' }}>{v.toFixed(2)}</span>
+      <span style={{ fontFamily: 'JetBrains Mono, monospace', color, fontWeight: 600 }}>{v.toFixed(2)}</span>
     </div>
   );
 }

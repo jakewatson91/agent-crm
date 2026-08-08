@@ -17,7 +17,8 @@ import { createServerClient } from '@agent-crm/db';
 import {
   callTool, recordActivityMarker, latestMarkerAt, ACTIVITY_MARKERS,
   getPolicy, resolveEnvVar, resolveStrategy, resolveContactStrategy, runExaSearch, filterResultsByEntity, fetchEntityGrounding, pageMentionsEntity, readEntityAliases,
-  dedupeResearchCandidates, DUP_LOOKBACK_DAYS, ageDecay,
+  dedupeResearchCandidates, DUP_LOOKBACK_DAYS, researchSignalMagnitude,
+  DEFAULT_MAX_AGE_DAYS, DEFAULT_DECAY_HALF_LIFE_DAYS, DEFAULT_CONTACT_MAX_AGE_DAYS, HOOK_CLASS_WEIGHT,
   resolveDomainViaSearch, resolveAliasesViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
@@ -25,20 +26,10 @@ import { isPersistentWall } from './advance_accounts.js';
 import { inngest } from '../client.js';
 
 const SEEN_WINDOW_DAYS = 30;
-// Freshness defaults for the research path (policy.research.max_age_days /
-// decay_half_life_days override). A dated source older than the floor never
-// becomes a signal, regardless of scope; magnitude halves every half-life
-// days of source age. An undated page is exempt from the floor (own-site
-// evergreen pages — customer lists, general product pages — legitimately
-// carry no date), but a page that DOES carry a date is held to the same
-// month-scale bar an outreach hook needs: a two-year-old blog post is not a
-// current trigger just because it's on the company's own domain.
-const DEFAULT_MAX_AGE_DAYS = 30;
-const DEFAULT_DECAY_HALF_LIFE_DAYS = 90;
-// People post far less often than companies publish, so a contact-kind run
-// gets its own, wider freshness floor by default. See policy.research
-// .contact_signal_max_age_days.
-const DEFAULT_CONTACT_MAX_AGE_DAYS = 60;
+// The freshness defaults, the hook-class weights and the magnitude formula all
+// moved to packages/tools/src/scoring.ts. The enricher applies the same floor
+// once it reads the page and finds the real dateline, and two copies of these
+// numbers would drift apart the first time one of them was tuned.
 
 /** Normalize a URL for exact same-source collapse: drop protocol, www, query, trailing slash. */
 function normalizeUrl(u: string): string {
@@ -149,6 +140,13 @@ export function buildAngleRequest(
   // budget on that account could not survive ingestion no matter what it found.
   // Omit to keep the angle's own window (the checks call it that way).
   maxAgeDays?: number,
+  // Hosts to keep out of the name-searched angles (policy.research.exclude_domains).
+  // Content farms republish an article under their own timestamp, which makes a
+  // years-old story look like this week's news to every date check we run, and
+  // there was previously no way to keep a known one out short of a code change.
+  // Only reaches `news` and `open_web`: the other two scopes already send an
+  // include list, so nothing is there to exclude.
+  excludeDomains: string[] = [],
 ): { query: string; params: Parameters<typeof runExaSearch>[1] } | null {
   const query = angle.query_template
     .replaceAll('{entity}', entity_name)
@@ -171,7 +169,7 @@ export function buildAngleRequest(
   const start_published_date = windowDays
     ? new Date(Date.now() - windowDays * 86400 * 1000).toISOString()
     : undefined;
-  const num_results = angle.num_results ?? 3;
+  const num_results = angle.num_results ?? 10;
 
   if (angle.domain_scope === 'own_site') {
     if (!domain) return null; // can't scope to a site we don't know
@@ -183,8 +181,9 @@ export function buildAngleRequest(
     // dated post just because no start_published_date was sent here.
     return { query, params: { query, num_results, include_domains: [domain], start_published_date } };
   }
+  const exclude_domains = excludeDomains.filter(Boolean);
   if (angle.domain_scope === 'news') {
-    return { query, params: { query, num_results, category: 'news', start_published_date, include_text: [entity_name] } };
+    return { query, params: { query, num_results, category: 'news', start_published_date, include_text: [entity_name], exclude_domains } };
   }
   if (angle.domain_scope === 'social') {
     // Exec posts/talks/interviews on the workspace-configured social hosts.
@@ -194,7 +193,7 @@ export function buildAngleRequest(
     return { query, params: { query, num_results, start_published_date, include_domains: social_domains, include_text: [entity_name] } };
   }
   // open_web
-  return { query, params: { query, num_results, start_published_date, include_text: [entity_name] } };
+  return { query, params: { query, num_results, start_published_date, include_text: [entity_name], exclude_domains } };
 }
 
 export const researchRunner = inngest.createFunction(
@@ -384,6 +383,7 @@ export async function runEntityResearch(
       const halfLifeDays = policy.research?.decay_half_life_days ?? DEFAULT_DECAY_HALF_LIFE_DAYS;
 
       const socialDomains = (policy.research?.social_domains ?? []).filter(Boolean);
+      const excludeDomains = (policy.research?.exclude_domains ?? []).filter(Boolean);
       const allAngles = kind === 'contact' ? resolveContactStrategy(maxAgeDays) : resolveStrategy(policy);
       const runnable = allAngles.filter((a) =>
         (a.domain_scope !== 'own_site' || !!domain) &&
@@ -436,7 +436,7 @@ export async function runEntityResearch(
       // "the gate got stricter" — those need opposite fixes.
       let filtered_no_name = 0;
       for (const angle of toRun) {
-        const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains, kind === 'contact' ? contactAccountName : undefined, maxAgeDays);
+        const built = buildAngleRequest(angle, entity_name, domain, keywords, socialDomains, kind === 'contact' ? contactAccountName : undefined, maxAgeDays, excludeDomains);
         if (!built) continue;
         searches++;
         const res = await runExaSearch(apiKey, built.params);
@@ -553,12 +553,12 @@ export async function runEntityResearch(
       const { keep: dedupKeep, dropped: duplicates_dropped } = await dedupeResearchCandidates(acceptedOrdered, priorBodies);
 
       // --- Create phase: only accepted, non-duplicate results become signals. ---
-      // Hook-class weights: a page that only confirms the company fits a market
-      // ("profile") is background, not a trigger, so its signal starts at half
-      // magnitude; evidence of a current push ("direction") is close to full; a
-      // dated event keeps full. Unclassified (own-domain auto-accept, gate
-      // fallback) keeps full — unchanged behavior for unconfigured workspaces.
-      const HOOK_CLASS_WEIGHT: Record<string, number> = { event: 1, direction: 0.85, profile: 0.5 };
+      // Hook-class weights (HOOK_CLASS_WEIGHT, from scoring.ts): a page that only
+      // confirms the company fits a market ("profile") is background, not a
+      // trigger, so its signal starts at half magnitude; evidence of a current
+      // push ("direction") is close to full; a dated event keeps full.
+      // Unclassified (own-domain auto-accept, gate fallback) keeps full —
+      // unchanged behavior for unconfigured workspaces.
       let created = 0;
       let firstSignalId: string | null = null;
       const perAngle: Record<string, number> = {};
@@ -582,7 +582,7 @@ export async function runEntityResearch(
             // half-life days) and by hook class. A fresh launch keeps ~0.6; an
             // older-but-passing article or a fit-confirmation page is visibly
             // weaker so it can't outrank current news.
-            magnitude: Number((0.6 * ageDecay(c.er.publishedDate, halfLifeDays) * (HOOK_CLASS_WEIGHT[hookClass ?? ''] ?? 1)).toFixed(3)),
+            magnitude: researchSignalMagnitude(c.er.publishedDate, halfLifeDays, hookClass),
             body_for_embedding: body,
             structured_tags: {
               signal_source: 'research',

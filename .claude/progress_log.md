@@ -2553,3 +2553,214 @@ into facts. Nothing deleted — both are Jake's call and are written up in `proj
 Shipped as `4655448`, pushed to origin/main. Diagnostics kept: `_chk_filter_breakdown.ts`,
 `_chk_gate_verdicts.ts`, `_chk_gate_context.ts`, `_chk_exa_includetext.ts`,
 `_chk_query_shapes.ts`, `_chk_signal_corpus_quality.ts`, `_run_research_named.ts`.
+
+---
+
+## 2026-08-07 — stale facts wearing fresh dates: the aggregator repost, and a date backfill built but not applied
+
+Started from one fact Jake flagged on the entity page: a STARZPLAY `pain_observed` sourced
+from a 2021 article, presented as current. It turned into two separate date bugs with two
+different causes.
+
+### Bug 1: 119 signals ingested before the 07-31 dateline fix carry no date at all
+
+`scripts/_backfill_content_dates.ts` reads the dateline out of the first 400 chars of the
+stored page body and corrects the signal. Dry-run scope and result:
+
+```
+580 fact-bearing signals; 119 undated and ingested before the 07-31 dateline fix
+15 datable, 104 no dateline in the first 400 chars, 0 rejected as implausible
+facts whose source turns out older than the 90-day floor: 74
+```
+
+Oldest four: 2011 Scripps, 2013 Videotron, 2019 Simplestream, 2021 Videotron. STARZPLAY
+lands at 2021-09-08, 1,795 days, 3 facts.
+
+**The regex bug that hid STARZPLAY on the first pass.** The pattern required a word boundary
+after the year, and the stripped byline reads `September 8, 20212 min read` — the year runs
+straight into the reading-time label. Dropped the boundary for the month-name formats only,
+where a month name plus a 1-2 digit day pins the format tightly enough that the next four
+digits can only be a year. Numeric formats keep the boundary.
+
+**Dropped the supersede half deliberately.** The plan had been to supersede facts whose source
+turns out past the 90-day floor. `packages/tools/src/prompt_builders.ts:172` says age kills
+events, not state, and that dating a fact must not silently delete it. Superseding those 74 is
+exactly that silent delete, so it is not in the script and should not be added.
+
+**Not applied.** `--apply` is blocked by the permission classifier from inside Claude Code.
+Jake runs it. Left as an open item in `project_state.md`.
+
+### Bug 2: a content aggregator restamped a 16-month-old story as last week's news
+
+Jake clicked a FloSports NCAA fact and landed on an unrelated-looking site. Signal `50fb999c`,
+sourced from:
+
+```
+https://us.ok.com/ask_news_cars/flosports-ncaa-deal-2025-streaming-expansion-live-ai-features/
+```
+
+The stored body shows a user handle (`OKer_te4dv8f`), a repost timestamp of 07/28/2026, then
+someone else's article pasted in below carrying its own byline: **Published March 28, 2025**.
+The path segment `ask_news_cars` has nothing to do with college sports streaming. Exa surfaced
+the repost, not the original.
+
+Four facts came off that page, all inheriting the wrong date: `recent_event` (NCAA multi-year
+partnership), `technology_used`, `acquired_by`, `pain_observed`. Everything in the text confirms
+the real age: "starting this spring" was spring 2025, the deal runs "through 2028."
+
+**Why the 07-31 dateline fix did not save it.** The signal was created 2026-07-31 12:20, after
+the 10:05 fix, so the code was live. The page carries two dates and the model took the top one.
+`applyContentDate` only ever moves a source older, so a reported 2026-07-28 against a stored
+2026-07-28 changed nothing.
+
+### Two fixes shipped for it
+
+**1. The enricher now reports the earliest date on the page** (`inngest/functions/agent_logic.ts:1512`).
+Added to the SOURCE DATE rules: when two or more dates on a page could each be a publication
+date, report the EARLIEST, because a copy is always stamped after the thing it copied. The
+observed FloSports case is written into the rule as the example. This is safe in one direction
+only, which is why it works: `applyContentDate` never moves a date newer, so a wrong guess
+costs one binned result and a right guess kills a stale trigger. The FloSports page would now
+report 2025-03-28, 487 days older than stored, past the 45-day drift tolerance, so it writes.
+
+**2. `policy.research.exclude_domains`, a new workspace knob.**
+- `packages/tools/src/policy.ts` — `exclude_domains?: string[]` on `ResearchPolicy`, documented
+  in the field comment and the knob list. Empty by default, nothing populates it in code.
+- `inngest/functions/research.ts` — `buildAngleRequest` applies it to `news` and `open_web` only.
+  `own_site` and `social` already send an include list naming every host they will accept, so an
+  exclusion there is dead weight at best and a rejected request at worst.
+
+Verified per scope:
+
+```
+own_site   include=["flosports.tv"]  exclude=null
+news       include=null              exclude=["us.ok.com","contentfarm.example"]
+social     include=["linkedin.com"]  exclude=null
+open_web   include=null              exclude=["us.ok.com","contentfarm.example"]
+```
+
+A first pass used `endsWith('ok.com')`, which also catches tiktok, facebook and whalesbook.
+Redone on a domain boundary.
+
+### Two things added that weren't asked for
+
+`scripts/check_research_angles.ts`, wired into `pnpm check`. 14 assertions pinning which filters
+reach Exa per scope, plus the existing floor-clamping behaviour that had no regression guard.
+The trap worth pinning: sending `excludeDomains` alongside `includeDomains` is the kind of thing
+that rots silently.
+
+`scripts/_cfg_research_exclude_domains.ts`, because otherwise the knob exists and cannot be set.
+Hosts come from argv, never the file. Accepts a pasted URL and reduces it to a host. Run
+read-only: Sudden currently has none set.
+
+```
+npx tsx scripts/_cfg_research_exclude_domains.ts us.ok.com
+```
+
+### State at session end
+
+`pnpm verify` exits 0, 174 assertions pass, no type errors. Everything above is UNCOMMITTED, so
+the automated pipeline keeps the old behaviour until it is committed and Render redeploys.
+
+Honest gaps, both carried into `project_state.md`: `exclude_domains` passes the portability test
+(lives on `workspaces.policy`, no code change per customer) but has no settings UI, same as every
+other research knob — a pre-existing hole, not widened. And nothing here touches the four
+FloSports facts already extracted from the repost; they are still in the active set carrying
+2026-07-28 on an account sitting at `icp_fit` 0.91.
+
+---
+
+## 2026-08-08 — "why are we still pulling 2016 articles"
+
+### What Jake saw, and what it actually was
+Not new ingestion. Backlog. Every pre-2019 article in the book was written
+between 2026-07-14 and 2026-07-29 and nothing ever deleted it. Commit `209666c`
+(2026-07-29 22:01, "own_site scope was fully exempt from the freshness gate")
+stopped the inflow; the daily count of past-the-floor signals runs
+43/15/88/65/55/60/27/25/97/50/20/6/37 through 07-29, then 1 on 07-30 and 0 every
+day after. The `own_site_scaling` and `customers` angles were the carriers.
+
+### Purged (DONE, irreversible)
+`scripts/purge_stale_articles.ts` — dry run by default, `--apply` to delete,
+`--include-aged` to widen. Deleted **882 signals + 747 facts** across
+Sudden (595/544, 95 accounts), dogfood demo (286/203, 49 accounts),
+ONBOARDING-TEST (1/0). Cleared 3 `supersedes` pointers. Verified after: 0
+stale-at-write signals and 0 pre-2019 articles in every workspace.
+
+Target set was **stale at write** (article already past the floor on the day the
+signal was created), NOT "older than the floor today". 121 aged-out signals that
+were fresh at ingest were deliberately left alone — that is evidence getting old,
+not a defect.
+
+**508 posts now cite fact ids that no longer resolve** (Sudden 231, dogfood 150,
+incl. 4 touch_drafts, all unapproved since 07-01). `channel_posts.cites` is a
+bare `uuid[]` with no FK, so nothing errors; the chain route 404s for those ids.
+Accepted knowingly.
+
+Two bugs hit while building the purge, both fixed in the script:
+- The FK `facts_supersedes_fkey` blocked the first apply. The dangler scan only
+  looked at facts WITH a `signal_id`; rows with `signal_id` null can also point
+  into the delete set. Partial delete happened, all within the intended target.
+- Paged reads used `.range()` with no `ORDER BY`, so pages overlapped and skipped.
+  Counts disagreed between runs (442 vs 544 facts). Now ordered by id + deduped.
+
+### Code changes (uncommitted, `pnpm verify` exits 0)
+The real question turned out to be a framing one. Jake: age matters for a hook,
+not for background. "If it's just a general fact about the account, it's fine.
+Just when you start acting like we're pulling new facts from 2021 and 2016 it's
+fucked up." The drafter's craft rules in `prompt_builders.ts:163-172` ALREADY say
+exactly this ("AGE KILLS EVENTS, NOT STATE", "an undated fact can NEVER be the
+trigger"). The policy was never broken. Only the plumbing under it was.
+
+Kept, all small:
+1. `score_facts.ts` — recency was computed from `facts.observed_at`, which
+   `assert_fact` stamps `now()`, so every fact was born with recency = 1. Now
+   ages from the source's publication date. **An undated fact scores a flat 1
+   (timeless), NOT aged on observed_at** — 90% of active facts have no signal at
+   all (CSV attributes, derived data) and "they are a broadcaster" does not get
+   less true while it sits in the book. Caller passes `source_date`, which
+   `agent_logic.ts:713-727` was already resolving for the prompt.
+2. `scoring.ts` — freshness constants, `HOOK_CLASS_WEIGHT` and the magnitude
+   formula moved here from `research.ts` as `researchSignalMagnitude()`. One copy.
+3. Enricher date write-back (`agent_logic.ts`) now **recomputes magnitude**.
+   It was set once at signal creation from the provider's date, so a page
+   corrected to 2020 kept a magnitude earned by "published last week".
+4. `scripts/check_source_age.ts` — new, wired into `pnpm check`. 18 assertions.
+
+**Built then deliberately REMOVED — do not re-add without reading this.** I first
+made the enricher drop every fact off a page whose corrected dateline was past
+the floor. It contradicts the craft rules head-on: it deletes exactly the state
+facts they keep ("a case study from two years ago saying they adopted a
+particular encoder is still true about their stack today"). The date correction
+alone is sufficient — a corrected 2016 date makes those facts background-only via
+rules that already exist. Also removed the `ENRICHMENT_SKIPPED_STALE` marker that
+went with it. The floor belongs at search time (stops us paying for the page) and
+in the drafter (decides what may open a message). Nothing in between should
+delete evidence.
+
+### Measured, worth knowing
+- Only **6% of active facts have a source date** (1,051 / 17,663 in Sudden).
+  90% have no signal at all, 4% have a signal with no `published_at`. This is not
+  a coverage gap to close — those facts are CSV attributes and derived data that
+  genuinely aren't events. It does mean the recency term only moves 6% of the book.
+- Recency change moves 1,051 facts, 456 by more than half.
+
+### Open
+- `min_score` (0.35) and `tau_recency_days` (45) were both calibrated while
+  recency was pinned at 1.0 for everything. Now that dated facts actually decay,
+  a dated fact needs recency ≳0.73 (source ≲14 days old) to clear the cutoff at
+  typical pitch/confidence. Undated facts are unaffected (flat 1), so the risk is
+  narrower than it first looked, but **watch shortlist sizes** on accounts whose
+  evidence is all dated-and-old. Re-tune together if `recommended` starts coming
+  back empty.
+- The age check could move earlier than the enricher: Exa returns page text at
+  search time as `c.er.text` in the `research.ts` fetch loop, so a dateline could
+  be read before the signal is ever created. Saves ~3 enricher calls/day. Pennies.
+  Structurally righter, not urgent.
+- Magnitude backfill not done. Existing signals keep the magnitude they were
+  created with; only new corrections recompute. Everything past the floor is
+  already purged, so what remains is a small number of within-floor signals with
+  a slightly generous magnitude.
+- Nothing committed. **The tree was already dirty before this session** (Today
+  page, `report.ts`, `sweep.ts`, `recap.ts`, migrations 0051/0052) — `git commit -a`
+  would sweep all of it up.

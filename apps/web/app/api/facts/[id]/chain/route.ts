@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { cite } from '@agent-crm/primitives';
 import { pickSourceUrl, type StructuredTags } from '../../../_lib/source_url';
+import { resolveEntityNames } from '../../../_lib/resolve_entity_names';
 
 export const runtime = 'nodejs';
 
@@ -111,9 +112,18 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     };
   }));
 
+  // Hydrate the entity names on the top-level fact so the drawer can link
+  // straight back to the entity this fact belongs to (and to what it points
+  // at, when the value is itself an entity) without a second round trip.
+  const nameByEntityId = await resolveEntityNames(supabase, [chain.fact.subject_entity, chain.fact.object_entity].filter((x): x is string => !!x));
+
   return NextResponse.json({
     fact_id: id,
-    fact: chain.fact,
+    fact: {
+      ...chain.fact,
+      subject_entity_name: nameByEntityId.get(chain.fact.subject_entity) ?? null,
+      object_entity_name: chain.fact.object_entity ? (nameByEntityId.get(chain.fact.object_entity) ?? null) : null,
+    },
     hops,
     hop_count: hops.length,
   });

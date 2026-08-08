@@ -7,6 +7,7 @@ import { PipelineBanner } from '../../_components/PipelineBanner';
 import { WorkspaceShell } from '../../_components/WorkspaceShell';
 import { NavLinkPrefetch } from '../../_components/NavLinkPrefetch';
 import { PageContextProvider } from '../../_components/PageContext';
+import { DrawerProvider } from '../../_components/Drawer';
 import { SignOutButton } from '../../_components/SignOutButton';
 import { requireRole } from '../../_lib/auth';
 
@@ -93,14 +94,16 @@ export default async function WorkspaceLayout({
   return (
     <>
       <PageContextProvider>
-        <WorkspaceShell sidebar={sidebar}>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '1.75rem 2rem', minHeight: 0 }}>
-            <PipelineBanner />
-            {children}
-          </div>
-          <ChatBar />
-          <StatusBar />
-        </WorkspaceShell>
+        <DrawerProvider ws={ws}>
+          <WorkspaceShell sidebar={sidebar}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '1.75rem 2rem', minHeight: 0 }}>
+              <PipelineBanner />
+              {children}
+            </div>
+            <ChatBar />
+            <StatusBar />
+          </WorkspaceShell>
+        </DrawerProvider>
       </PageContextProvider>
       <style>{`
         .nav-link:hover { background: var(--panel-2); }

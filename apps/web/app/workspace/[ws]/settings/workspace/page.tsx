@@ -89,6 +89,10 @@ export default function SettingsWorkspacePage() {
   const [hireAlwaysExec, setHireAlwaysExec] = useState<boolean>(false);
 
   const [outreachChannel, setOutreachChannel] = useState<'email' | 'linkedin'>('email');
+  const [outOfScope, setOutOfScope] = useState<string[]>([]);
+  const [triggerFresh, setTriggerFresh] = useState(14);
+  const [triggerMaxAge, setTriggerMaxAge] = useState(90);
+  const [outreachLanguage, setOutreachLanguage] = useState('English');
   const [fromEmail, setFromEmail] = useState('');
   const [overrideTo, setOverrideTo] = useState('');
 
@@ -121,6 +125,10 @@ export default function SettingsWorkspacePage() {
     setBannedPhrases(((out.banned_phrases ?? []) as string[]));
     const dr = (policy.drafter ?? {}) as Record<string, any>;
     setOutreachChannel((dr.outreach_channel === 'linkedin' ? 'linkedin' : 'email'));
+    setOutOfScope(Array.isArray(dr.out_of_scope) ? dr.out_of_scope : []);
+    setTriggerFresh(num(dr.trigger_fresh_days, 14));
+    setTriggerMaxAge(num(dr.trigger_max_age_days, 90));
+    setOutreachLanguage((dr.outreach_language ?? 'English') as string);
     const rt = (policy.routing ?? {}) as Record<string, any>;
     setDraftIcp(num(rt.draft_icp_total, 0.65));
     setDraftSignal(num(rt.draft_signal_strength, 0.7));
@@ -173,6 +181,12 @@ export default function SettingsWorkspacePage() {
       drafter: {
         ...(base.drafter ?? {}),
         outreach_channel: outreachChannel,
+        out_of_scope: outOfScope,
+        // Clamped the same way sanitizeDerived clamps the wizard's guess: a max
+        // below fresh makes trigger-led messages unreachable.
+        trigger_fresh_days: triggerFresh,
+        trigger_max_age_days: Math.max(triggerFresh, triggerMaxAge),
+        outreach_language: outreachLanguage.trim() || 'English',
       },
       // Contact provider, its caps, and the daily contact-pull budget now all
       // live on the Connectors page. Preserve whatever's saved there so a
@@ -223,6 +237,7 @@ export default function SettingsWorkspacePage() {
   }, [
     ws,
     outreachChannel, overrideTo, fromEmail, bannedPhrases,
+    outOfScope, triggerFresh, triggerMaxAge, outreachLanguage,
     searchesPerRun, draftsPerRun,
     draftIcp, draftSignal, draftEvidence, draftSuppress,
     researchIcp, researchCooldown,
@@ -264,6 +279,10 @@ export default function SettingsWorkspacePage() {
               pain_points: Array.isArray(d.pain_points) ? d.pain_points : (policyOverride.drafter?.pain_points ?? []),
               value_props: Array.isArray(d.value_props) ? d.value_props : (policyOverride.drafter?.value_props ?? []),
               tone_keywords: Array.isArray(d.tone_keywords) ? d.tone_keywords : (policyOverride.drafter?.tone_keywords ?? []),
+              out_of_scope: Array.isArray(d.out_of_scope) ? d.out_of_scope : (policyOverride.drafter?.out_of_scope ?? []),
+              trigger_fresh_days: typeof d.trigger_fresh_days === 'number' ? d.trigger_fresh_days : policyOverride.drafter?.trigger_fresh_days,
+              trigger_max_age_days: typeof d.trigger_max_age_days === 'number' ? d.trigger_max_age_days : policyOverride.drafter?.trigger_max_age_days,
+              outreach_language: typeof d.outreach_language === 'string' ? d.outreach_language : policyOverride.drafter?.outreach_language,
             },
           };
         }
@@ -364,6 +383,27 @@ export default function SettingsWorkspacePage() {
                 </label>
               ))}
             </div>
+          </HelpRow>
+
+          <HelpRow label="Never sell to" help="Accounts matching any of these are dropped entirely, whatever their fit score. Write one plain sentence each, checkable against facts about a company: 'They resell what we sell instead of buying it.' Leave empty unless you have a real limit — this deletes prospects, it doesn't rank them down. Re-derived from About whenever you edit About.">
+            <ChipList values={outOfScope} onChange={setOutOfScope} placeholder="e.g. They resell what we sell instead of buying it" />
+          </HelpRow>
+
+          <HelpRow label="News windows (days)" help="How fast news goes stale in your market. Fresh: how recent an event must be to open a message as news. Dead: past this, an event can't even be background. Facts describing how a company stands (what they run on, who they buy from) never expire either way.">
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '.4rem', fontSize: '.85rem' }}>
+                Fresh
+                <input type="number" min={3} max={60} value={triggerFresh} onChange={(e) => setTriggerFresh(num(Number(e.target.value), 14))} style={{ ...textInput, width: '5rem' }} />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '.4rem', fontSize: '.85rem' }}>
+                Dead
+                <input type="number" min={14} max={365} value={triggerMaxAge} onChange={(e) => setTriggerMaxAge(num(Number(e.target.value), 90))} style={{ ...textInput, width: '5rem' }} />
+              </label>
+            </div>
+          </HelpRow>
+
+          <HelpRow label="Outreach language" help="The language every message is written in, whatever language the prospect's own site is in. Set it to where you sell, not where you read.">
+            <input value={outreachLanguage} onChange={(e) => setOutreachLanguage(e.target.value)} placeholder="English" style={textInput} />
           </HelpRow>
 
           <HelpRow label="From address" help="The address outbound is sent from. Defaults to onboarding@resend.dev (no domain verification needed).">
