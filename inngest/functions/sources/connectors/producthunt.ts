@@ -16,7 +16,7 @@
  */
 
 import { callTool, fetchSeenSignalTags } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
@@ -33,7 +33,7 @@ interface PhPost {
   topics: { nodes: { name: string }[] };
 }
 
-export { producthuntMeta as meta } from '../registry_meta.js';
+export { producthuntMeta as meta } from '../registry_meta.ts';
 
 const QUERY = `query Posts($postedAfter: DateTime) {
   posts(postedAfter: $postedAfter, order: VOTES, first: 50) {

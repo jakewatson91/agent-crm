@@ -27,9 +27,9 @@
  *                       (default 336 = 14d)
  */
 import { callTool, entityIdsOfType, scoreAndAssert } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 
-export { exaContactsMeta as meta } from '../registry_meta.js';
+export { exaContactsMeta as meta } from '../registry_meta.ts';
 
 const EXA_API = 'https://api.exa.ai/search';
 

@@ -40,7 +40,7 @@ import {
   getPolicy, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
   RESEARCH_DISPATCH_CRON, runExaSearch, resolveEnvVar, resolveContactStrategy, DEFAULT_THRESHOLDS,
 } from '@agent-crm/tools';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 // PostgREST builds `.in(col, ids)` into the request URL. Past a few hundred ids
 // the URL exceeds the server limit and the request silently returns 0 rows with

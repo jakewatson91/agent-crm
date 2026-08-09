@@ -1,6 +1,6 @@
 import { createServerClient } from '@agent-crm/db';
-import { inngest } from '../client.js';
-import { runAgent } from './agent_logic.js';
+import { inngest } from '../client.ts';
+import { runAgent } from './agent_logic.ts';
 
 /**
  * subscription.matched -> agent.run (if owner is an agent).

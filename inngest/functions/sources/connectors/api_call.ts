@@ -31,11 +31,11 @@
  */
 
 import { callTool, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
-export { apiCallMeta as meta } from '../registry_meta.js';
+export { apiCallMeta as meta } from '../registry_meta.ts';
 
 function getPath(obj: unknown, path: string | undefined): unknown {
   if (!path) return obj;

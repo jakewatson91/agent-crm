@@ -1,5 +1,5 @@
 import { createServerClient } from '@agent-crm/db';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 /**
  * gate.created -> dispatch notification(s) per workspace policy.

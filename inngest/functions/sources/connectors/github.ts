@@ -22,7 +22,7 @@
  */
 
 import { callTool, fetchSeenSignalTags } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
@@ -38,7 +38,7 @@ interface GhEvent {
 
 const HIGH_SIGNAL_TYPES = ['ReleaseEvent', 'PublicEvent', 'CreateEvent', 'MemberEvent', 'ForkEvent'];
 
-export { githubMeta as meta } from '../registry_meta.js';
+export { githubMeta as meta } from '../registry_meta.ts';
 
 function resolveOrg(w: WatchEntity): string {
   const aliasOrg = (w.aliases ?? []).find((a) => a.toLowerCase().startsWith('github:'));

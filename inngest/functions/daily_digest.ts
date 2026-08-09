@@ -16,7 +16,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServerClient } from '@agent-crm/db';
 import { getPolicy, resolvePeriod, collectPeriod, renderMarkdown, mdToHtml, sendOwnerAlert } from '@agent-crm/tools';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 export async function runDailyDigests(sb: SupabaseClient): Promise<Record<string, unknown>> {
   const wss = await sb.from('workspaces').select('id, name');

@@ -22,7 +22,7 @@ import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsF
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 /** Cosine of two equal-length vectors. Local to keep the fact-dedup guard self-contained. */
 function cosineSim(a: number[], b: number[]): number {

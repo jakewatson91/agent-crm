@@ -12,7 +12,7 @@
  */
 import { createServerClient } from '@agent-crm/db';
 import { runQualification } from '@agent-crm/agents';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 export interface QualificationRequest {
   workspace_id: string;

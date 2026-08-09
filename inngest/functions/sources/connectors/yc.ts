@@ -21,8 +21,8 @@
 
 import { createHash } from 'node:crypto';
 import { callTool, entityIdsOfType } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
-import { upsertEntityEmbedding } from '../utils.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
+import { upsertEntityEmbedding } from '../utils.ts';
 
 // Fields whose change we treat as a meaningful YC delta. team_size, hiring
 // status, YC status, batch (rare but possible), and stage are the things an
@@ -75,7 +75,7 @@ interface YcCompany {
   url?: string;
 }
 
-export { ycMeta as meta } from '../registry_meta.js';
+export { ycMeta as meta } from '../registry_meta.ts';
 
 /**
  * Lookup-only API for the seed_accounts endpoint. Fetches + filters YC

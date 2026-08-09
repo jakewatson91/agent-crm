@@ -26,10 +26,10 @@
  * re-runs only update when the discovered value changes.
  */
 import { callTool, classifyRole, passesHiringFilter, getPolicy, type HiringFilter } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
-import { getWatchedAccounts } from '../utils.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
+import { getWatchedAccounts } from '../utils.ts';
 
-export { atsMeta as meta } from '../registry_meta.js';
+export { atsMeta as meta } from '../registry_meta.ts';
 
 type Provider = 'greenhouse' | 'lever' | 'ashby' | 'workable';
 

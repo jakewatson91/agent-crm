@@ -30,8 +30,8 @@ import {
   getPipelineStatus, setPipelineStatus, type PipelineStatus,
 } from '@agent-crm/tools';
 import { createServerClient } from '@agent-crm/db';
-import { runAgent } from './agent_logic.js';
-import { inngest } from '../client.js';
+import { runAgent } from './agent_logic.ts';
+import { inngest } from '../client.ts';
 
 export interface AdvanceOptions {
   workspace_id: string;

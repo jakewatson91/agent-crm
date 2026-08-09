@@ -22,7 +22,7 @@
  * so subscriptions with no learned centroid behave exactly as before.
  */
 import { createServerClient } from '@agent-crm/db';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 const WINDOW_MIN = 35;  // 5min overlap with the 30-min cron so we don't drop edges
 const EMA_ALPHA = 0.2;

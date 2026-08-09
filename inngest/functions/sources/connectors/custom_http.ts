@@ -54,7 +54,7 @@ import { callTool, chatCompleteForWorkspace, entityIdsOfType, normalizeDomain, h
 // custom_http is per-workspace by construction (sources.workspace_id), so it
 // uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
 // keys and stay on raw chatComplete for now.
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 
 interface CustomHttpSpec {
   fetch: {
@@ -91,7 +91,7 @@ interface ExtractedBatch {
   rejected?: Array<{ item_index: number; reason: string }>;
 }
 
-export { customHttpMeta as meta } from '../registry_meta.js';
+export { customHttpMeta as meta } from '../registry_meta.ts';
 
 // Local getPath: an undefined path means "the body itself is the array"
 // (response_path empty), which differs from the ingest core's getPath (where

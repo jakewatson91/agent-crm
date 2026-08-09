@@ -17,8 +17,8 @@
  */
 
 import { callTool, fetchSeenSignalTags } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
-import { getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
+import { getWatchedAccounts, matchAlias, buildAliases } from '../utils.ts';
 
 interface HnHit {
   objectID: string;       // story id
@@ -36,7 +36,7 @@ interface HnHit {
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
-export { hnMeta as meta } from '../registry_meta.js';
+export { hnMeta as meta } from '../registry_meta.ts';
 
 const hn: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> => {
   const result: ConnectorResult = { signals_created: 0, entities_created: 0, skipped: 0, errors: [] };

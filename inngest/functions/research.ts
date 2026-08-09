@@ -22,8 +22,8 @@ import {
   resolveDomainViaSearch, resolveAliasesViaSearch, getPipelineStatus, setPipelineStatus,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
-import { isPersistentWall } from './advance_accounts.js';
-import { inngest } from '../client.js';
+import { isPersistentWall } from './advance_accounts.ts';
+import { inngest } from '../client.ts';
 
 const SEEN_WINDOW_DAYS = 30;
 // The freshness defaults, the hook-class weights and the magnitude formula all

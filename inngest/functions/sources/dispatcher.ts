@@ -1,7 +1,7 @@
 import { createServerClient } from '@agent-crm/db';
 import { cronToMinIntervalMinutes, getPipelineStatus } from '@agent-crm/tools';
-import { inngest } from '../../client.js';
-import { getConnector } from './registry.js';
+import { inngest } from '../../client.ts';
+import { getConnector } from './registry.ts';
 
 /**
  * source-dispatcher: hourly tick that fans out a `source.run` event for each

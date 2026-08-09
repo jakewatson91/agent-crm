@@ -27,7 +27,7 @@
  */
 
 import { callTool, entityIdsOfType, fetchSeenSignalTags } from '@agent-crm/tools';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
@@ -44,7 +44,7 @@ interface GhRepo {
   topics?: string[];
 }
 
-export { githubTrendingMeta as meta } from '../registry_meta.js';
+export { githubTrendingMeta as meta } from '../registry_meta.ts';
 
 function buildQuery(cfg: { topics?: string[]; language?: string; pushed_since?: string; min_stars?: number }): string {
   const parts: string[] = [];

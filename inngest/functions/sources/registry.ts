@@ -1,18 +1,18 @@
-import type { Connector, ConnectorMeta } from './types.js';
-import apiCall, { meta as apiCallMeta } from './connectors/api_call.js';
-import customHttp, { meta as customHttpMeta } from './connectors/custom_http.js';
-import inboundWebhook, { meta as inboundWebhookMeta } from './connectors/inbound_webhook.js';
-import exa, { meta as exaMeta } from './connectors/exa.js';
-import exaContacts, { meta as exaContactsMeta } from './connectors/exa_contacts.js';
-import web, { meta as webMeta } from './connectors/web.js';
-import hn, { meta as hnMeta } from './connectors/hn.js';
-import yc, { meta as ycMeta } from './connectors/yc.js';
-import github, { meta as githubMeta } from './connectors/github.js';
-import githubTrending, { meta as githubTrendingMeta } from './connectors/github_trending.js';
-import producthunt, { meta as phMeta } from './connectors/producthunt.js';
-import ats, { meta as atsMeta } from './connectors/ats.js';
+import type { Connector, ConnectorMeta } from './types.ts';
+import apiCall, { meta as apiCallMeta } from './connectors/api_call.ts';
+import customHttp, { meta as customHttpMeta } from './connectors/custom_http.ts';
+import inboundWebhook, { meta as inboundWebhookMeta } from './connectors/inbound_webhook.ts';
+import exa, { meta as exaMeta } from './connectors/exa.ts';
+import exaContacts, { meta as exaContactsMeta } from './connectors/exa_contacts.ts';
+import web, { meta as webMeta } from './connectors/web.ts';
+import hn, { meta as hnMeta } from './connectors/hn.ts';
+import yc, { meta as ycMeta } from './connectors/yc.ts';
+import github, { meta as githubMeta } from './connectors/github.ts';
+import githubTrending, { meta as githubTrendingMeta } from './connectors/github_trending.ts';
+import producthunt, { meta as phMeta } from './connectors/producthunt.ts';
+import ats, { meta as atsMeta } from './connectors/ats.ts';
 
-export type { Connector, ConnectorMeta, ConnectorContext, ConnectorResult } from './types.js';
+export type { Connector, ConnectorMeta, ConnectorContext, ConnectorResult } from './types.ts';
 
 /**
  * Registry of source connectors.

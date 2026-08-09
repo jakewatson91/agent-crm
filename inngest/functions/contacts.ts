@@ -16,7 +16,7 @@
  */
 import { createServerClient } from '@agent-crm/db';
 import { pullContactsForAccount } from '@agent-crm/tools';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 export const contactsRunner = inngest.createFunction(
   {

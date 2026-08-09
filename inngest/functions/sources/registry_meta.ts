@@ -9,7 +9,7 @@
  * `registry.ts` re-exports the same metadata alongside the runtime connectors.
  * The connector files import their `meta` from this file (single source of truth).
  */
-import type { ConnectorMeta } from './types.js';
+import type { ConnectorMeta } from './types.ts';
 
 export const apiCallMeta: ConnectorMeta = {
   type: 'api_call',

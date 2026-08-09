@@ -21,8 +21,8 @@
 import { createHash } from 'node:crypto';
 import { callTool, compress, entityIdsOfType, fetchSeenSignalTags, resolvePublishedDate } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
-import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
+import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.ts';
 
 const EXTRACT_MODEL = 'deepseek-v4-flash';
 
@@ -37,7 +37,7 @@ export interface ExtractedItem {
   guid: string;
 }
 
-export { webMeta as meta } from '../registry_meta.js';
+export { webMeta as meta } from '../registry_meta.ts';
 
 function looksLikeXmlFeed(headers: Headers, body: string): boolean {
   const ct = headers.get('content-type') ?? '';

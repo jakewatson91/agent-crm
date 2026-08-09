@@ -15,7 +15,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServerClient } from '@agent-crm/db';
 import { sweepWorkspace, sendOwnerAlert, type CheckResult } from '@agent-crm/tools';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 const MARKER_ACTION = 'health_alert';
 

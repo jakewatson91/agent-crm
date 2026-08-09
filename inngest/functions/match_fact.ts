@@ -1,5 +1,5 @@
 import { createServerClient } from '@agent-crm/db';
-import { inngest } from '../client.js';
+import { inngest } from '../client.ts';
 
 /**
  * On fact.created, find every active subscription whose fact_filter matches

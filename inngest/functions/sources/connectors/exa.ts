@@ -32,14 +32,14 @@
 import { createHash } from 'node:crypto';
 import { callTool, entityIdsOfType, fetchSeenSignalTags, runExaSearch, type ExaResult } from '@agent-crm/tools';
 import { chatComplete } from '@agent-crm/primitives';
-import type { Connector, ConnectorContext, ConnectorResult } from '../types.js';
-import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.js';
+import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
+import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.ts';
 
 const EXTRACT_MODEL = 'deepseek-v4-flash';
 
 interface WatchEntity { entity_id: string; name: string; aliases?: string[] }
 
-export { exaMeta as meta } from '../registry_meta.js';
+export { exaMeta as meta } from '../registry_meta.ts';
 
 function normalizeDomain(url: string | undefined | null): string | null {
   if (!url) return null;

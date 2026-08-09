@@ -7,8 +7,8 @@ import {
   getPipelineStatus, setPipelineStatus,
   backfillAccountDomainsFromContactEmails, backfillAliases,
 } from '@agent-crm/tools';
-import { isHaltingError } from './advance_accounts.js';
-import { inngest } from '../client.js';
+import { isHaltingError } from './advance_accounts.ts';
+import { inngest } from '../client.ts';
 
 const RECOVERY_LOOKBACK_MIN = 30;
 const RECOVERY_LIMIT_PER_RUN = 25;
