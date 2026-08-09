@@ -532,7 +532,14 @@ export async function runEntityResearch(
         const context = kind === 'contact'
           ? [`${contactRole ? `${contactRole} at` : 'Works at'} ${contactAccountName}.`, factsContext].filter(Boolean).join(' || ').slice(0, 600)
           : factsContext;
-        const rel = await filterResultsByEntity({ name: entity_name, domain, context, brief }, allForGate);
+        // `subject` decides whether the filter reads `name` as a company or a
+        // person. A contact pull passes a person's name; without this the prompt
+        // asked whether each page was about a COMPANY of that name and threw
+        // away the real ones.
+        const rel = await filterResultsByEntity(
+          { name: entity_name, domain, context, brief, subject: kind === 'contact' ? 'person' : 'company' },
+          allForGate,
+        );
         for (const id of rel.accepted) acceptedIds.add(id);
         hookClassById = rel.classById;
         answersById = rel.answersById;

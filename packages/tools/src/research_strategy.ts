@@ -163,6 +163,20 @@ export interface PlannerContext {
    * way to even ask which question a given angle was for.
    */
   brief?: BriefQuestion[];
+  /**
+   * Whether `name` is a company or a person.
+   *
+   * Contact research reuses this filter with a PERSON's name, and until this
+   * existed the prompt still announced "TARGET COMPANY: name: <person>" and
+   * asked whether each page was about that company. Pages genuinely about the
+   * person were rejected for not being a company of the same name: measured on
+   * two live contacts, 4 of 10 and 9 of 10 drops were identity, and across 1000
+   * stored research pages the contact path had produced **zero** signals in its
+   * entire history.
+   *
+   * Defaults to 'company', so every account pull behaves exactly as before.
+   */
+  subject?: 'company' | 'person';
 }
 
 async function loadContext(supabase: SupabaseClient, workspace_id: string): Promise<{ ctx: PlannerContext; policy: WorkspacePolicy }> {
@@ -527,6 +541,20 @@ export interface RelevanceTarget {
    * behaviour and the safe default for a caller that has none.
    */
   brief?: BriefQuestion[];
+  /**
+   * Whether `name` is a company or a person.
+   *
+   * Contact research reuses this filter with a PERSON's name, and until this
+   * existed the prompt still announced "TARGET COMPANY: name: <person>" and
+   * asked whether each page was about that company. Pages genuinely about the
+   * person were rejected for not being a company of the same name: measured on
+   * two live contacts, 4 of 10 and 9 of 10 drops were identity, and across 1000
+   * stored research pages the contact path had produced **zero** signals in its
+   * entire history.
+   *
+   * Defaults to 'company', so every account pull behaves exactly as before.
+   */
+  subject?: 'company' | 'person';
 }
 
 /**
@@ -562,6 +590,7 @@ export async function filterResultsByEntity(
   // With real grounding an unsure-but-fitting page is probably right, so lean toward
   // matching. With nothing to test against, "fits the description" is untestable — a
   // generic same-name landing page would pass by default — so the bias flips.
+  const isPerson = target.subject === 'person';
   const hasContext = target.context.trim().length >= 40;
   const unsureRule = hasContext
     ? 'When genuinely unsure whether it is the right company AND the page fits the description above, treat identity as satisfied.'
@@ -571,7 +600,20 @@ export async function filterResultsByEntity(
     ? brief.map((q) => `  ${q.id} — ${q.question}${q.why ? ` (why it matters: ${q.why})` : ''}`).join('\n')
     : '';
 
-  const keepRule = brief.length
+  // A person's own words are the hook, whatever question they touch. Holding a
+  // contact page to a list of questions written about COMPANIES is what killed
+  // whatever survived the identity test: an exec's conference talk answers
+  // "how much video do they serve" only by accident. The seller's own guidance
+  // says a named person on the record is the strongest trigger there is, so for
+  // a person the questions rank the page, they do not gate it.
+  const personKeepRule = `2. It carries something this person actually SAID or WROTE, or reports something they did: a post, an interview, a quote, a talk, a panel, an article of theirs, an appointment or a decision attributed to them. That is the whole bar, and it does not depend on the questions below — a person on the record is worth reading whatever they were talking about.
+Set "q" to whichever question below their words bear on, or to "" when none of them fit. "" is a normal answer here and does not mean reject.
+Reject with "no_answer" only when the page names them but carries nothing they said or did: a staff directory entry, a profile page, a list of speakers with no talk, a page that merely mentions them in passing.
+${brief.length ? `\nQUESTIONS THIS SELLER NEEDS ANSWERED (for ranking, not for gating):\n${questionBlock}` : ''}`;
+
+  const keepRule = isPerson
+    ? personKeepRule
+    : brief.length
     ? `2. It ANSWERS at least one of the questions below, or contains something a researcher would file under one of them. Give the id of the single question it answers best.
 
 QUESTIONS THIS SELLER NEEDS ANSWERED:
@@ -583,7 +625,17 @@ Reject an ENCYCLOPEDIA or WIKI article about the company. It reads like a substa
 Reject a PERSON'S profile page too — a page that is somebody's professional-network profile, staff-directory entry or author page, listing their job title and history. It is not the same as something that person WROTE or SAID, which is often exactly what you want: a post, a talk, an interview or an article by them is a real answer. The test is whether the page carries their words about the company. A profile carries their job title, which answers nothing.`
     : `2. It carries substantive content: news, a launch, a blog post, a case study, an interview, a partnership, a write-up with real detail. Help centres, FAQs, pricing tables, terms of service, login pages, directory listings and company-profile pages are NOT substantive — they restate what is already known. Reject those with "no_answer".`;
 
-  const sys = `You screen web pages an AI sales agent fetched about a prospect company. You decide which ones are worth reading and what each one is for.
+  const header = isPerson
+    ? `You screen web pages an AI sales agent fetched about a specific PERSON at a prospect company. You decide which ones are worth reading and what each one is for.
+
+TARGET PERSON:
+- name: ${target.name}
+- where they work: ${target.context || '(unknown)'}
+- their employer's website: ${target.domain || '(unknown)'}
+
+KEEP a page only if BOTH hold:
+1. It is BY or ABOUT this person — they wrote it, they are quoted or interviewed in it, they spoke at the thing it covers, or it reports on something they did. People share names, so it must be the one at that employer, not someone else with the same name in another field. A page about their employer that never mentions them is NOT about this person; drop it for identity, the company is researched separately.`
+    : `You screen web pages an AI sales agent fetched about a prospect company. You decide which ones are worth reading and what each one is for.
 
 TARGET COMPANY:
 - name: ${target.name}
@@ -591,8 +643,10 @@ TARGET COMPANY:
 - about: ${target.context || '(nothing known)'}
 
 KEEP a page only if BOTH hold:
-1. It is about THIS company. A company in a different industry, sector, or country that happens to share the name is NOT this company. A page whose real subject is a DIFFERENT company — a supplier's case study or press release about that supplier's own project, where the target appears only as one of their customers — is not about the target either. This does NOT apply to a parent, owner or operator reporting on the target itself: a group's results announcement giving the target's own numbers is about the target, and is often the only place those numbers are published. ${unsureRule}
-   Some pages are marked "own site" in the input. Those are served from the target's own website, so identity is already settled: never reject one for identity.
+1. It is about THIS company.`;
+
+  const sys = `${header}${isPerson ? '' : ` A company in a different industry, sector, or country that happens to share the name is NOT this company. A page whose real subject is a DIFFERENT company — a supplier's case study or press release about that supplier's own project, where the target appears only as one of their customers — is not about the target either. This does NOT apply to a parent, owner or operator reporting on the target itself: a group's results announcement giving the target's own numbers is about the target, and is often the only place those numbers are published. ${unsureRule}
+   Some pages are marked "own site" in the input. Those are served from the target's own website, so identity is already settled: never reject one for identity.`}
 ${keepRule}
 
 For every page you KEEP, also say what kind of hook it carries:
@@ -603,7 +657,7 @@ For every page you KEEP, also say what kind of hook it carries:
 Pages are numbered. Refer to each one ONLY by its number.
 
 Return JSON only, in exactly this shape:
-{"keep":[{"i":<number>,"q":"<question id${brief.length ? '' : ' or empty string'}>","c":"event"|"direction"|"profile"}],
+{"keep":[{"i":<number>,"q":"<question id${brief.length && !isPerson ? '' : ' or empty string'}>","c":"event"|"direction"|"profile"}],
  "drop":[{"i":<number>,"f":"identity"|"no_answer"}]}
 
 Account for EVERY page number you were given: each appears exactly once, in "keep" or in "drop". Count them before you answer — a page you leave out of both is treated as a drop, so an omission silently throws work away. Keep it terse: no prose, no explanations.
