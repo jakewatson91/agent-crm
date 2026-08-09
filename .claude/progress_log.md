@@ -2764,3 +2764,77 @@ delete evidence.
 - Nothing committed. **The tree was already dirty before this session** (Today
   page, `report.ts`, `sweep.ts`, `recap.ts`, migrations 0051/0052) — `git commit -a`
   would sweep all of it up.
+
+---
+
+## 2026-08-09 — research runs off a questions list; the page filter had been silently dying
+
+Jake's complaint: the agent was writing facts off a Spanish help-centre page for ViX, and the fact
+store was full of irrelevant material. Deployed to `main` (`ce59bf6`), live on Render, verified
+running in production.
+
+**Root cause, and it was not a filtering miss — the filter never ran.** `filterResultsByEntity`
+batched every search's results into ONE model call and made it echo each page's Exa id (a full URL)
+back twice, in `matches` and in `rejects`. Reproduced on a real 23-page ViX batch: 6252 output
+tokens needed against a production `max_tokens` of 1200 whose retry tops out at 4000 —
+`finish=length`, `JSON.parse` threw, the catch fired. That catch accepted every own-domain page
+UNJUDGED and dropped every off-domain one. A company's own site is mostly help centre, terms and
+listings; the news is elsewhere. It kept the junk and binned the news. Failure rate across 246
+production runs was monotonic in batch size: 0% at 5 pages, 38% at 11-20, 100% above 30. On ViX it
+kept 9 `ayuda.vix.com` pages and threw away "ViX faces refund calls after World Cup streaming
+glitch".
+
+**The shape of the fix.** A short list of questions per workspace, written from its own About
+(`packages/tools/src/research_brief.ts`). Planner writes one search per question; the filter keeps a
+page only if it answers one and records which on the signal; the extractor is told the questions and
+pulls nothing else. Pages addressed by index not URL, batch capped at 10, batches parallel,
+`temperature: 0`, and it now fails CLOSED.
+
+**Built then torn out: question id as a fact-name prefix.** It forced the questions to be frozen
+forever, which is backwards — the first generation is one model pass over a description. Two checks
+killed it: the junk reduction came from telling the extractor the questions (on four support pages
+the old prompt invented `airplay_apple_tv_recommendation`, the new one wrote nothing), and the
+fallback I nearly shipped instead ("join through the page record") would have left 98% of facts
+unattributable — only 2,376 of 96,241 facts carry a `signal_id`.
+
+**Dispatcher was tiering the whole book on first-ever scores.** `.is('supersedes', null)` returns the
+ORIGINAL of a supersede chain. 1895 of 2133 accounts (89%) read a stale number, 134 in the wrong
+tier: 57 dead accounts on daily research while RTVE (real 0.87, read 0.38) and JustWatch (0.79 read
+0.47) were visited weekly or monthly. Already fixed and commented in `reads.ts` and
+`system_tasks.ts`; the dispatcher was missed because every caller re-derives it. Extracted
+`currentFactRows()` as the one implementation, added the paging the correct read needs.
+
+**Two claims in `project_state.md` were wrong and are corrected in place.** (1) "the social angle
+buys nothing" — measured over 45 days, `exec_cdn_talks` had the HIGHEST facts-per-signal in the book
+(3.27); acting on that note would have deleted the best search. (2) "`unreported` is a telemetry gap,
+not truncation" — it WAS truncation and it was signal loss.
+
+**About was missing a sentence, so an override had been bolted on.** About explained how the product
+works but never what makes it pay off more. Added one sentence about simultaneous audience; the
+dedicated peak-concurrency question then went from 0/3 runs to 3/3 from About alone.
+`research.always_include` deleted.
+
+**Contact research: the filter was calling a person a company** (`RelevanceTarget.subject`, fixed).
+It did not make contact research work — one search returned two bare profiles, a different person of
+the same name, a stock listing and a Spanish law firm. 9 of 10 identity drops were correct. The
+constraint is what the search returns, not the filter.
+
+**Migrations.** History table said 26 pending (0027-0052); the schema already had all 44 objects.
+`db push` would have replayed `0027 create table composio_connections` against an existing table and
+failed. Ran `supabase migration repair --status applied` for the range instead — metadata only.
+`db push --dry-run` now reports "Remote database is up to date."
+
+**"Local runs cannot dispatch" is retired.** It was never a missing key: `inngest/client.ts` is
+constructed at import time and ES imports hoist above `config({ path: '.env.local' })`. Run with
+`DOTENV_CONFIG_PATH=.env.local pnpm tsx -r dotenv/config <script>` and dispatch works —
+`dispatch_errors: 0`, 6 accounts dispatched.
+
+**Measured:** reasonless drops 32% -> 0%; pages kept but never judged 44% -> 0%; ViX help pages 9 ->
+0; facts per page 1.5-19 -> ~2; accounts tiered on stale scores 89% -> 0 (1000/1000 verified); gate
+replay across 6 accounts / 111 pages 14% -> 29% kept. Production verified: 3/3 runs on new code,
+`unreported: 0` on all.
+
+**New tools:** `scripts/research_explain.ts <account>` (one account end to end, including a sample of
+what was DISCARDED), `scripts/research_scorecard.ts` (per-question track record),
+`scripts/check_research_brief.ts` (regression guard, wired into `pnpm check` — `pnpm verify`
+previously covered none of this code).

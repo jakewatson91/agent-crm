@@ -20,8 +20,26 @@ function barPath(x: number, y: number, w: number, h: number): string {
   return `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z`;
 }
 
+// Locale and time zone are PINNED, not left to the runtime.
+//
+// `toLocaleDateString(undefined, ...)` formats with whatever locale the process
+// has. On the server that is Render's; in the browser it is the viewer's. Same
+// input, two different strings ("Aug 9" / "9 Aug" / "8\u670809\u65E5"), which is a
+// hydration mismatch — and when React hits one it throws away the server HTML
+// for this subtree and re-renders it. These charts are the research activity
+// bars, so the visible symptom is a run that will not show up on Today.
+//
+// Suppressing the warning would be the wrong fix here: unlike a clock, this
+// value is fully deterministic (an ISO day, rendered at noon UTC so no time zone
+// can roll it to the neighbouring date). Pinning makes both sides agree instead
+// of hiding that they disagree.
 function shortDay(iso: string): string {
-  return new Date(`${iso}T12:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+/** Same reason as shortDay: locale-grouped numbers differ per runtime (1,234 / 1 234 / 1.234). */
+function groupNum(n: number): string {
+  return n.toLocaleString('en-US');
 }
 
 export function DailyBars({
@@ -49,7 +67,7 @@ export function DailyBars({
     <div style={{ minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '.4rem', marginBottom: '.35rem' }}>
         <span style={{ fontSize: '.78rem', color: 'var(--text-2)' }}>{title}</span>
-        <span style={{ fontSize: '.95rem', fontWeight: 600, color: 'var(--text)' }}>{total.toLocaleString()}</span>
+        <span style={{ fontSize: '.95rem', fontWeight: 600, color: 'var(--text)' }}>{groupNum(total)}</span>
         <span className="muted" style={{ fontSize: '.7rem' }}>in 14 days · {perDay}/day</span>
       </div>
       <svg
