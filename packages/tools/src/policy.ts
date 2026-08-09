@@ -497,6 +497,34 @@ export interface ResearchAngle {
   recency_days?: number;           // startPublishedDate window; unset = no date filter
   num_results?: number;            // small, default 4
   enabled?: boolean;               // human on/off toggle; unset = enabled
+  /**
+   * Which research-brief question this angle exists to answer (a `BriefQuestion.id`).
+   * The planner is required to set it, so every search is traceable to something
+   * the workspace actually needs to know, and an angle whose pages never answer
+   * its question can be spotted and cut instead of quietly re-run forever.
+   * Unset on angles planned before the brief existed; those still run.
+   */
+  answers?: string;
+}
+
+/**
+ * One question in the workspace's research brief — what the agent must find out
+ * about a prospect before it may write to them. See research_brief.ts for how
+ * these are generated and how every stage uses them.
+ *
+ * `id` is also the predicate namespace: question `scale` owns `scale.*`. That is
+ * what keeps the fact vocabulary from sprawling, since the prefix is fixed by the
+ * brief and only the suffix is the extractor's to choose.
+ */
+export interface BriefQuestion {
+  id: string;
+  label: string;
+  question: string;
+  /** One line on why this seller cares. Rendered into the gate + enricher prompts. */
+  why?: string;
+  /** 'event' needs something dated to have happened; 'state' describes how they stand. */
+  kind?: 'event' | 'state';
+  enabled?: boolean;
 }
 
 /**
@@ -570,6 +598,21 @@ export interface ResearchPolicy {
   selection_mix?: { high_value?: number; active_comms?: number; exploration?: number };
   strategy?: ResearchAngle[];
   strategy_generated_at?: string;
+  /**
+   * The research brief — the questions every stage of research shares. Cached
+   * like `strategy`: regenerated when stale or when About/guidance changes.
+   * Empty/unset falls back to the neutral BASELINE_BRIEF, so a workspace that
+   * has configured nothing still gets a working brief.
+   */
+  brief?: BriefQuestion[];
+  brief_generated_at?: string;
+  /**
+   * Hash of the About / guidance / always_include / pains the brief was written
+   * from. The brief is regenerated when this changes, and NOT on a timer: a
+   * question id is a permanent predicate namespace, so re-planning it on a
+   * schedule would rename slots and orphan every fact filed under the old name.
+   */
+  brief_input_hash?: string;
   resolve_domains?: boolean;
   domain_backfill_per_day?: number;
   resolve_aliases?: boolean;

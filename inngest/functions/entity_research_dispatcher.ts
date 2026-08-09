@@ -37,7 +37,7 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   entityIdsOfType, recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS,
-  getPolicy, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
+  getPolicy, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, ensureResearchBrief, currentFactRows, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
   RESEARCH_DISPATCH_CRON, runExaSearch, resolveEnvVar, resolveContactStrategy, DEFAULT_THRESHOLDS,
 } from '@agent-crm/tools';
 import { inngest } from '../client.ts';
@@ -56,6 +56,37 @@ async function chunkedIn<T>(
     const { data, error } = await run(ids.slice(i, i + IN_CHUNK));
     if (error) throw new Error(error.message);
     if (data) out.push(...data);
+  }
+  return out;
+}
+
+/**
+ * Same chunking, but pages inside each chunk.
+ *
+ * Needed by any read that can return MORE THAN ONE ROW PER ENTITY. The score
+ * load below reads every version of four predicates, which on a rescored book is
+ * ~18 rows per account — 200 accounts to a chunk is ~3600 rows, well past
+ * PostgREST's 1000-row default. Without paging the surplus is dropped with no
+ * error, and the entities whose rows fall off the end look unscored, which is
+ * precisely the failure the (wrong) `.is('supersedes', null)` filter was hiding.
+ */
+async function chunkedInPaged<T>(
+  ids: string[],
+  run: (chunk: string[], from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  const PAGE = 1000;
+  for (let i = 0; i < ids.length; i += IN_CHUNK) {
+    const chunk = ids.slice(i, i + IN_CHUNK);
+    let from = 0;
+    for (;;) {
+      const { data, error } = await run(chunk, from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      if (!data?.length) break;
+      out.push(...data);
+      if (data.length < PAGE) break;
+      from += PAGE;
+    }
   }
   return out;
 }
@@ -253,17 +284,44 @@ export async function runResearchDispatch(
     const acctIds = accounts.map((a) => a.id);
     const domainByEntity = new Map(accounts.map((a) => [a.id, typeof a.attributes?.domain === 'string' && a.attributes.domain.length > 0]));
 
-    // Batched fact load — score + lifecycle predicates, in one query.
-    const factRows = await chunkedIn<{ subject_entity: string; predicate: string; object_text: string | null; observed_at: string }>(
+    // Batched fact load — score + lifecycle predicates.
+    //
+    // NO `.is('supersedes', null)` FILTER. A rescore writes the NEW row carrying
+    // supersedes=<old id>, so the row whose own `supersedes` is null is the
+    // FIRST-EVER score and its value never moves again. Filtering on it tiered
+    // every rescored account by a number that could be months stale.
+    //
+    // Measured on the Sudden book before this fix (`scripts/_gq_19_tierdrift.ts`):
+    // 1895 of 2133 accounts (89%) read a different value than their current one,
+    // and 134 (6%) landed in a different research tier. 57 accounts were treated
+    // as hot and re-searched every 24h when they had since scored cold, and 13
+    // genuinely hot accounts were on a 7-day or 30-day cadence — RTVE at a real
+    // 0.87 was being read as 0.38, Qalbox 0.84 read as 0.34, JustWatch 0.79 read
+    // as 0.47. So the loop was paying daily for dead accounts while visiting the
+    // best ones monthly.
+    //
+    // Same trap, same root cause, already fixed and commented in reads.ts (the
+    // agent's book projection) and system_tasks.ts (the stale-rescore scan). The
+    // dispatcher was missed.
+    //
+    // Dropping the filter means this reads EVERY version of each score rather
+    // than one row per entity, so it must page — `chunkedIn` alone would stop at
+    // PostgREST's 1000-row cap and silently return no score for the entities
+    // whose rows fell off the end, which is the failure the filter was masking.
+    const rawFactRows = await chunkedInPaged<{ id: string; subject_entity: string; predicate: string; object_text: string | null; observed_at: string; supersedes: string | null }>(
       acctIds,
-      (chunk) => supabase
+      (chunk, from, to) => supabase
         .from('facts')
-        .select('subject_entity, predicate, object_text, observed_at')
+        .select('id, subject_entity, predicate, object_text, observed_at, supersedes')
         .eq('workspace_id', ws.id)
         .in('subject_entity', chunk)
         .in('predicate', ['icp_fit', 'score_total', 'score_signal_strength', 'dropped_until'])
-        .is('supersedes', null),
+        .order('id')
+        .range(from, to),
     );
+    // One shared implementation of "which row is current", because hand-rolling
+    // it is what put the stale-score bug in three separate files.
+    const factRows = [...currentFactRows(rawFactRows, (f) => `${f.subject_entity}|${f.predicate}`).values()];
 
     const lastResearchByEntity = await latestMarkerByEntity(supabase, ws.id, acctIds, [
       ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ACTIVITY_MARKERS.RESEARCH_COMPLETED,
@@ -391,6 +449,11 @@ export async function runResearchDispatch(
     due_total += candidates.length;
     if (!candidates.length) continue;
 
+    // The brief has to exist BEFORE the strategy, because the planner writes one
+    // angle per question and each angle must name the question it serves. Both
+    // are lazily generated and cached on policy, so this is a no-op read on
+    // every tick except the one that regenerates them.
+    await ensureResearchBrief(supabase, ws.id);
     // Strategy (lazily generated + cached) sets how deep a hot account goes.
     const angles = await ensureResearchStrategy(supabase, ws.id);
     const hotAngleCount = Math.min(Math.max(angles.length, 1), MAX_HOT_ANGLES);

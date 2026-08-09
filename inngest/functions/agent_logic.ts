@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, type WorkspacePolicy, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -783,12 +783,16 @@ export async function runAgent(
   }
   const angle = angleDecision.choice;
 
+  // Resolved once: the prompt is built from it, and the assert loop uses it to
+  // force every predicate into a slot rather than trusting the model to.
+  const enricherBrief = resolveBrief(policy);
   const systemPrompt = buildSystemPrompt(behavior, about, constitution, ws.data.persona, ws.data.icp, {
     examples: (policy.enrichment?.example_facts ?? []) as Array<{ predicate: string; object_text: string }>,
     banned: (policy.enrichment?.banned_predicates ?? []) as string[],
     resolveEntities,
     edgeVocab,
     nodeTypes,
+    brief: enricherBrief,
   }, {
     outreach_channel: policy.drafter?.outreach_channel,
     subject_style: policy.drafter?.subject_style,
@@ -1393,7 +1397,7 @@ export function buildSystemPrompt(
   constitution: string,
   persona: unknown,
   icp: unknown,
-  enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[]; resolveEntities?: boolean; edgeVocab?: string[]; nodeTypes?: string[] },
+  enricherPolicy?: { examples?: Array<{ predicate: string; object_text: string }>; banned?: string[]; resolveEntities?: boolean; edgeVocab?: string[]; nodeTypes?: string[]; brief?: BriefQuestion[] },
   drafterPolicy?: ExplicitDrafterPrompt,
 ): string {
   const identity = behavior === 'drafter'
@@ -1418,6 +1422,7 @@ export function buildSystemPrompt(
     resolveEntities: enricherPolicy?.resolveEntities,
     edgeVocab: enricherPolicy?.edgeVocab,
     nodeTypes: enricherPolicy?.nodeTypes,
+    brief: enricherPolicy?.brief ?? [],
   });
   // Spread, do not re-list. This hand-off has now dropped a field three times:
   // `templates` (f101935), `char_budget` (caught pre-commit 2026-07-21), and
@@ -1470,6 +1475,11 @@ function buildEnricherDecision(opts: {
   resolveEntities?: boolean;
   edgeVocab?: string[];
   nodeTypes?: string[];
+  /**
+   * The workspace's research brief. Empty renders the old open-ended extractor,
+   * so a caller that has no brief behaves exactly as before.
+   */
+  brief?: BriefQuestion[];
 }): string {
   const examples = (opts.examples.length ? opts.examples : DEFAULT_ENRICHER_EXAMPLES)
     .slice(0, 8)
@@ -1489,6 +1499,64 @@ function buildEnricherDecision(opts: {
   const relBlock = opts.resolveEntities
     ? `\n\nRELATIONSHIPS — when object_text names ANOTHER organization, person, or product THIS entity is related to (a customer, investor, partner, competitor, acquirer, employer, etc.), set "object_type" to its kind (${nodeTypeList.join(' / ')}) and, if you know it, set "domain" to its website (e.g. "stripe.com"). ${vocabLine} For any value that is NOT a named entity (a stage, count, description, pain, or a stack item like a programming language), set "object_type" to "literal" and omit domain.`
     : '';
+  // ---- The brief: what this workspace actually needs to know ----
+  //
+  // The enricher used to be the ONLY stage of research with no idea what the
+  // workspace sells. Its instructions were "extract atomic claims" plus "go
+  // deep", and a list of example fact SHAPES. So on a workspace selling delivery
+  // capacity to streaming companies it faithfully wrote down a Pilates studio's
+  // equipment requirements, a broadcaster's LinkedIn follower growth, and a
+  // media company's 2021 award shortlist — 795 facts in a week across 488
+  // distinct predicates, 79% of which were never used again by anything.
+  //
+  // Two changes. The model is told the QUESTIONS the workspace needs answered,
+  // and every fact must name the one it answers. And the question's id becomes
+  // the predicate's namespace, so the vocabulary can no longer sprawl: the
+  // prefix is fixed by the brief, only the suffix is the model's to pick.
+  const brief = (opts.brief ?? []).filter((q) => q?.id && q?.question);
+  const briefBlock = brief.length
+    ? `WHAT THIS WORKSPACE NEEDS TO KNOW. These are the only questions worth answering about a prospect. Extract a fact ONLY when it answers one of them:
+
+${brief.map((q) => `  [${q.id}] ${q.question}${q.why ? `\n        why it matters: ${q.why}` : ''}`).join('\n')}
+
+Name each fact in plain lowercase_with_underscores for the thing it records. Reuse the exact name an ACTIVE FACT already uses when you are recording the same kind of thing — a near-synonym for something already recorded is the single most common way this data becomes unusable.
+
+IF A DETAIL ANSWERS NONE OF THESE QUESTIONS, DO NOT EXTRACT IT. Not as a fact with a different name, not "just in case", not because it is interesting or specific or true. Awards, follower counts, subscription prices, catalogue contents, app-store ratings, office perks, and descriptions of the company's category are the usual temptations. The test is not "is this true about the company" — it is "does a person reading the questions above see this as an answer to one of them". Extracting nothing from a page is a correct and common outcome.
+
+The examples below show the LEVEL OF SPECIFICITY the workspace wants. They are not a list of things to look for, and their names predate this scheme:
+${examples}
+
+`
+    : `DO extract specific claims grounded in the signal. The kinds of facts that matter for THIS workspace look like:
+${examples}
+
+(These are the workspace's example shapes — extract anything that fits the same level of specificity, not literally these only.)
+
+`;
+
+  // DEPTH, scoped by the brief when there is one. The old version told the model
+  // to "go deep" on any rich payload, which on a long page meant thirty facts
+  // about whatever the page happened to cover.
+  const depthBlock = brief.length
+    ? `DEPTH. A rich payload — a long post, a press release, a detailed write-up — usually answers ONE or TWO of the questions above properly, and mentions a dozen things that answer none. Go deep on the ones it genuinely answers: if it carries three separate figures that answer the same question, that is three facts, and each gets its own suffix. Do not pad the list with the things it merely mentions.
+Stay on the SUBJECT company. A detail that describes the internals of the artifact rather than the company is not a fact about the company: from a job posting, that the company is hiring for role X answers a question, while the checklist of what they want in a candidate describes a hypothetical hire and answers nothing. The test for each fact: is this a claim about the company, or about the contents of this one artifact?
+One predicate, one object — never collapse multiple details into a single fact. Confidence 0.95 when explicit, 0.7 when strongly implied.`
+    : `DEPTH (when the signal carries a rich payload — a long post, a detailed listing, a press release — go deep, but stay on the SUBJECT company). Extract details that describe THIS company: what it builds, sells, or offers; who it serves; its stage, size, stack, funding, customers, partners; a notable thing it's doing (launched / hired / raised / shipped); and any pain — plus one short summary fact of the event itself. Do NOT extract details that only describe the internals of the artifact rather than the company. Concretely: a job posting's required skills, years of experience, nice-to-haves, and ideal-candidate traits describe a hypothetical hire, not the company — from a job posting, capture that the company is hiring for role X (and any pain the posting implies about why), NOT the checklist of what they want in a candidate. The test for each fact: is it a claim about the company, or about the contents/spec of this one artifact? Keep the first, drop the second. Reuse a predicate the workspace examples or the entity's ACTIVE FACTS already use; coin a new lowercase predicate only when none fits, and never split one idea across near-synonym predicates (e.g. requirement / requires / required_attribute). One predicate, one object — never collapse multiple details into a single fact. If the payload is empty or generic, extract only what's actually there and skip the rest. Confidence 0.95 when explicit, 0.7 when strongly implied.`;
+
+  // Pain is the one thing the brief must never be able to switch off: a problem
+  // in the prospect's own words is what every outbound message is ultimately
+  // about. resolveBrief appends it rather than generating it, so no settings
+  // edit can drop it.
+  const painPred = 'pain_observed';
+  const painExample = 'pain_observed';
+  const painBlock = `PAIN EXTRACTION (second pass) — separately from the facts above, extract any pain, frustration, complaint, unmet need, manual-toil pattern, or expressed limitation the source describes. Use predicate "${painPred}" and an object_text that captures the pain in concrete terms, preferring the source's own wording where possible. Each entry goes in the SAME facts[] array as the facts above and MUST include the confidence field (0.95 directly stated, 0.7 strongly implied) — same JSON schema, no separate section. Examples (these are SHAPES, not a closed list — extract anything that fits regardless of vertical):
+- ${painExample} = "founder writing every outbound email personally, no time to scale"
+- ${painExample} = "current tooling forces context switches between 4 apps daily"
+- ${painExample} = "took 3 weeks to ship last marketing email due to legal review"
+- ${painExample} = "considered hiring SDR but couldn't justify the cost at current revenue"
+
+Pain is usually expressed indirectly. Look for: complaints ("we hate / can't / wish"), descriptions of manual work ("we still do X by hand"), references to gaps ("we don't have X yet"), or descriptions of friction ("X takes us Y hours / weeks"). Statements about challenges, constraints, manual workarounds, or what doesn't work today ARE pain — extract them even when stated calmly and factually, not just when emotionally vented. Do not split the same pain across this slot and a separate one like has_challenge or seeks_solution. Skip if the source is purely positive / promotional / announcement-only with no friction language. Confidence 0.95 if directly stated, 0.7 if strongly implied. Do not invent pains that aren't on the page.`;
+
   const objSchema = opts.resolveEntities
     ? `{"predicate":"<verb_or_attribute>","object_text":"<value or entity name>","object_type":"<${nodeTypeList.join('|')}|literal>","domain":"<website if object_type is an org; else omit>","confidence":0.0-1.0}`
     : `{"predicate":"<verb_or_attribute>","object_text":"<value>","confidence":0.0-1.0}`;
@@ -1502,26 +1570,15 @@ DO NOT extract:
 - Anything already present in the ACTIVE FACTS list — including a REWORDED version of it. If an active fact already states this, even in different words, order, or punctuation, do NOT emit it again. Only emit a fact about the same thing when it changes a SPECIFIC value (a corrected number, a new named detail) — and then state the new value explicitly so it reads as an update, not a paraphrase.
 - Generic descriptors that are obvious from the entity name or category.${bannedLine}
 
-DO extract specific claims grounded in the signal. The kinds of facts that matter for THIS workspace look like:
-${examples}
-
-(These are the workspace's example shapes — extract anything that fits the same level of specificity, not literally these only.)
-
-Each claim should be:
+${briefBlock}Each claim should be:
 - ATOMIC: one predicate, one object. Not "uses postgres and redis."
 - VERBATIM-GROUNDED: only what's stated or directly implied. No speculation.
 
 Use object_text for the value. Confidence: 0.95 explicit, 0.7 implied. Skip lower.${relBlock}
 
-PAIN EXTRACTION (second pass) — separately from the demographic facts above, extract any pain, frustration, complaint, unmet need, manual-toil pattern, or expressed limitation the source describes. Use predicate "pain_observed" and an object_text that captures the pain in concrete terms, preferring the source's own wording where possible. Each pain_observed entry goes in the SAME facts[] array as the demographic facts above and MUST include the confidence field (0.95 directly stated, 0.7 strongly implied) — same JSON schema, no separate section. Examples (these are SHAPES, not a closed list — extract anything that fits regardless of vertical):
-- pain_observed = "founder writing every outbound email personally, no time to scale"
-- pain_observed = "current tooling forces context switches between 4 apps daily"
-- pain_observed = "took 3 weeks to ship last marketing email due to legal review"
-- pain_observed = "considered hiring SDR but couldn't justify the cost at current revenue"
+${painBlock}
 
-Pain is usually expressed indirectly. Look for: complaints ("we hate / can't / wish"), descriptions of manual work ("we still do X by hand"), references to gaps ("we don't have X yet"), or descriptions of friction ("X takes us Y hours / weeks"). Statements about challenges, constraints, manual workarounds, or what doesn't work today ARE pain — extract them as pain_observed even when stated calmly and factually, not just when emotionally vented. Do not split the same pain across pain_observed and another predicate like has_challenge or seeks_solution; use pain_observed for the pain itself. Skip if the source is purely positive / promotional / announcement-only with no friction language. Confidence 0.95 if directly stated, 0.7 if strongly implied. Do not invent pains that aren't on the page.
-
-DEPTH (when the signal carries a rich payload — a long post, a detailed listing, a press release — go deep, but stay on the SUBJECT company). Extract details that describe THIS company: what it builds, sells, or offers; who it serves; its stage, size, stack, funding, customers, partners; a notable thing it's doing (launched / hired / raised / shipped); and any pain — plus one short summary fact of the event itself. Do NOT extract details that only describe the internals of the artifact rather than the company. Concretely: a job posting's required skills, years of experience, nice-to-haves, and ideal-candidate traits describe a hypothetical hire, not the company — from a job posting, capture that the company is hiring for role X (and any pain the posting implies about why), NOT the checklist of what they want in a candidate. The test for each fact: is it a claim about the company, or about the contents/spec of this one artifact? Keep the first, drop the second. Reuse a predicate the workspace examples or the entity's ACTIVE FACTS already use; coin a new lowercase predicate only when none fits, and never split one idea across near-synonym predicates (e.g. requirement / requires / required_attribute). One predicate, one object — never collapse multiple details into a single fact. If the payload is empty or generic, extract only what's actually there and skip the rest. Confidence 0.95 when explicit, 0.7 when strongly implied.
+${depthBlock}
 
 SOURCE DATE — include a "source_published_date" field: the date this SOURCE was published, in YYYY-MM-DD form, but ONLY if the content itself states it. Read it off a byline, a dateline, a "Posted on", a press-release header, or an explicit sentence about when the piece was written. Use "" when the content does not say. This matters because search engines routinely report the date they crawled a page instead of the date it was written, which has put years-old articles in front of prospects as if they were this week's news; the date printed on the page is the reliable one.
 Rules: report the date the SOURCE was published, never a date it merely mentions. "Launched in November 2022", "the 2024 season", or a conference happening next March are events being described, NOT the publication date. If the page only carries an event date and no publication date, return "". Do not estimate, infer from context, or guess a year. If the page shows only a day and month with no year, return "".

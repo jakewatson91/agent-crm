@@ -20,6 +20,7 @@ import {
   dedupeResearchCandidates, DUP_LOOKBACK_DAYS, researchSignalMagnitude,
   DEFAULT_MAX_AGE_DAYS, DEFAULT_DECAY_HALF_LIFE_DAYS, DEFAULT_CONTACT_MAX_AGE_DAYS, HOOK_CLASS_WEIGHT,
   resolveDomainViaSearch, resolveAliasesViaSearch, getPipelineStatus, setPipelineStatus,
+  resolveBrief,
 } from '@agent-crm/tools';
 import type { ResearchAngle, ExaResult } from '@agent-crm/tools';
 import { isPersistentWall } from './advance_accounts.ts';
@@ -252,22 +253,29 @@ export async function runEntityResearch(
         const st = (wsRow.data?.icp as { signal_type?: unknown } | null)?.signal_type;
         return Array.isArray(st) ? st.filter((s): s is string => typeof s === 'string') : [];
       })();
-      // policy.research.guidance is deliberately NOT passed here. It is planner
-      // input — "what should the agent dig up about prospects?", folded into the
-      // prompt that WRITES the search queries (see ResearchPolicy in policy.ts).
-      // It is phrased as a priority ("the best trigger is an exec interview about
-      // delivery costs... prioritize finding that"), and a priority is not a
-      // threshold. Feeding it to the relevance gate turned "rank this first" into
-      // "reject everything else": on Sudden the gate went from accepting 252
-      // results on 07-22 to dropping 89% of them (149 filtered, 18 kept) on 07-28,
-      // because almost no page is an executive interview about CDN spend.
+      // The research brief: the questions this workspace needs answered about a
+      // prospect. The gate keeps a page only if it answers one, which is what
+      // finally kills the help-centre / pricing-page / terms-of-service intake —
+      // those pages are genuinely about the right company and genuinely real
+      // pages, they just answer nothing anyone needs, and until the questions
+      // existed there was no test that could say so.
       //
-      // What the seller cares about is already carried by pains + signal_types,
-      // which describe the problem area rather than the ideal single result.
-      const relevance = {
-        pains: (policy.drafter?.pain_points ?? []).filter(Boolean),
-        signal_types: icpSignalTypes,
-      };
+      // It replaced a free-standing relevance test built from pains +
+      // icp.signal_type. That test asked the model to decide in the abstract
+      // whether a page "plausibly connects to a problem area", which is hard to
+      // do consistently and impossible to audit. Note the trap that test fell
+      // into and this one must not: policy.research.guidance is planner input
+      // ("the best trigger is an exec interview about delivery costs, prioritize
+      // finding that"), and a priority is not a threshold. Feeding it to the gate
+      // turned "rank this first" into "reject everything else" — accepts on
+      // Sudden went from 252 on 07-22 to 18 on 07-28. The brief is written as
+      // questions precisely so it can never be read as a single ideal result.
+      // resolveBriefWithPain, not resolveBrief: the always-on pain question has to
+      // reach the GATE as well as the enricher. Without it a page reporting that a
+      // company's service buckled under load answers no question in a brief made of
+      // "what did they launch / how big are they / what do they run on", and gets
+      // dropped — which is the single most valuable page there is.
+      const brief = resolveBrief(policy);
 
       // Entity domain drives the own_site angle + collision guards. A contact
       // has no domain of its own — resolve the linked account instead across
@@ -428,6 +436,7 @@ export async function runEntityResearch(
       // domain-scoped) from news/open_web (searched by name -> must be disambiguated). ---
       interface Candidate { angleId: string; scope: ResearchAngle['domain_scope']; er: ExaResult }
       const candidates: Candidate[] = [];
+      const fetchedPerAngle: Record<string, number> = {};
       const ownSiteSnippets: string[] = [];
       let filtered_stale = 0;
       // Off-company pages Exa returned despite includeText, killed before the
@@ -472,6 +481,12 @@ export async function runEntityResearch(
             continue;
           }
           seenIds.add(er.id); // dedup within this run too
+          // Fetched-per-angle, so the scorecard can tell a question that finds
+          // nothing from a question whose SEARCH is badly worded. Without it the
+          // only per-angle number is how many pages were kept, and a zero there
+          // reads identically for "the web has nothing" and "the query is wrong"
+          // — which are opposite fixes.
+          fetchedPerAngle[angle.id] = (fetchedPerAngle[angle.id] ?? 0) + 1;
           candidates.push({ angleId: angle.id, scope: angle.domain_scope, er });
           if (angle.domain_scope === 'own_site') {
             const snip = [er.title, (er.text ?? '').slice(0, 200)].filter(Boolean).join(' — ');
@@ -492,9 +507,16 @@ export async function runEntityResearch(
       // most of what research finds, so when yield moves the first question is
       // always "which condition changed" — recording only a total meant that
       // took config archaeology instead of one query.
-      let filtered_by = { identity: 0, substance: 0, relevance: 0, unreported: 0 };
+      let filtered_by = { identity: 0, substance: 0, relevance: 0, no_answer: 0, unreported: 0 };
       const acceptedIds = new Set<string>();
       let hookClassById = new Map<string, 'event' | 'direction' | 'profile'>();
+      // Which brief question each kept page answers. Rides onto the signal so the
+      // enricher knows which slot the page is for, instead of extracting whatever
+      // it happens to notice.
+      let answersById = new Map<string, string>();
+      let gate_unreadable = 0;
+      let gate_omitted = 0;
+      const dropSample: Array<{ why: string; angle: string; title: string; url: string }> = [];
       if (allForGate.length) {
         // Ground the disambiguation in the company's own words. Reuse own-site snippets
         // when we have them; otherwise fetch the homepage so a thin, common-named entity
@@ -510,11 +532,36 @@ export async function runEntityResearch(
         const context = kind === 'contact'
           ? [`${contactRole ? `${contactRole} at` : 'Works at'} ${contactAccountName}.`, factsContext].filter(Boolean).join(' || ').slice(0, 600)
           : factsContext;
-        const rel = await filterResultsByEntity({ name: entity_name, domain, context, relevance }, allForGate);
+        const rel = await filterResultsByEntity({ name: entity_name, domain, context, brief }, allForGate);
         for (const id of rel.accepted) acceptedIds.add(id);
         hookClassById = rel.classById;
+        answersById = rel.answersById;
         filtered_out = rel.dropped;
         filtered_by = rel.droppedBy;
+        gate_unreadable = rel.unreadable_batches;
+        gate_omitted = rel.omitted;
+        // A sample of what was thrown away, kept on the run marker. Drops are not
+        // stored as signals, so without this the only way to ask "should that page
+        // have been kept?" is to re-run and pay for the searches again. This is how
+        // the brief's first real gap was found: a page carrying a company's total
+        // viewers and minutes streamed was dropped as `no_answer`, correctly, because
+        // no question asked for a running total. The gate was right and the brief was
+        // short a question, and nothing in the event log would have said so.
+        for (const c of candidates) {
+          if (acceptedIds.has(c.er.id) || dropSample.length >= 8) continue;
+          dropSample.push({
+            why: rel.rejectReasonById.get(c.er.id) ?? 'unknown',
+            angle: c.angleId,
+            title: (c.er.title ?? '').slice(0, 90),
+            url: c.er.url,
+          });
+        }
+        // A batch the gate could not read is dropped, not guessed at (see the
+        // fail-closed note in filterResultsByEntity). Count it with the angle
+        // errors so a run where the gate was down looks like a failed run rather
+        // than a quiet zero — otherwise a model outage reads as "the web had
+        // nothing about these companies today".
+        if (gate_unreadable) errors.push(`relevance gate unreadable on ${gate_unreadable} batch(es)`);
       }
 
       // --- Dedup phase: collapse near-identical accepted results (two articles on the
@@ -563,6 +610,11 @@ export async function runEntityResearch(
       let firstSignalId: string | null = null;
       const perAngle: Record<string, number> = {};
       const perClass: Record<string, number> = {};
+      // Signals kept per brief question. Read alongside per_angle this says
+      // whether an angle is buying what it was planned to buy: an angle whose
+      // `answers` is "scale" but whose kept pages all answer "buyers" is
+      // mis-aimed, and that was previously invisible.
+      const perQuestion: Record<string, number> = {};
       // Create in class order (event > direction > profile). The burst coalescer
       // only fully enriches the FIRST signal of a batch, and the direct dispatch
       // below fires on firstSignalId — so the enricher should read the launch
@@ -596,12 +648,18 @@ export async function runEntityResearch(
                 : {}),
               triggered_by: reason,
               ...(hookClass ? { hook_class: hookClass } : {}),
+              // The brief question the gate said this page answers. The enricher
+              // reads it to know which slot to fill; nothing downstream has to
+              // re-derive what the page was for.
+              ...(answersById.get(c.er.id) ? { answers_question: answersById.get(c.er.id) } : {}),
             },
           });
           if (sig.ok) {
             created++;
             perAngle[c.angleId] = (perAngle[c.angleId] ?? 0) + 1;
             perClass[hookClass ?? 'unclassified'] = (perClass[hookClass ?? 'unclassified'] ?? 0) + 1;
+            const q = answersById.get(c.er.id) ?? 'unassigned';
+            perQuestion[q] = (perQuestion[q] ?? 0) + 1;
             if (!firstSignalId && sig.target_id) firstSignalId = sig.target_id;
           }
         } catch {
@@ -694,12 +752,17 @@ export async function runEntityResearch(
         same_url_dropped,
         duplicates_dropped,
         per_angle: perAngle,
+        per_angle_fetched: fetchedPerAngle,
         per_class: perClass,
+        per_question: perQuestion,
+        ...(gate_unreadable ? { gate_unreadable } : {}),
+        ...(gate_omitted ? { gate_omitted } : {}),
+        ...(dropSample.length ? { drop_sample: dropSample } : {}),
         ...(resolver_spent ? { domain_resolved: domain || null } : {}),
-        summary: `${created} results from ${searches} search(es)${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${filtered_no_name ? `, ${filtered_no_name} never named the company` : ''}${filtered_stale ? `, ${filtered_stale} stale dropped` : ''}${(same_url_dropped + duplicates_dropped) ? `, ${same_url_dropped + duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
+        summary: `${created} results from ${searches} search(es)${filtered_by.no_answer ? `, ${filtered_by.no_answer} answered nothing in the brief` : ''}${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${filtered_no_name ? `, ${filtered_no_name} never named the company` : ''}${filtered_stale ? `, ${filtered_stale} stale dropped` : ''}${(same_url_dropped + duplicates_dropped) ? `, ${same_url_dropped + duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
       });
 
-      return { ok: true, searches, signals_created: created, filtered_out, filtered_no_name, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, per_class: perClass, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
+      return { ok: true, searches, signals_created: created, filtered_out, filtered_by, filtered_no_name, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, per_angle_fetched: fetchedPerAngle, per_class: perClass, per_question: perQuestion, gate_unreadable, gate_omitted, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
     }
   }
 }

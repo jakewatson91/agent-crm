@@ -715,3 +715,44 @@ export async function healthCheck(supabase: SupabaseClient, workspace_id: string
     ts: new Date().toISOString(),
   };
 }
+
+/**
+ * Pick the CURRENT row from a set of fact rows that may contain supersede chains.
+ *
+ * Reading this wrong has shipped three times. A rescore writes the NEW row
+ * carrying `supersedes=<old id>`, so the row whose own `supersedes` is null is
+ * the FIRST-EVER version and its value never moves again. Filtering
+ * `.is('supersedes', null)` therefore returns the oldest value, not the newest,
+ * which is the exact opposite of what every caller wants.
+ *
+ * It was found and fixed in the agent's book projection (reads.ts) and in the
+ * stale-rescore scan (system_tasks.ts), and was still live in the research
+ * dispatcher months later, where it tiered 89% of accounts on a stale number and
+ * sent 57 dead accounts to daily research while visiting genuinely hot ones
+ * monthly.
+ *
+ * The reason it keeps coming back is that every caller re-derives it by hand.
+ * This is the one implementation. Use it.
+ *
+ * Two rules, in order:
+ *   1. drop any row that another row in the set supersedes
+ *   2. of what is left, newest `observed_at` wins
+ *
+ * Callers must pass EVERY version they care about — a query that pages or
+ * chunks has to read all rows first, or step 1 sees an incomplete picture and
+ * a superseded row survives.
+ */
+export function currentFactRows<T extends { id: string; supersedes: string | null; observed_at: string }>(
+  rows: T[],
+  keyOf: (row: T) => string,
+): Map<string, T> {
+  const superseded = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const out = new Map<string, T>();
+  for (const r of rows) {
+    if (superseded.has(r.id)) continue;
+    const k = keyOf(r);
+    const prev = out.get(k);
+    if (!prev || r.observed_at > prev.observed_at) out.set(k, r);
+  }
+  return out;
+}

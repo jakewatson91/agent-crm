@@ -1,0 +1,161 @@
+/**
+ * What has each research question actually earned?
+ *
+ * The brief is a hypothesis about what matters. This is how it gets corrected:
+ * a track record per question, read off data already stored — run markers,
+ * page records, facts, and the drafts that cited them. Nothing new is written.
+ *
+ * The three columns diagnose DIFFERENT failures, and keeping them apart is the
+ * whole point:
+ *
+ *   fetched high, kept low     -> the SEARCH is wrong, not the question.
+ *                                 Reword the query. Do not retire the question.
+ *   kept high, facts low       -> extraction problem. The pages are right and
+ *                                 nothing is being read off them.
+ *   facts high, used-in-a-draft 0 -> the question genuinely does not matter for
+ *                                 messages. This is the only column that
+ *                                 justifies retiring it.
+ *
+ * Mixing those up is how you delete a good question because someone wrote a bad
+ * search for it.
+ *
+ * Sample sizes are printed because they are small and honest reading depends on
+ * them: a question with a handful of searches is UNPROVEN, not failing.
+ *
+ * Read-only. Spends nothing.
+ *
+ * Usage: pnpm tsx scripts/research_scorecard.ts [--days 30] [--ws <id>]
+ */
+import { config } from 'dotenv';
+config({ path: '.env.local' });
+import { createClient } from '@supabase/supabase-js';
+import { getPolicy, resolveBrief } from '@agent-crm/tools';
+
+const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
+const argv = process.argv.slice(2);
+let WS = process.env.GQ_WS ?? 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
+let DAYS = 30;
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--ws') WS = argv[++i] ?? WS;
+  else if (argv[i] === '--days') DAYS = Number(argv[++i]) || DAYS;
+}
+
+/** Below this many pages fetched, a question has not had a fair trial. */
+const MIN_SAMPLE_FETCHED = 30;
+
+async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
+  let out: T[] = []; let f = 0; const pg = 1000;
+  for (;;) { const { data, error } = await build(f, f + pg - 1); if (error) throw error; if (!data?.length) break; out = out.concat(data); if (data.length < pg) break; f += pg; }
+  return out;
+}
+
+(async () => {
+  const policy = await getPolicy(sb as any, WS);
+  const brief = resolveBrief(policy);
+  const angles = policy.research?.strategy ?? [];
+  const since = new Date(Date.now() - DAYS * 86400 * 1000).toISOString();
+
+  // --- run markers: fetched + kept per search ---
+  const ev = ((await sb.from('events').select('payload, created_at')
+    .eq('workspace_id', WS).eq('action', 'research_completed')
+    .gte('created_at', since).order('created_at', { ascending: false }).limit(5000)).data ?? []) as any[];
+  const fetchedByAngle: Record<string, number> = {};
+  const keptByAngle: Record<string, number> = {};
+  let runs = 0, searches = 0, markersWithFetched = 0;
+  for (const e of ev) {
+    const d = e.payload ?? {};
+    runs++; searches += d.searches ?? 0;
+    if (d.per_angle_fetched) markersWithFetched++;
+    for (const [k, v] of Object.entries(d.per_angle_fetched ?? {})) fetchedByAngle[k] = (fetchedByAngle[k] ?? 0) + (v as number);
+    for (const [k, v] of Object.entries(d.per_angle ?? {})) keptByAngle[k] = (keptByAngle[k] ?? 0) + (v as number);
+  }
+
+  // --- pages kept, per question ---
+  const sigs = await fetchAll<any>((f, t) => sb.from('signals')
+    .select('id, structured_tags').eq('workspace_id', WS).eq('type', 'research_result')
+    .gte('observed_at', since).range(f, t));
+  const keptByQuestion: Record<string, number> = {};
+  const sigQ = new Map<string, string>();
+  for (const s of sigs) {
+    const q = s.structured_tags?.answers_question;
+    if (!q) continue;
+    sigQ.set(s.id, q);
+    keptByQuestion[q] = (keptByQuestion[q] ?? 0) + 1;
+  }
+
+  // --- facts off those pages ---
+  const sigIds = [...sigQ.keys()];
+  const factsByQuestion: Record<string, number> = {};
+  const factIdQ = new Map<string, string>();
+  for (let i = 0; i < sigIds.length; i += 200) {
+    const r = await sb.from('facts').select('id, signal_id').in('signal_id', sigIds.slice(i, i + 200)).limit(3000);
+    for (const f of (r.data ?? []) as any[]) {
+      const q = sigQ.get(f.signal_id);
+      if (!q) continue;
+      factsByQuestion[q] = (factsByQuestion[q] ?? 0) + 1;
+      factIdQ.set(f.id, q);
+    }
+  }
+
+  // --- which of those facts a draft actually used ---
+  const chans = (await sb.from('channels').select('id').eq('workspace_id', WS).limit(5000)).data ?? [];
+  const chanIds = (chans as any[]).map((c) => c.id);
+  let posts: any[] = [];
+  for (let i = 0; i < chanIds.length; i += 200) {
+    const r = await sb.from('channel_posts').select('cites, kind, created_at')
+      .in('channel_id', chanIds.slice(i, i + 200)).eq('kind', 'touch_draft').gte('created_at', since).limit(2000);
+    posts = posts.concat(r.data ?? []);
+  }
+  const usedByQuestion: Record<string, number> = {};
+  const citedIds = new Set<string>();
+  for (const p of posts) for (const c of p.cites ?? []) citedIds.add(c);
+  for (const id of citedIds) {
+    const q = factIdQ.get(id);
+    if (q) usedByQuestion[q] = (usedByQuestion[q] ?? 0) + 1;
+  }
+
+  // --- render ---
+  console.log(`workspace ${WS}  last ${DAYS}d: ${runs} research runs, ${searches} searches, ${posts.length} drafts`);
+  if (runs && markersWithFetched < runs) {
+    console.log(`  note: ${runs - markersWithFetched} run(s) predate per-search fetch counts — "fetched" is understated for those.`);
+  }
+  console.log('');
+  const head = 'question'.padEnd(24) + 'searches'.padStart(9) + 'fetched'.padStart(9) + 'kept'.padStart(6) + 'hit%'.padStart(6) + 'facts'.padStart(7) + 'used'.padStart(6) + '   verdict';
+  // No derived searches-per-question column. It would be runs x searches aimed
+  // at that question, which over-counts: cold accounts run fewer searches, a
+  // domainless account skips own-site ones entirely. `fetched` is measured, so
+  // it is the denominator worth trusting.
+  console.log(head);
+  console.log('-'.repeat(head.length + 20));
+
+  const questionIds = [...new Set([...brief.map((q) => q.id), ...Object.keys(keptByQuestion)])];
+  for (const qid of questionIds) {
+    const inBrief = brief.some((q) => q.id === qid);
+    const serving = angles.filter((a) => a.answers === qid);
+    const fetched = serving.reduce((n, a) => n + (fetchedByAngle[a.id] ?? 0), 0);
+    const kept = keptByQuestion[qid] ?? 0;
+    const facts = factsByQuestion[qid] ?? 0;
+    const used = usedByQuestion[qid] ?? 0;
+    const hit = fetched ? Math.round((kept / fetched) * 100) : 0;
+
+    let verdict: string;
+    if (!inBrief) verdict = 'RETIRED — facts kept and still readable';
+    else if (!serving.length) verdict = 'no search points at it (found only in passing)';
+    else if (fetched < MIN_SAMPLE_FETCHED) verdict = `unproven (needs ${MIN_SAMPLE_FETCHED}+ pages seen)`;
+    else if (hit < 10) verdict = 'THE SEARCH IS WRONG — reword the query, keep the question';
+    else if (kept >= 5 && facts === 0) verdict = 'pages are right, nothing being read off them';
+    else if (facts >= 10 && used === 0 && posts.length >= 20) verdict = 'RETIRE CANDIDATE — produces facts no message uses';
+    else verdict = 'earning its place';
+
+    console.log(
+      qid.slice(0, 23).padEnd(24) +
+      String(serving.length || '-').padStart(9) + String(fetched).padStart(9) + String(kept).padStart(6) +
+      `${hit}%`.padStart(6) + String(facts).padStart(7) + String(used).padStart(6) + '   ' + verdict,
+    );
+  }
+
+  console.log(`\n"searches" is how many searches are aimed at that question, not how many ran. "fetched" is measured.`);
+  if (posts.length < 20) {
+    console.log(`Only ${posts.length} drafts in this window — the "used" column cannot retire anything yet. Judge on hit% and facts until it fills in.`);
+  }
+})();
