@@ -22,6 +22,28 @@ interface PipelineStatus {
   last_run?: { scanned?: number; contacts_pulled?: number; contacts_created?: number; drafts_created?: number };
 }
 
+/**
+ * The last time the pipeline did real work, and what it was. Separate from
+ * `status.last_run_at`, which only the daily advance pass ever writes — research
+ * can run six accounts and that field will not move, so the banner used to say
+ * "ran 5h ago" ten minutes after a research run finished.
+ */
+interface PipelineActivity {
+  at: string;
+  action: string;
+}
+
+/** Event action names, rendered as something a person would say. */
+const ACTION_LABEL: Record<string, string> = {
+  research_completed: 'researched a company',
+  research_error: 'hit a research error',
+  create_signal: 'found a page',
+  assert_fact: 'learned something',
+  post_to_channel: 'wrote to a channel',
+  contacts_completed: 'pulled contacts',
+  domain_resolve_completed: 'resolved a website',
+};
+
 function ago(iso?: string): string {
   if (!iso) return 'never';
   const ms = Date.now() - new Date(iso).getTime();
@@ -61,13 +83,14 @@ function summarizeResearch(summary: any): string {
 export function PipelineBanner() {
   const params = useParams<{ ws: string }>();
   const ws = params?.ws as string | undefined;
-  const { data, mutate } = useSWR<{ status: PipelineStatus | null; research_dispatch_interval_hours?: number }>(
+  const { data, mutate } = useSWR<{ status: PipelineStatus | null; activity?: PipelineActivity | null; research_dispatch_interval_hours?: number }>(
     ws ? `/api/pipeline/status?workspace_id=${ws}` : null,
     { ...DEFAULT_SWR, refreshInterval: 20_000 },
   );
   const [busy, setBusy] = useState(false);
   const [runMsg, setRunMsg] = useState<string | null>(null);
   const status = data?.status ?? null;
+  const activity = data?.activity ?? null;
   const intervalHours = data?.research_dispatch_interval_hours ?? 4;
   if (!ws) return null;
 
@@ -140,14 +163,24 @@ export function PipelineBanner() {
 
   // Healthy / not-yet-run: one slim, low-noise line + next-run + a manual trigger.
   const lr = status?.last_run;
-  const summary = status?.last_run_at
-    ? `Pipeline healthy · ran ${ago(status.last_run_at)}${lr?.drafts_created != null ? ` · ${lr.drafts_created} draft${lr.drafts_created === 1 ? '' : 's'}` : ''}${lr?.contacts_created ? `, ${lr.contacts_created} contact${lr.contacts_created === 1 ? '' : 's'}` : ''}`
+  // "ran X ago" reports the most recent real activity, not the advance pass's
+  // own timestamp — the banner says "Pipeline", so it has to mean all of it.
+  // The draft/contact counts stay attached to the advance pass, which is the
+  // only thing that produces them, and are labelled so the two are not read as
+  // one event.
+  const ranAt = activity?.at ?? status?.last_run_at;
+  const did = activity?.action ? ACTION_LABEL[activity.action] : undefined;
+  const outreach = lr?.drafts_created != null
+    ? ` · last outreach pass: ${lr.drafts_created} draft${lr.drafts_created === 1 ? '' : 's'}${lr?.contacts_created ? `, ${lr.contacts_created} contact${lr.contacts_created === 1 ? '' : 's'}` : ''}`
+    : '';
+  const summary = ranAt
+    ? `Pipeline healthy · ${did ? `${did} ` : 'ran '}${ago(ranAt)}${outreach}`
     : 'Pipeline hasn’t run yet.';
   const next = nextResearchRun(intervalHours);
   return (
     <div style={{ marginBottom: '.9rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', padding: '.3rem .1rem', fontSize: '.74rem', color: 'var(--text-3)' }}>
-        <span style={{ color: status?.last_run_at ? 'var(--accent)' : 'var(--text-3)' }}>●</span>
+        <span style={{ color: ranAt ? 'var(--accent)' : 'var(--text-3)' }}>●</span>
         <span>{summary}</span>
         <span>· next research run in {next.label} ({next.atUtc})</span>
         <button

@@ -883,6 +883,59 @@ export async function getPipelineStatus(supabase: SupabaseClient, workspace_id: 
 }
 
 /**
+ * Actions that mean "the pipeline actually did something", newest of which backs
+ * the banner's "ran X ago".
+ *
+ * Why this is not `pipeline.last_run_at`: that field is written ONLY by the
+ * daily advance pass (advance_accounts.ts), and the research dispatcher
+ * deliberately passes the old value through rather than updating it. So a
+ * workspace could research six accounts, create signals and write facts, and the
+ * banner would still report the advance pass's timestamp from hours earlier.
+ * Observed live: research completed 10 minutes ago while the banner read "ran 5h
+ * ago". The banner says "Pipeline", so it has to mean the whole pipeline.
+ *
+ * Deliberately excludes the bookkeeping-heavy actions. `supersede_fact` and
+ * `rescore_noop` fire in the hundreds during a routine rescore, so including
+ * them would make the banner read "ran 0m ago" more or less permanently and it
+ * would stop carrying information.
+ */
+export const PIPELINE_ACTIVITY_ACTIONS = [
+  'research_completed',
+  'research_error',
+  'create_signal',
+  'assert_fact',
+  'post_to_channel',
+  'contacts_completed',
+  'domain_resolve_completed',
+] as const;
+
+export interface PipelineActivity {
+  at: string;
+  action: string;
+}
+
+/**
+ * When the pipeline last did real work, and what it was. One indexed read
+ * (events_workspace_action_time_idx, migration 0047). Null when the workspace
+ * has never done any of it.
+ */
+export async function getPipelineActivity(
+  supabase: SupabaseClient,
+  workspace_id: string,
+): Promise<PipelineActivity | null> {
+  const r = await supabase
+    .from('events')
+    .select('action, created_at')
+    .eq('workspace_id', workspace_id)
+    .in('action', PIPELINE_ACTIVITY_ACTIONS as unknown as string[])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const row = r.data as { action: string; created_at: string } | null;
+  return row ? { at: row.created_at, action: row.action } : null;
+}
+
+/**
  * Replace the workspace's pipeline status (not a deep merge — the status object
  * fully describes current state, so writing {state:'ok', ...} clears a prior
  * pause's reason/provider). Read-modify-write on the raw policy so the rest of

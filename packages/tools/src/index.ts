@@ -34,7 +34,8 @@ export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type 
 export { runRetention, type RetentionResult } from './retention.ts';
 export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
 export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, TIER_ANGLE_COUNT, RESEARCH_DISPATCH_CRON, DEFAULT_QUALIFICATION, resolveQualification } from './policy.ts';
-export { getPipelineStatus, setPipelineStatus, ensureScoringConfigState } from './policy.ts';
+export { getPipelineStatus, setPipelineStatus, getPipelineActivity, PIPELINE_ACTIVITY_ACTIONS, ensureScoringConfigState } from './policy.ts';
+export type { PipelineActivity } from './policy.ts';
 export { sendOwnerAlert, resolveOwnerEmail, notifyPipelinePaused, type AlertResult } from './notify.ts';
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy, ResearchPolicy, ResearchAngle, BriefQuestion, QualificationPolicy, PipelineStatus } from './policy.ts';
 export { cronToMinIntervalMinutes } from './cron.ts';

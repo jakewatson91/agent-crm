@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { getPipelineStatus, cronToMinIntervalMinutes, RESEARCH_DISPATCH_CRON } from '@agent-crm/tools';
+import { getPipelineStatus, getPipelineActivity, cronToMinIntervalMinutes, RESEARCH_DISPATCH_CRON } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
 
@@ -19,6 +19,12 @@ export async function GET(req: Request) {
   const workspace_id = new URL(req.url).searchParams.get('workspace_id');
   if (!workspace_id) return NextResponse.json({ error: 'workspace_id required' }, { status: 400 });
   const supabase = createServerClient();
-  const status = await getPipelineStatus(supabase, workspace_id);
-  return NextResponse.json({ status, research_dispatch_interval_hours: RESEARCH_DISPATCH_INTERVAL_HOURS });
+  // `activity` is what the banner's "ran X ago" reads. status.last_run_at is the
+  // ADVANCE pass only, so on its own it reports a research run that finished
+  // minutes ago as hours old.
+  const [status, activity] = await Promise.all([
+    getPipelineStatus(supabase, workspace_id),
+    getPipelineActivity(supabase, workspace_id),
+  ]);
+  return NextResponse.json({ status, activity, research_dispatch_interval_hours: RESEARCH_DISPATCH_INTERVAL_HOURS });
 }
