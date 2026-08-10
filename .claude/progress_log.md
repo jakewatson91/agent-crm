@@ -2838,3 +2838,96 @@ replay across 6 accounts / 111 pages 14% -> 29% kept. Production verified: 3/3 r
 what was DISCARDED), `scripts/research_scorecard.ts` (per-question track record),
 `scripts/check_research_brief.ts` (regression guard, wired into `pnpm check` — `pnpm verify`
 previously covered none of this code).
+
+---
+
+## 2026-08-10 — three feedback paths measured correctly and were wired to nothing that could act
+
+Started from a handoff note calling `technical_leader` (183 pages fetched in a day, 0 kept) "a
+five-minute reword of the LinkedIn query". The numbers checked out. The diagnosis and the fix did
+not, and chasing why turned up the same defect three times.
+
+**Merged to `main` (`a044759`) and pushed. `pnpm verify` exits 0, 293 assertions.**
+
+### The reword was never going to work
+
+`buildAngleRequest` sends `include_text: [entity_name]` on the social scope, and the most common
+page on linkedin.com containing a company's name is an employee's profile card. Of 213 sampled
+drops, **170 were `linkedin.com/in/` URLs**, which is why they split 145 `no_answer` / 68
+`identity` — Exa was correctly returning pages that mention the company, and they were profiles.
+`research_strategy.ts:82` already documented this for `resolveContactStrategy`; the company path
+never got the same reasoning, and `socialScopeAddendum` was ordering "Include exactly ONE social
+angle" in every workspace. Angles also live in a 14-day cache, so a hand-reworded query would have
+reverted silently.
+
+### The same bug, three times
+
+1. **The angle track record reached the planner that writes QUESTIONS, not the one that writes
+   QUERIES.** `research_brief.ts` told the brief planner "the SEARCH is finding the wrong pages,
+   rewrite its query" — a brief planner cannot rewrite a query. The strategy planner had no
+   performance data at all. It gets the record now, with the same 30-page fair-trial guard and
+   id-continuity rule.
+2. **`ensureResearchBrief` took `records` as an OPTIONAL argument and no caller ever passed one.**
+   Not the dispatcher, not the settings route. Every brief regeneration in production has run
+   blind, so the guardrails verified in `_gq_22_evolve.ts` were never in the live path. It cost a
+   question: `monetization_model` was dropped at 25 pages seen, under the threshold the guard
+   exists to enforce. It now loads the record itself.
+3. **The brief planner was never told the ingestion floor.** It asked what a leader said "in the
+   past year" against a 90-day floor, so the only pages that could answer were binned on arrival
+   and the search read as broken across 183 pages. The strategy planner has had that number for
+   months, with a comment describing this exact failure. The floor is now in the prompt and in
+   `briefInputHash`, so moving it reopens the brief.
+
+### Staleness is now about evidence
+
+`ensureResearchStrategy` regenerates when any enabled angle is past a fair trial with zero pages
+answering its question (floored at 12h so a planner returning the same query cannot loop), when the
+brief is newer than the strategy, or when an angle points at a question that no longer exists. Down
+from 14 days, roughly 2,500 wasted pages at Sudden's rate.
+
+Three planner runs with the record in front of it: no social angle came back 3/3, every brief
+question kept a serving angle 3/3, and ids and wording were preserved on the angles that were
+working.
+
+### Measures corrected
+
+- `AngleRecord.kept` counted pages kept for ANY question. The failing angle kept 16 while answering
+  its own question zero times, so kept-at-all called it healthy. It now counts only pages kept as
+  answering the angle's own question, read off `research_angle` + `answers_question` on the signals.
+- The scorecard and the brief planner computed the same four numbers separately and disagreed.
+  Collapsed into one exported `loadQuestionRecords` used by both.
+
+### Smaller fixes, both found while building the above
+
+- `query_template` was hard-sliced at 200 chars and shipped `(said OR explained OR desc` to Exa, an
+  unclosed OR-group with half a word in it. `clampQuery` cuts on a word boundary and drops any group
+  or quote left open.
+- The angle id survives a rewrite so the record survives, which meant a rewritten query inherited
+  the record of the query it replaced — the next planner run would be told a brand-new query
+  "CANNOT work as written". `record_since` is stamped when the query or scope changes, and the
+  scorecard flags rows whose search was rewritten inside the window.
+- A human's per-angle off switch was overwritten by every regeneration, in every workspace.
+  `coerceAngle` hardcodes `enabled: true` and the persist replaced the whole array. It survives now,
+  including across a query rewrite, and `ensureResearchStrategy` applies it to what it RETURNS as
+  well as what it stores.
+- The scorecard counts only enabled angles as serving a question.
+
+### Config changed on Sudden
+
+`policy.research.social_domains` → `[]`. Brief regenerated with the floor stated: every time window
+is now "recently"; `audience_scale` retired in favour of `delivery_scale`; `monetization_model`
+survived on its record. Full policy backed up before the first write.
+
+### Left open, deliberately
+
+- `used` is 0 on every question, including `recent_launch` at 122 facts. Either drafts are not
+  citing research facts or `channel_posts.cites` is not populated the way the scorecard reads it.
+  The retire path depends entirely on that column.
+- `technical_leader` has been rewritten twice and still answers ~0 of 264. Nothing can conclude "no
+  search can answer this question" — the brief planner is told a low hit rate always means the
+  search. That loop has no exit.
+
+**New scripts:** `_gq_26_anglerecord.ts` (3 planner runs with records), `_gq_27_evidence_stale.ts`
+(the evidence check against real production numbers, and the run that caught the wrong `kept`
+measure), `_cfg_sudden_clear_social.ts`, `_cfg_sudden_regen_strategy.ts`,
+`_cfg_sudden_stamp_record_since.ts`, `_cfg_sudden_reconcile.ts`, `_cfg_sudden_replan_brief.ts`.
