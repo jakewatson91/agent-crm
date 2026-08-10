@@ -505,6 +505,24 @@ export interface ResearchAngle {
    * Unset on angles planned before the brief existed; those still run.
    */
   answers?: string;
+  /**
+   * When this angle's SEARCH last changed, so its track record is read against
+   * the query that actually ran.
+   *
+   * The record is filed under the angle id, and the id is deliberately kept when
+   * the planner rewrites a query — that is what stops a reworded angle starting
+   * from zero every regeneration. But the two rules collide: the angle that
+   * fetched 183 pages and kept none was rewritten from a LinkedIn search into a
+   * news search, and without this it inherits the failing record of a query that
+   * no longer exists. The next planner run would be told a brand-new query
+   * "CANNOT work as written", and the scorecard would read as though the fix had
+   * not landed.
+   *
+   * Set by persistResearchStrategy when query_template or domain_scope changes,
+   * carried forward untouched when they do not. Unset means "count everything",
+   * which is right for angles that predate this.
+   */
+  record_since?: string;
 }
 
 /**

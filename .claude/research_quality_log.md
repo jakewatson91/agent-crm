@@ -436,6 +436,68 @@ nothing" and "the query is wrong", which are opposite fixes.
 id-continuity prompting (a question's track record is filed under its id). Both are now cheap
 conveniences rather than load-bearing.
 
+### FINDING 9 (fixed) — the scorecard's commonest verdict had nothing that could act on it
+
+The scorecard flagged `technical_leader` at **183 fetched, 0 kept in one day**, the largest search
+volume of the day. A handoff note called it "a five-minute reword" of the LinkedIn query. It was
+none of those things.
+
+**It is not a wording problem.** `buildAngleRequest` sends `include_text: [entity_name]` on the
+social scope, and the most common page on linkedin.com containing a company's name is an
+**employee's profile card**. Of 213 sampled drops, **170 were `linkedin.com/in/` profile URLs**,
+which is why the drops split 145 `no_answer` / 68 `identity` — Exa was correctly returning pages
+that mention the company, and they were profiles. `research_strategy.ts:82` already documented this
+for `resolveContactStrategy`; the company path never got the same reasoning, and
+`socialScopeAddendum` was ordering "Include exactly ONE social angle" in every workspace.
+
+**It is not hand-fixable either.** Angles live in `policy.research.strategy`, which
+`persistResearchStrategy` treats as a 14-day cache. A hand-reworded query reverts silently.
+
+**The real gap.** `research_brief.ts` hands a track record to the BRIEF planner and tells it
+"the SEARCH is finding the wrong pages, rewrite its query" — but the brief planner writes
+QUESTIONS. `research_strategy.ts`, which writes the queries, received no performance data at all.
+The verdict the scorecard reaches most often was routed to the one component that could not act on
+it.
+
+Fixed by giving the query planner the same feedback the question planner already had:
+
+```
+linkedin_leadership        183 seen,  0 kept  (0%)  -> CANNOT work as written
+cdn_provider_mentions       71 seen,  5 kept  (7%)  -> rewrite it
+customer_case_studies      139 seen, 15 kept (11%)  -> earning its place
+recent_launches_news       141 seen, 56 kept (40%)  -> earning its place
+monetization_revenue_news   24 seen              -> TOO EARLY TO JUDGE, keep as is
+```
+
+Three runs (`scripts/_gq_26_anglerecord.ts`), all five brief questions served every time:
+
+```
+social angle back?        no  3/3   (rewritten to news/open_web, id kept)
+monetization_model kept? yes  3/3   (survived on the 30-page fair-trial guard, not on praise)
+```
+
+`monetization_revenue_news` is the point. A planner run **without** the record dropped the
+workspace's best angle (71% hit) outright. Sample size, not merit, is what saved it — which is
+exactly what the guardrail is for.
+
+**Two defects found while building it.** `query_template` was hard-sliced at 200 chars, so a planner
+run shipped `... (said OR explained OR desc` to Exa: an unclosed OR-group with half a word in it.
+`clampQuery` now cuts on a word boundary and drops any group or quote left hanging.
+
+And the id-continuity rule collided with itself. The record is filed under the angle id, and the id
+is kept across a rewrite so the record survives — which meant the rewritten `linkedin_leadership`
+(now a `news` search) **inherited the 183/0 record of a query that no longer exists**. The next
+planner run would be told a brand-new query "CANNOT work as written". `record_since` is stamped when
+`query_template` or `domain_scope` changes and carried forward when they do not, and the scorecard
+now prints a line under any question whose search was rewritten inside the window, so the day after
+a fix the row does not read as though the fix failed.
+
+**Still open, deliberately.** Correction only fires at regeneration, so a newly-bad angle can burn up
+to 14 days of searches first — roughly 2,500 pages at Sudden's rate. A dispatch-time skip for an
+angle sitting at 0 keeps past the fair-trial threshold would close it. Separately,
+`coerceAngle` hardcodes `enabled: true` and `persistResearchStrategy` overwrites the whole array, so
+a human's per-angle off switch comes back on within 14 days, in every workspace.
+
 ### FINDING 8 (fixed) — encyclopedia articles were walking straight through
 
 Caught on the last verification run, on accounts never researched before, while I was one paragraph

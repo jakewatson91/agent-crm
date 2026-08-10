@@ -22,7 +22,7 @@
  * Run: tsx scripts/check_research_brief.ts   (exits non-zero on failure)
  */
 import { currentFactRows } from '../packages/tools/src/reads.ts';
-import { resolveBrief, BASELINE_BRIEF, PAIN_QUESTION } from '../packages/tools/src/research_brief.ts';
+import { resolveBrief, BASELINE_BRIEF, PAIN_QUESTION, sysPrompt, briefInputHash } from '../packages/tools/src/research_brief.ts';
 import type { WorkspacePolicy } from '../packages/tools/src/policy.ts';
 
 let fail = 0;
@@ -116,6 +116,29 @@ console.log('\nMalformed or disabled questions are dropped rather than trusted:'
   eq('drops the one with an empty question', ids.includes('blank'), false);
   eq('and still carries pain', ids.includes(PAIN_QUESTION.id), true);
 }
+
+// The brief planner asked what a technical leader had said "in the past year"
+// while the workspace bins anything older than 90 days on arrival. The only pages
+// that could answer it were thrown away before the gate saw them, so the search
+// built for it read as broken across 183 pages when the question was never
+// reachable. The strategy planner has been told the floor for a while; the planner
+// that writes the questions the angles come from was not.
+console.log('\nthe brief planner is told the floor it has to write inside:');
+eq('the workspace floor reaches the prompt', sysPrompt(90).includes('more than 90 days ago'), true);
+eq('a different floor changes the prompt', sysPrompt(30).includes('more than 30 days ago'), true);
+eq('an unset floor still states a number', /more than \d+ days ago/.test(sysPrompt()), true);
+eq('the rule names the windows it is banning', sysPrompt(90).includes('in the past year'), true);
+
+// The floor shapes the questions, so moving it must re-open the brief. Without
+// this, narrowing the floor leaves every question asking for a window the
+// pipeline no longer reaches.
+console.log('\nmoving the floor re-opens the brief:');
+const baseCtx = { about: 'a', icp: '{}', value_props: [], pain_points: [], guidance: '', always_include: [] };
+eq('same inputs hash the same', briefInputHash({ ...baseCtx, max_age_days: 90 }), briefInputHash({ ...baseCtx, max_age_days: 90 }));
+eq('a moved floor hashes differently',
+  briefInputHash({ ...baseCtx, max_age_days: 30 }) === briefInputHash({ ...baseCtx, max_age_days: 90 }), false);
+eq('an unset floor is not the same as a set one',
+  briefInputHash({ ...baseCtx }) === briefInputHash({ ...baseCtx, max_age_days: 90 }), false);
 
 console.log(fail === 0 ? '\nALL PASS\n' : `\n${fail} FAILED\n`);
 process.exit(fail === 0 ? 0 : 1);

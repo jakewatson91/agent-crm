@@ -29,7 +29,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { getPolicy, resolveBrief } from '@agent-crm/tools';
+import { getPolicy, resolveBrief, loadQuestionRecords } from '@agent-crm/tools';
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
 const argv = process.argv.slice(2);
@@ -52,7 +52,10 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
 (async () => {
   const policy = await getPolicy(sb as any, WS);
   const brief = resolveBrief(policy);
-  const angles = policy.research?.strategy ?? [];
+  // Enabled only. A switched-off angle is not running, so counting it as serving
+  // a question hides the case that matters: a question whose only search was
+  // turned off reads as covered while nothing is looking for it.
+  const angles = (policy.research?.strategy ?? []).filter((a) => a.enabled !== false);
   const since = new Date(Date.now() - DAYS * 86400 * 1000).toISOString();
 
   // --- run markers: fetched + kept per search ---
@@ -82,6 +85,11 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
     sigQ.set(s.id, q);
     keptByQuestion[q] = (keptByQuestion[q] ?? 0) + 1;
   }
+
+  // The four numbers the brief planner is judged on come from ONE definition,
+  // shared with it. Computing them separately here is how the screen and the
+  // model end up disagreeing about the same question.
+  const shared = new Map((await loadQuestionRecords(sb as any, WS, DAYS)).map((r) => [r.id, r]));
 
   // --- facts off those pages ---
   const sigIds = [...sigQ.keys()];
@@ -128,14 +136,21 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
   console.log(head);
   console.log('-'.repeat(head.length + 20));
 
+  // A rewritten search keeps its angle id, so the row below sums pages bought by a
+  // query that no longer exists alongside pages bought by the one running now.
+  // Without saying so, the day after a fix the row still reads THE SEARCH IS
+  // WRONG and the fix looks like it did not land.
+  const rewritten: string[] = [];
+
   const questionIds = [...new Set([...brief.map((q) => q.id), ...Object.keys(keptByQuestion)])];
   for (const qid of questionIds) {
     const inBrief = brief.some((q) => q.id === qid);
     const serving = angles.filter((a) => a.answers === qid);
-    const fetched = serving.reduce((n, a) => n + (fetchedByAngle[a.id] ?? 0), 0);
-    const kept = keptByQuestion[qid] ?? 0;
-    const facts = factsByQuestion[qid] ?? 0;
-    const used = usedByQuestion[qid] ?? 0;
+    const r = shared.get(qid);
+    const fetched = r?.fetched ?? serving.reduce((n, a) => n + (fetchedByAngle[a.id] ?? 0), 0);
+    const kept = r?.kept ?? keptByQuestion[qid] ?? 0;
+    const facts = r?.facts ?? factsByQuestion[qid] ?? 0;
+    const used = r?.used ?? usedByQuestion[qid] ?? 0;
     const hit = fetched ? Math.round((kept / fetched) * 100) : 0;
 
     let verdict: string;
@@ -152,6 +167,21 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
       String(serving.length || '-').padStart(9) + String(fetched).padStart(9) + String(kept).padStart(6) +
       `${hit}%`.padStart(6) + String(facts).padStart(7) + String(used).padStart(6) + '   ' + verdict,
     );
+
+    const newest = serving.map((a) => a.record_since).filter(Boolean).sort().pop();
+    if (newest && Date.parse(newest) > Date.parse(since)) {
+      const at = Date.parse(newest);
+      const fetchedSince = ev.reduce((n, e) => Date.parse(e.created_at) >= at
+        ? n + serving.reduce((m, a) => m + ((e.payload?.per_angle_fetched ?? {})[a.id] ?? 0), 0) : n, 0);
+      const keptSince = sigs.filter((s) => s.structured_tags?.answers_question === qid
+        && Date.parse(s.observed_at) >= at).length;
+      rewritten.push(`  ${qid}: search rewritten ${newest.slice(0, 10)}. Since then ${fetchedSince} fetched, ${keptSince} kept. The row above still counts the retired search.`);
+    }
+  }
+
+  if (rewritten.length) {
+    console.log('\nsearches rewritten inside this window — read these rows with that in mind:');
+    for (const line of rewritten) console.log(line);
   }
 
   console.log(`\n"searches" is how many searches are aimed at that question, not how many ran. "fetched" is measured.`);

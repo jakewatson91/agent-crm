@@ -108,6 +108,36 @@ function slugify(s: string, fallback: string): string {
   return out || fallback;
 }
 
+const MAX_QUERY_CHARS = 200;
+
+/**
+ * Hold a query template to its length cap without shipping a broken query.
+ *
+ * A hard slice cuts mid-token and mid-group. Observed live on a planner run:
+ * `... ("CDN cost" OR "delivery costs") (said OR explained OR desc` — a
+ * half-written word inside an OR-group that was never closed, sent to Exa as-is.
+ * Cut on a word boundary, then drop any group left hanging open, so what
+ * survives is always a complete query rather than a prefix of one.
+ */
+export function clampQuery(q: string): string {
+  if (q.length <= MAX_QUERY_CHARS) return q;
+  let out = q.slice(0, MAX_QUERY_CHARS);
+  const lastSpace = out.lastIndexOf(' ');
+  if (lastSpace > 0) out = out.slice(0, lastSpace);
+  // An unmatched "(" means the trailing group was cut short — drop it whole.
+  for (;;) {
+    const opens = (out.match(/\(/g) ?? []).length;
+    const closes = (out.match(/\)/g) ?? []).length;
+    if (opens <= closes) break;
+    const at = out.lastIndexOf('(');
+    if (at < 0) break;
+    out = out.slice(0, at);
+  }
+  // Same for a quote left open by the cut.
+  if (((out.match(/"/g) ?? []).length) % 2 === 1) out = out.slice(0, out.lastIndexOf('"'));
+  return out.trim();
+}
+
 /** Normalize / validate one raw angle from the model into a ResearchAngle, or null. */
 function coerceAngle(raw: unknown, idx: number, usedIds: Set<string>, validQuestionIds?: Set<string>): ResearchAngle | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -129,7 +159,7 @@ function coerceAngle(raw: unknown, idx: number, usedIds: Set<string>, validQuest
   return {
     id,
     label: typeof r.label === 'string' && r.label.trim() ? r.label.trim().slice(0, 60) : id,
-    query_template: query_template.slice(0, 200),
+    query_template: clampQuery(query_template),
     domain_scope: scope as ResearchAngle['domain_scope'],
     recency_days: recency,
     num_results: num,
@@ -137,6 +167,41 @@ function coerceAngle(raw: unknown, idx: number, usedIds: Set<string>, validQuest
     ...(answers ? { answers } : {}),
   };
 }
+
+/**
+ * What one angle bought, summed off the `research_completed` run markers. Both
+ * numbers are already written per run (`per_angle_fetched`, `per_angle`) and are
+ * keyed by angle id, so nothing new is stored to produce this.
+ *
+ * fetched and kept are kept apart for the same reason the scorecard keeps its
+ * columns apart: a low keep rate is a bad SEARCH, and reading it as a bad
+ * QUESTION is how a question that was working gets deleted.
+ */
+export interface AngleRecord {
+  id: string;
+  /** Pages this angle's searches brought back. From the run markers. */
+  fetched: number;
+  /**
+   * Of those, how many were kept AS ANSWERING THE QUESTION THIS ANGLE SERVES.
+   *
+   * Not "kept at all", which is a different and much weaker number. Measured on
+   * the angle this was built for: it fetched 183 pages and 16 were kept, so by
+   * pages-kept it looked like a working search — but ZERO of them answered
+   * technical_leader, the question it existed to answer. They were LinkedIn pages
+   * that happened to say something the gate filed under another question. Judging
+   * the angle on the weaker number would have declared it healthy while the
+   * question it was bought for went unanswered for 14 days.
+   *
+   * Signals carry both `research_angle` and `answers_question`, so this is read
+   * off them directly rather than inferred.
+   */
+  kept: number;
+}
+
+/** Below this many pages fetched, an angle has not had a fair trial. */
+const MIN_ANGLE_FETCHED = 30;
+/** How far back the record is summed. Wider than the 14-day regeneration cycle. */
+const RECORD_WINDOW_DAYS = 30;
 
 export interface PlannerContext {
   about: string;
@@ -164,6 +229,21 @@ export interface PlannerContext {
    */
   brief?: BriefQuestion[];
   /**
+   * The angles currently in place, and what each one bought.
+   *
+   * The brief planner has had a track record since the scorecard landed, and its
+   * prompt tells it "the SEARCH is finding the wrong pages, rewrite its query" —
+   * but the brief planner writes QUESTIONS, not queries, so the verdict the
+   * scorecard reaches most often had nothing that could act on it.
+   *
+   * Measured 2026-08-10 on Sudden: one angle fetched 183 pages in a single day
+   * and kept zero, and would have gone on doing that until a human read a
+   * scorecard. With the record in front of it, the planner that writes the
+   * queries can rewrite that angle on its own evidence.
+   */
+  previous?: ResearchAngle[];
+  records?: AngleRecord[];
+  /**
    * Whether `name` is a company or a person.
    *
    * Contact research reuses this filter with a PERSON's name, and until this
@@ -177,6 +257,91 @@ export interface PlannerContext {
    * Defaults to 'company', so every account pull behaves exactly as before.
    */
   subject?: 'company' | 'person';
+}
+
+/**
+ * Sum per-angle fetched/kept off the run markers. Runs only when the strategy is
+ * being regenerated (once per workspace per 14 days), so the events read is cheap.
+ * Any failure returns an empty record set: a missing track record must never stop
+ * a regeneration, it only means the planner plans blind as it did before.
+ */
+export async function loadAngleRecords(supabase: SupabaseClient, workspace_id: string, previous: ResearchAngle[]): Promise<AngleRecord[]> {
+  try {
+    const since = new Date(Date.now() - RECORD_WINDOW_DAYS * 86400 * 1000).toISOString();
+    const { data } = await supabase.from('events').select('payload, created_at')
+      .eq('workspace_id', workspace_id).eq('action', 'research_completed')
+      .gte('created_at', since).limit(5000);
+    // A run only counts toward an angle if it ran the search that angle carries
+    // NOW. Without this a rewritten query inherits the record of the one it
+    // replaced, and the planner judges a query that has never run.
+    const startedAt = new Map(previous.map((a) => [a.id, a.record_since ? Date.parse(a.record_since) : 0]));
+    const fetched: Record<string, number> = {};
+    for (const e of (data ?? []) as Array<{ payload: Record<string, unknown> | null; created_at: string }>) {
+      const at = Date.parse(e.created_at);
+      const p = (e.payload ?? {}) as Record<string, Record<string, number> | undefined>;
+      for (const [k, v] of Object.entries(p.per_angle_fetched ?? {})) {
+        if (at < (startedAt.get(k) ?? 0)) continue;
+        fetched[k] = (fetched[k] ?? 0) + (Number(v) || 0);
+      }
+    }
+
+    // Kept comes off the signals, not off per_angle in the marker, because
+    // per_angle counts pages this angle kept for ANY question. See AngleRecord.kept.
+    const answersOf = new Map(previous.map((a) => [a.id, a.answers]));
+    const kept: Record<string, number> = {};
+    for (let from = 0; ; from += 1000) {
+      const { data: sigs } = await supabase.from('signals').select('structured_tags, observed_at')
+        .eq('workspace_id', workspace_id).eq('type', 'research_result')
+        .gte('observed_at', since).range(from, from + 999);
+      for (const s of (sigs ?? []) as Array<{ structured_tags: Record<string, string> | null; observed_at: string }>) {
+        const angleId = s.structured_tags?.research_angle;
+        if (!angleId || !startedAt.has(angleId)) continue;
+        if (Date.parse(s.observed_at) < (startedAt.get(angleId) ?? 0)) continue;
+        // An angle planned before the brief existed has no question to be judged
+        // against, so any keep counts for it.
+        const wants = answersOf.get(angleId);
+        if (wants && s.structured_tags?.answers_question !== wants) continue;
+        kept[angleId] = (kept[angleId] ?? 0) + 1;
+      }
+      if (!sigs || sigs.length < 1000) break;
+    }
+
+    return [...new Set([...Object.keys(fetched), ...Object.keys(kept)])]
+      .map((id) => ({ id, fetched: fetched[id] ?? 0, kept: kept[id] ?? 0 }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The angles in place, each with what it bought, rendered for the planner.
+ *
+ * Mirrors the brief planner's continuity block deliberately, including the id
+ * rule: the record is filed under the angle id, so a renamed id starts the
+ * record from zero and the next regeneration is blind again.
+ */
+export function angleRecordBlock(previous: ResearchAngle[], records: AngleRecord[]): string {
+  if (!previous.length) return '';
+  const byId = new Map(records.map((r) => [r.id, r]));
+  const recordLine = (a: ResearchAngle): string => {
+    const r = byId.get(a.id);
+    if (!r || r.fetched < MIN_ANGLE_FETCHED) return `    [only ${r?.fetched ?? 0} pages seen so far — TOO EARLY TO JUDGE, keep it as it is]`;
+    const hit = Math.round((r.kept / r.fetched) * 100);
+    let read: string;
+    if (r.kept === 0) read = 'this query CANNOT work as written — not one page it bought answered the question it is for. Rewrite it, or change its domain_scope, or replace the angle entirely';
+    else if (hit < 10) read = 'this query is buying mostly the wrong pages — rewrite it';
+    else read = 'earning its place — keep it, and keep its wording close';
+    return `    [${r.fetched} pages seen, ${r.kept} answered its question (${hit}%) -> ${read}]`;
+  };
+  return `
+
+THE ANGLES ALREADY IN PLACE, AND WHAT EACH ONE BOUGHT (last ${RECORD_WINDOW_DAYS} days):
+
+${previous.map((a) => `  ${a.id} [${a.domain_scope}] answers=${a.answers ?? '-'}: ${a.query_template}\n${recordLine(a)}`).join('\n')}
+
+Keep the id EXACTLY as written for any angle you keep, even if you rewrite its query — the record is filed under the id, and a renamed id starts it from zero.
+
+A poor record is a bad SEARCH, not a bad question. Rewrite the query or move it to a different domain_scope; do not stop covering the brief question it answers. An angle that is earning its place stays as it is: do not reword a working query, and do not drop the question it serves in order to fit a new angle in.`;
 }
 
 async function loadContext(supabase: SupabaseClient, workspace_id: string): Promise<{ ctx: PlannerContext; policy: WorkspacePolicy }> {
@@ -196,6 +361,8 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
     // fetched for another reason, never something a search finds directly, so an
     // angle pointed at it would spend a search per account to return nothing.
     brief: resolveBrief(policy).filter((q) => q.id !== PAIN_QUESTION.id),
+    previous: policy.research?.strategy ?? [],
+    records: await loadAngleRecords(supabase, workspace_id, policy.research?.strategy ?? []),
   };
   return { ctx, policy };
 }
@@ -255,7 +422,7 @@ Cover the questions that web search can actually answer. It is fine to leave a q
 
 function socialScopeAddendum(domains: string[]): string {
   return `ADDITIONAL SCOPE available for this workspace:
-    "social"    -> restricted to: ${domains.join(', ')}. Posts, talks, and interviews BY the prospect company's founders and executives — the concrete trigger a first-touch message can reference ("saw your post on X"). Include exactly ONE social angle. Phrase its query_template to surface a person speaking (post, talk, interview, panel, announcement by {entity} leadership), NOT the company's profile page. This is the one exception to the profile/directory-page rule above. Exec posts go stale fast: set recency_days 30.`;
+    "social"    -> restricted to: ${domains.join(', ')}. Posts, talks, and interviews BY the prospect company's founders and executives — the concrete trigger a first-touch message can reference ("saw your post on X"). Include AT MOST ONE social angle, and only if a person speaking is reachable on those hosts without a login. Where a host's public pages are mostly member profiles, this scope returns profile cards however the query is phrased — the search already requires the company name, and the commonest page naming a company on such a host is an employee's profile. In that case plan no social angle: cover the question from news or the open web, where a talk, panel or interview write-up is a readable page. If you do plan one, phrase its query_template to surface a person speaking (post, talk, interview, panel, announcement by {entity} leadership), NOT the company's profile page — this is the one exception to the profile/directory-page rule above. Exec posts go stale fast: set recency_days 30.`;
 }
 
 function buildUserPayload(ctx: PlannerContext): string {
@@ -294,7 +461,7 @@ export async function planResearchAngles(
             ? `${sysPrompt(ctx.max_age_days, briefAddendum(ctx.brief ?? []))}\n\n${socialScopeAddendum(ctx.social_domains)}`
             : sysPrompt(ctx.max_age_days, briefAddendum(ctx.brief ?? [])),
         },
-        { role: 'user', content: buildUserPayload(ctx) },
+        { role: 'user', content: `${buildUserPayload(ctx)}${angleRecordBlock(ctx.previous ?? [], ctx.records ?? [])}` },
       ],
     });
     const parsed = JSON.parse(llm.text) as { angles?: unknown[] };
@@ -838,7 +1005,54 @@ function isStrategyFresh(policy: WorkspacePolicy): boolean {
   const hasAngles = (policy.research?.strategy ?? []).length > 0;
   if (!hasAngles || !at) return false;
   const ageDays = (Date.now() - Date.parse(at)) / 86400000;
-  return Number.isFinite(ageDays) && ageDays < STRATEGY_STALE_DAYS;
+  if (!Number.isFinite(ageDays) || ageDays >= STRATEGY_STALE_DAYS) return false;
+  // Angles are written FROM the questions, so a brief newer than the strategy
+  // means these angles were planned against wording that has since changed.
+  // orphanedAngles only catches a question that disappeared; a question that was
+  // reworded keeps its id, and the angle built for the old wording goes on
+  // running against the new one. Both planners already preserve ids, so this
+  // costs one regeneration, not a reset.
+  const briefAt = policy.research?.brief_generated_at;
+  if (briefAt && Date.parse(briefAt) > Date.parse(at)) return false;
+  return true;
+}
+
+/**
+ * Stamp record_since on any angle whose search changed, and carry it forward on
+ * any angle whose search did not. See ResearchAngle.record_since for why: the id
+ * is kept across a rewrite so the record survives, which means without this a
+ * rewritten query inherits the record of the query it replaced.
+ */
+export function stampRecordSince(next: ResearchAngle[], previous: ResearchAngle[], now = new Date().toISOString()): ResearchAngle[] {
+  const before = new Map(previous.map((a) => [a.id, a]));
+  return next.map((a) => {
+    const p = before.get(a.id);
+    const sameSearch = p && p.query_template === a.query_template && p.domain_scope === a.domain_scope;
+    if (sameSearch) return p.record_since ? { ...a, record_since: p.record_since } : a;
+    return { ...a, record_since: now };
+  });
+}
+
+/**
+ * Carry a human's off switch across a regeneration.
+ *
+ * `strategy` is a cache of AI-written angles, but `enabled` is not AI-written —
+ * it is the one per-angle control a human has, and the header of this file has
+ * promised it since the planner shipped. It was being thrown away every time:
+ * `coerceAngle` sets `enabled: true` on everything it returns and the persist
+ * replaces the whole array, so an angle a customer switched off came back on
+ * within 14 days, in every workspace, with nothing in any log to say why.
+ *
+ * Only `false` is carried. An angle a human never touched has no stored intent to
+ * preserve, and `unset` already means enabled.
+ *
+ * Deliberately survives a rewrite of the query. A human switching an angle off is
+ * a decision about that angle, and the planner rewording its query is not new
+ * information about whether the customer wanted it running.
+ */
+export function carryOffSwitch(next: ResearchAngle[], previous: ResearchAngle[]): ResearchAngle[] {
+  const off = new Set(previous.filter((a) => a.enabled === false).map((a) => a.id));
+  return next.map((a) => (off.has(a.id) ? { ...a, enabled: false } : a));
 }
 
 /** Merge an angle set onto workspaces.policy.research.strategy (cache write, not user config). */
@@ -853,7 +1067,7 @@ export async function persistResearchStrategy(
     ...policy,
     research: {
       ...(policy.research ?? {}),
-      strategy: angles,
+      strategy: carryOffSwitch(stampRecordSince(angles, policy.research?.strategy ?? []), policy.research?.strategy ?? []),
       strategy_generated_at: new Date().toISOString(),
     },
   };
@@ -861,17 +1075,102 @@ export async function persistResearchStrategy(
 }
 
 /**
- * Return a usable strategy, regenerating + persisting if the cached one is missing or
- * stale. Called by the dispatcher once per workspace per tick.
+ * Angles that have had a fair trial and kept nothing, by id.
+ *
+ * This is the one reading of the record that needs no judgement: pages were
+ * bought, enough of them to be sure, and not one answered the question the angle
+ * exists to answer. A low keep rate is arguable (11% is a working angle here, 7%
+ * is not obviously broken), but zero is not.
+ *
+ * Reads AngleRecord.kept, which counts only pages kept AS ANSWERING this angle's
+ * question. The angle this was built for kept 16 pages while answering its own
+ * question zero times, so a check against pages-kept-at-all would have called it
+ * healthy.
+ *
+ * Angles a human switched off are excluded — they are not running, so they are
+ * not costing anything, and regenerating on their account would overrule the
+ * human twice over.
+ */
+export function failedAngles(angles: ResearchAngle[], records: AngleRecord[]): string[] {
+  const byId = new Map(records.map((r) => [r.id, r]));
+  return angles
+    .filter((a) => {
+      if (a.enabled === false) return false;
+      const r = byId.get(a.id);
+      return !!r && r.fetched >= MIN_ANGLE_FETCHED && r.kept === 0;
+    })
+    .map((a) => a.id);
+}
+
+/**
+ * Angles pointed at a brief question that is no longer in the brief.
+ *
+ * `answers` is set at plan time and checked against the brief that existed THEN.
+ * The brief is regenerated on its own schedule, so a question can be reworded out
+ * from under an angle that is still running, and the angle goes on buying pages
+ * for something nothing is asking about any more. Free to check — the brief is
+ * already on the policy in hand.
+ *
+ * Angles with no `answers` predate the brief and still run, so they are not
+ * orphans.
+ */
+export function orphanedAngles(policy: WorkspacePolicy): string[] {
+  const live = new Set(resolveBrief(policy).map((q) => q.id));
+  return (policy.research?.strategy ?? [])
+    .filter((a) => a.enabled !== false && a.answers && !live.has(a.answers))
+    .map((a) => a.id);
+}
+
+/**
+ * Floor on how often evidence alone may force a regeneration.
+ *
+ * Regenerating rewrites the failing query, which resets its record_since, so its
+ * record starts empty and it stops looking failed — the loop closes itself. This
+ * floor only covers the case where the planner hands back the SAME query, where
+ * the record carries forward and the angle still reads as failed. Worst case is
+ * two planner calls per workspace per day.
+ */
+const MIN_REGEN_HOURS = 12;
+
+/**
+ * Return a usable strategy, regenerating + persisting if the cached one is missing,
+ * stale, or contradicted by what its angles actually bought. Called by the
+ * dispatcher once per workspace per tick (every 4h).
+ *
+ * Age alone was the only staleness test, which meant a search that was provably
+ * buying nothing kept running for up to 14 days: measured on one workspace, an
+ * angle fetching 183 pages a day and keeping none, so roughly 2,500 pages thrown
+ * away before anything looked at it again. The planner can now see what each
+ * angle bought, so the useful question is not "how old is this" but "is any of it
+ * demonstrably not working".
+ *
+ * The extra read is ordered last on purpose: a strategy inside MIN_REGEN_HOURS
+ * returns without touching events, so most ticks cost exactly what they did
+ * before.
  */
 export async function ensureResearchStrategy(supabase: SupabaseClient, workspace_id: string): Promise<ResearchAngle[]> {
   const policy = await getPolicy(supabase, workspace_id);
-  if (isStrategyFresh(policy)) return resolveStrategy(policy);
+  if (isStrategyFresh(policy) && !orphanedAngles(policy).length) {
+    const at = Date.parse(policy.research?.strategy_generated_at ?? '');
+    const hours = (Date.now() - at) / 3_600_000;
+    if (!Number.isFinite(hours) || hours < MIN_REGEN_HOURS) return resolveStrategy(policy);
+    const stored = policy.research?.strategy ?? [];
+    const failed = failedAngles(stored, await loadAngleRecords(supabase, workspace_id, stored));
+    if (!failed.length) return resolveStrategy(policy);
+  }
   const { angles } = await generateResearchStrategy(supabase, workspace_id);
   try {
     await persistResearchStrategy(supabase, workspace_id, angles);
   } catch {
     // cache write failed — still return the freshly generated angles for this tick
   }
-  return angles;
+  // The off switch is applied to what is RETURNED as well as to what is stored.
+  // The persist merges it, but this tick runs on the value in hand, so without
+  // this an angle a human disabled would run once more on the tick that
+  // regenerated it — the one tick where nobody would think to look.
+  //
+  // Read back through resolveStrategy rather than filtering here, so "which
+  // angles run" has one definition and the empty case behaves the same either way.
+  const merged = carryOffSwitch(angles, policy.research?.strategy ?? []);
+  return resolveStrategy({ ...policy, research: { ...(policy.research ?? {}), strategy: merged } });
 }

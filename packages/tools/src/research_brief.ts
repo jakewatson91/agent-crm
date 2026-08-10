@@ -62,13 +62,17 @@ const MIN_QUESTIONS = 3;
  * regeneration is shown the previous questions and told to keep the id of
  * anything that still means the same thing.
  */
-function briefInputHash(ctx: BriefContext): string {
+export function briefInputHash(ctx: BriefContext): string {
   const parts = [
     ctx.about.trim(),
     ctx.guidance.trim(),
     [...ctx.always_include].sort().join('|'),
     [...ctx.pain_points].sort().join('|'),
     [...ctx.value_props].sort().join('|'),
+    // The floor shapes the questions (see BriefContext.max_age_days), so moving
+    // it has to re-open the brief. Without this, narrowing the floor leaves every
+    // question still asking for a window the pipeline no longer reaches.
+    String(ctx.max_age_days ?? ''),
   ].join('\u0000');
   // Small non-cryptographic hash; this only has to notice that the text changed.
   let h = 2166136261;
@@ -179,7 +183,12 @@ function coerceQuestion(raw: unknown, idx: number, used: Set<string>): BriefQues
   };
 }
 
-const SYS_PROMPT = `You write the RESEARCH BRIEF for an AI sales agent: the short list of questions it must answer about a prospect company before it is allowed to write to them.
+// Interpolated, not a literal, for the same reason the strategy planner
+// interpolates it: a prompt that states a different number than the workspace's
+// real policy.research.max_age_days teaches the planner to write questions whose
+// answers get binned on arrival. DEFAULT is only the fallback when unset.
+const DEFAULT_PROMPT_FLOOR_DAYS = 90;
+export const sysPrompt = (floorDays = DEFAULT_PROMPT_FLOOR_DAYS) => `You write the RESEARCH BRIEF for an AI sales agent: the short list of questions it must answer about a prospect company before it is allowed to write to them.
 
 The agent will run web searches to answer these questions, and will throw away every page that answers none of them. So the brief decides what the agent spends money on and what it ignores.
 
@@ -206,6 +215,8 @@ A qualifying question asks whether a company is the right KIND of company: what 
 A separate scoring step already decides whether a company qualifies, before research ever runs. Every company you are writing this brief for HAS ALREADY QUALIFIED. Asking again spends real money re-reading their homepage, and a page that answers a qualifying question is almost always a help-centre article, an FAQ or a pricing table — the exact pages this system wastes the most on today.
 
 The test: if the answer would be the same next year, and a competitor in the same market would give the same answer, it is a qualifying question. Cut it.
+
+DO NOT WRITE A TIME WINDOW THE PIPELINE CANNOT REACH. Anything published more than ${floorDays} days ago is thrown away on arrival, so a question asking what someone said "in the past year" or "in the last six months" is asking for pages that are binned before anything reads them. The search built for it then finds nothing, run after run, and the question reads as a failing search when it was never reachable. Either keep the window inside ${floorDays} days or write the question without a window at all.
 
 ALSO DO NOT ASK:
 - Anything about hiring or open roles. A separate connector covers that.
@@ -274,6 +285,17 @@ export interface BriefContext {
   pain_points: string[];
   guidance: string;
   always_include: string[];
+  /**
+   * policy.research.max_age_days — the workspace's ingestion floor.
+   *
+   * The strategy planner has been told this for a while, because an angle wider
+   * than the floor buys results the runner bins. The brief planner was not, and
+   * it writes the questions the angles are built from: it asked what a technical
+   * leader had said "in the past year" against a 90-day floor, so the only pages
+   * that could answer it were binned on arrival. The search then read as broken
+   * for 183 pages when the question was never reachable.
+   */
+  max_age_days?: number;
 }
 
 function buildUserPayload(ctx: BriefContext): string {
@@ -326,7 +348,7 @@ ${previous.map((q) => `  ${q.id} — ${q.question}\n${recordLine(q)}`).join('\n'
       max_tokens: 1600,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYS_PROMPT },
+        { role: 'system', content: sysPrompt(ctx.max_age_days) },
         { role: 'user', content: `${buildUserPayload(ctx)}${continuityBlock}` },
       ],
     });
@@ -358,6 +380,7 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
     pain_points: (policy.drafter?.pain_points ?? []).filter(Boolean),
     guidance: (policy.research?.guidance ?? '').trim(),
     always_include: (policy.research?.always_include ?? []).filter(Boolean),
+    max_age_days: policy.research?.max_age_days,
   };
 }
 
@@ -416,6 +439,97 @@ function isBriefCurrent(policy: WorkspacePolicy, ctx: BriefContext): boolean {
   return stored === briefInputHash(ctx);
 }
 
+/** How far back a question's track record is read. */
+export const RECORD_WINDOW_DAYS = 30;
+
+/**
+ * What each brief question has actually earned, computed from data already
+ * stored: run markers, kept pages, the facts read off them, and the drafts that
+ * cited those facts. Writes nothing.
+ *
+ * This is THE definition of those four numbers, used by both the planner that
+ * regenerates the brief and `scripts/research_scorecard.ts`. They were computed
+ * separately before, and two implementations of the same measure is how you end
+ * up reading one number on screen and feeding a different one to the model — the
+ * exact confusion that hid a failing search behind a healthy-looking keep count.
+ *
+ * `fetched` is per ANGLE (only the run markers know it) summed over the angles
+ * serving the question. `kept` is per QUESTION, off the signals, because a page
+ * bought by one angle can be kept as answering a different question.
+ */
+export async function loadQuestionRecords(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  days = RECORD_WINDOW_DAYS,
+): Promise<QuestionRecord[]> {
+  const since = new Date(Date.now() - days * 86400 * 1000).toISOString();
+  const policy = await getPolicy(supabase, workspace_id);
+  const angles = (policy.research?.strategy ?? []).filter((a) => a.enabled !== false);
+
+  const ev = (await supabase.from('events').select('payload')
+    .eq('workspace_id', workspace_id).eq('action', 'research_completed')
+    .gte('created_at', since).limit(5000)).data ?? [];
+  const fetchedByAngle: Record<string, number> = {};
+  for (const e of ev as Array<{ payload: Record<string, Record<string, number>> | null }>) {
+    for (const [k, v] of Object.entries(e.payload?.per_angle_fetched ?? {})) {
+      fetchedByAngle[k] = (fetchedByAngle[k] ?? 0) + (Number(v) || 0);
+    }
+  }
+
+  const sigQ = new Map<string, string>();
+  const keptByQuestion: Record<string, number> = {};
+  for (let from = 0; ; from += 1000) {
+    const { data } = await supabase.from('signals').select('id, structured_tags')
+      .eq('workspace_id', workspace_id).eq('type', 'research_result')
+      .gte('observed_at', since).range(from, from + 999);
+    for (const s of (data ?? []) as Array<{ id: string; structured_tags: Record<string, string> | null }>) {
+      const q = s.structured_tags?.answers_question;
+      if (!q) continue;
+      sigQ.set(s.id, q);
+      keptByQuestion[q] = (keptByQuestion[q] ?? 0) + 1;
+    }
+    if (!data || data.length < 1000) break;
+  }
+
+  const sigIds = [...sigQ.keys()];
+  const factsByQuestion: Record<string, number> = {};
+  const factIdQ = new Map<string, string>();
+  for (let i = 0; i < sigIds.length; i += 200) {
+    const { data } = await supabase.from('facts').select('id, signal_id')
+      .in('signal_id', sigIds.slice(i, i + 200)).limit(3000);
+    for (const f of (data ?? []) as Array<{ id: string; signal_id: string }>) {
+      const q = sigQ.get(f.signal_id);
+      if (!q) continue;
+      factsByQuestion[q] = (factsByQuestion[q] ?? 0) + 1;
+      factIdQ.set(f.id, q);
+    }
+  }
+
+  const chans = (await supabase.from('channels').select('id').eq('workspace_id', workspace_id).limit(5000)).data ?? [];
+  const chanIds = (chans as Array<{ id: string }>).map((c) => c.id);
+  const cited = new Set<string>();
+  for (let i = 0; i < chanIds.length; i += 200) {
+    const { data } = await supabase.from('channel_posts').select('cites')
+      .in('channel_id', chanIds.slice(i, i + 200)).eq('kind', 'touch_draft')
+      .gte('created_at', since).limit(2000);
+    for (const p of (data ?? []) as Array<{ cites: string[] | null }>) for (const c of p.cites ?? []) cited.add(c);
+  }
+  const usedByQuestion: Record<string, number> = {};
+  for (const id of cited) {
+    const q = factIdQ.get(id);
+    if (q) usedByQuestion[q] = (usedByQuestion[q] ?? 0) + 1;
+  }
+
+  const ids = new Set([...resolveBrief(policy).map((q) => q.id), ...Object.keys(keptByQuestion)]);
+  return [...ids].map((id) => ({
+    id,
+    fetched: angles.filter((a) => a.answers === id).reduce((n, a) => n + (fetchedByAngle[a.id] ?? 0), 0),
+    kept: keptByQuestion[id] ?? 0,
+    facts: factsByQuestion[id] ?? 0,
+    used: usedByQuestion[id] ?? 0,
+  }));
+}
+
 /** Merge a brief onto workspaces.policy.research.brief (cache write, not user config). */
 export async function persistResearchBrief(
   supabase: SupabaseClient,
@@ -451,7 +565,14 @@ export async function ensureResearchBrief(supabase: SupabaseClient, workspace_id
     return resolveBrief(policy); // cannot tell if it changed — keep what is stored
   }
   if (isBriefCurrent(policy, ctx)) return resolveBrief(policy);
-  const { questions } = await planResearchBrief(ctx, { previous: policy.research?.brief ?? [], records });
+  // Load the track record here rather than making every caller remember to pass
+  // it. `records` was an optional argument and NO caller ever supplied one — not
+  // the dispatcher, not the settings route — so every regeneration in production
+  // ran blind and the guardrails were never in the path they were written for.
+  // Measured the day this was found: a regeneration dropped a question sitting at
+  // 25 pages seen, which the fair-trial guard exists to protect.
+  const withRecords = records ?? await loadQuestionRecords(supabase, workspace_id).catch(() => []);
+  const { questions } = await planResearchBrief(ctx, { previous: policy.research?.brief ?? [], records: withRecords });
   try {
     await persistResearchBrief(supabase, workspace_id, questions, briefInputHash(ctx));
   } catch {

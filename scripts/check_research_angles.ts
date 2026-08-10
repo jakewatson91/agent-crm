@@ -16,6 +16,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { buildAngleRequest } from '../inngest/functions/research.ts';
+import { clampQuery, angleRecordBlock, stampRecordSince, carryOffSwitch, failedAngles, orphanedAngles } from '../packages/tools/src/research_strategy.ts';
 import type { ResearchAngle } from '../packages/tools/src/policy.ts';
 
 let fail = 0;
@@ -60,6 +61,107 @@ eq('an evergreen angle stays unbounded', floorDays(build(angle('open_web'))), nu
 console.log('\nscopes that cannot run return null rather than a bad request:');
 eq('own_site with no domain', buildAngleRequest(angle('own_site', 30), 'FloSports', '', '', SOCIAL, undefined, 90, EXCLUDED), null);
 eq('social with no configured hosts', buildAngleRequest(angle('social', 30), 'FloSports', 'flosports.tv', '', [], undefined, 90, EXCLUDED), null);
+
+// A query template over the length cap used to be hard-sliced, which cut mid-word
+// and mid-group: a planner run produced `... (said OR explained OR desc`, an
+// unclosed OR-group containing half a word, and it went to Exa exactly like that.
+console.log('\na too-long query is cut to something still valid:');
+const long = (tail: string) => `{entity} ${'x'.repeat(180)} ${tail}`;
+const balanced = (s: string) => (s.match(/\(/g) ?? []).length === (s.match(/\)/g) ?? []).length
+  && ((s.match(/"/g) ?? []).length) % 2 === 0;
+eq('a short query is untouched', clampQuery('{entity} CDN cost'), '{entity} CDN cost');
+eq('the cut never leaves a group open', balanced(clampQuery(long('(said OR explained OR described)'))), true);
+eq('the cut never leaves a quote open', balanced(clampQuery(long('"delivery costs"'))), true);
+eq('the cut never leaves a half word', /\bx{1,179}$/.test(clampQuery(long('(a OR b)'))) === false, true);
+eq('what survives still names the entity', clampQuery(long('(a OR b)')).includes('{entity}'), true);
+
+// The record exists so the planner that writes the QUERIES can act on a bad one.
+// The brief planner has had this feedback since the scorecard landed, but it
+// writes questions, so "the search is wrong" landed on something that could not
+// rewrite a search.
+console.log('\nan angle carries its own track record into the next regeneration:');
+const withRecord = (fetched: number, kept: number) =>
+  angleRecordBlock([angle('social', 30)], [{ id: 'social', fetched, kept }]);
+eq('no prior angles means no block at all', angleRecordBlock([], []), '');
+eq('an unmeasured angle is left alone', withRecord(0, 0).includes('TOO EARLY TO JUDGE'), true);
+eq('a small sample is still too early', withRecord(29, 0).includes('TOO EARLY TO JUDGE'), true);
+eq('fetching plenty and keeping none is called out', withRecord(183, 0).includes('CANNOT work as written'), true);
+eq('a keep rate under 10% says rewrite', withRecord(100, 5).includes('rewrite it'), true);
+eq('a working angle is told to stay put', withRecord(100, 40).includes('earning its place'), true);
+eq('a bad record never reads as a bad question', withRecord(183, 0).includes('not a bad question'), true);
+
+// The id is kept across a rewrite so the record survives, which is exactly why a
+// rewritten query must not inherit it: the LinkedIn angle became a news angle
+// under the same id, and its 183-fetched-0-kept history is about a search that no
+// longer exists.
+console.log('\na rewritten search starts its record over, an unchanged one does not:');
+const NOW = '2026-08-10T12:00:00.000Z';
+const OLD = '2026-07-01T00:00:00.000Z';
+const prior: ResearchAngle[] = [
+  { ...angle('social', 30), id: 'leader', query_template: '{entity} CDN talk', record_since: OLD },
+  { ...angle('news', 30), id: 'launches', query_template: '{entity} launched', record_since: OLD },
+];
+// A freshly planned angle never carries record_since — coerceAngle does not set
+// it — so every `next` below is shaped the way the planner returns them.
+const planned = (a: ResearchAngle): ResearchAngle => { const { record_since: _drop, ...rest } = a; return rest; };
+const stamped = (next: ResearchAngle[]) => stampRecordSince(next.map(planned), prior, NOW);
+eq('an untouched angle keeps its start date',
+  stamped([prior[1]!])[0]!.record_since, OLD);
+eq('a rewritten query starts over',
+  stamped([{ ...prior[0]!, query_template: '{entity} CTO interview' }])[0]!.record_since, NOW);
+eq('the same query moved to another scope starts over',
+  stamped([{ ...prior[0]!, domain_scope: 'news' }])[0]!.record_since, NOW);
+eq('a brand-new angle starts now',
+  stamped([{ ...angle('open_web', 30), id: 'fresh' }])[0]!.record_since, NOW);
+// An angle written before this field existed has a real record already. Leaving
+// it unset means "count everything", which is what that record is.
+eq('an unchanged angle predating the field keeps counting everything',
+  stampRecordSince([planned(prior[1]!)], [planned(prior[1]!)], NOW)[0]!.record_since, undefined);
+
+// coerceAngle sets enabled:true on everything it returns and the persist replaces
+// the whole array, so before this a human's off switch came back on within 14
+// days, in every workspace, with nothing in any log to say why.
+console.log('\na human off switch survives a regeneration:');
+const off: ResearchAngle[] = [{ ...angle('news', 30), id: 'a', enabled: false }, { ...angle('news', 30), id: 'b' }];
+const replanned: ResearchAngle[] = [
+  { ...angle('news', 30), id: 'a', query_template: '{entity} rewritten', enabled: true },
+  { ...angle('news', 30), id: 'b', enabled: true },
+  { ...angle('open_web', 30), id: 'c', enabled: true },
+];
+eq('an angle switched off stays off', carryOffSwitch(replanned, off)[0]!.enabled, false);
+eq('rewriting its query does not switch it back on',
+  carryOffSwitch(replanned, off)[0]!.query_template, '{entity} rewritten');
+eq('an angle left alone stays on', carryOffSwitch(replanned, off)[1]!.enabled, true);
+eq('a brand-new angle is on', carryOffSwitch(replanned, off)[2]!.enabled, true);
+eq('nothing switched off changes nothing', carryOffSwitch(replanned, []), replanned);
+
+// Age was the only staleness test, so a search provably buying nothing kept
+// running for up to 14 days. Zero keeps after a fair trial is the one reading of
+// the record that needs no judgement.
+console.log('\nan angle that bought nothing forces a rewrite; an unproven one does not:');
+const rec = (id: string, fetched: number, kept: number) => ({ id, fetched, kept });
+const one = [{ ...angle('news', 30), id: 'a' }];
+eq('a fair trial with zero keeps has failed', failedAngles(one, [rec('a', 183, 0)]), ['a']);
+eq('a small sample has not', failedAngles(one, [rec('a', 29, 0)]), []);
+eq('one keep is not zero', failedAngles(one, [rec('a', 183, 1)]), []);
+eq('a low keep rate is not zero either', failedAngles(one, [rec('a', 100, 5)]), []);
+eq('an angle with no record at all has not failed', failedAngles(one, []), []);
+eq('an angle a human switched off is not counted',
+  failedAngles([{ ...one[0]!, enabled: false }], [rec('a', 183, 0)]), []);
+
+// `answers` is checked against the brief that existed at plan time. The brief is
+// regenerated on its own schedule, so a question can be reworded out from under a
+// running angle, which then keeps buying pages for something nothing asks about.
+console.log('\nan angle pointed at a question that no longer exists is spotted:');
+const withBrief = (strategy: ResearchAngle[], ids: string[]) => ({
+  research: { strategy, brief: ids.map((id) => ({ id, label: id, question: `q ${id}`, why: '', kind: 'state' as const, enabled: true })) },
+});
+const served = (answers: string | undefined, enabled = true) => [{ ...angle('news', 30), id: 'a', answers, enabled }];
+eq('an angle whose question is live is fine', orphanedAngles(withBrief(served('recent_launch'), ['recent_launch'])), []);
+eq('an angle whose question is gone is orphaned', orphanedAngles(withBrief(served('retired_q'), ['recent_launch'])), ['a']);
+eq('an angle with no question at all is not an orphan', orphanedAngles(withBrief(served(undefined), ['recent_launch'])), []);
+eq('a switched-off orphan does not force anything', orphanedAngles(withBrief(served('retired_q', false), ['recent_launch'])), []);
+eq('the always-on pain question counts as live', orphanedAngles(withBrief(served('pain'), ['recent_launch'])), []);
 
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);
