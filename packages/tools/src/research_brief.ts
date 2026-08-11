@@ -259,12 +259,15 @@ Return JSON only: {"questions":[{"id","label","question","why","kind"}]}`;
  * See scripts/research_scorecard.ts, which computes these from data already
  * stored (run markers, page records, facts, draft citations).
  */
-export interface QuestionRecord {
+export interface QuestionSearchRecord {
   id: string;
   /** Pages the searches for this question brought back. */
   fetched: number;
   /** Of those, how many were kept as answering it. */
   kept: number;
+}
+
+export interface QuestionRecord extends QuestionSearchRecord {
   /** Facts read off the kept pages. */
   facts: number;
   /** Facts a draft actually cited. Sparse early on — see the guardrail below. */
@@ -272,11 +275,102 @@ export interface QuestionRecord {
 }
 
 /**
- * Below this many pages seen, a question has not had a fair trial and must not
- * be judged on its numbers. Without it the planner retires anything new, because
+ * Below this many pages seen, a search has not had a fair trial and must not be
+ * judged on its numbers. Without it the planner retires anything new, because
  * anything new looks like it produced nothing.
+ *
+ * One definition for the whole loop. `research_strategy.ts` judges a single
+ * angle against it and `research_scorecard.ts` prints against it; they each kept
+ * their own copy of the number, which is how two parts of the same loop can
+ * quietly start disagreeing about whether a search has been given a chance.
  */
-const MIN_SAMPLE_FETCHED = 30;
+export const FAIR_TRIAL_PAGES = 30;
+
+/**
+ * THE BAR, and the only one: a search must answer the question it was bought for
+ * at least once per fair trial.
+ *
+ * Stated this way it reads at both altitudes, which is the point. Applied to ONE
+ * angle it means "this query is not working, write a different one". Applied to
+ * a QUESTION — across every query that has ever been pointed at it — it means
+ * something the loop could not previously conclude at all: no search answers
+ * this, so stop buying them.
+ *
+ * Deliberately not "kept === 0". An angle sitting at one lucky page in 264 was
+ * immune to correction under a zero test, because zero is the only number a
+ * single accident can move.
+ */
+export function earnsItsSearches(r: { fetched: number; kept: number }): boolean {
+  return r.kept * FAIR_TRIAL_PAGES >= r.fetched;
+}
+
+/**
+ * How many fair trials a question gets before the verdict moves from "the search
+ * is wrong" to "no search can answer this".
+ *
+ * A failing angle forces a rewrite every fair trial (see failedAngles), so by
+ * this point the planner has had roughly five goes at writing a search for the
+ * question and the pages bought have still not answered it. Five is a judgement
+ * call; that it is several, and that a human can read the count off the
+ * scorecard, is the part that matters.
+ */
+export const UNREACHABLE_TRIALS = 5;
+export const UNREACHABLE_PAGES = FAIR_TRIAL_PAGES * UNREACHABLE_TRIALS;
+
+/**
+ * Questions no web search can answer — the exit the loop did not have.
+ *
+ * Without this the correction cycle cannot terminate. A failing angle is
+ * rewritten, the rewrite resets that angle's record, the fresh record reads
+ * "too early to judge", and the same question is searched for again forever. The
+ * brief planner cannot break the tie either: it is told, correctly, that a low
+ * hit rate means the SEARCH is wrong and never the question. Both readings are
+ * right per attempt and neither can look across attempts. Measured on one
+ * workspace: a question rewritten twice, 264 pages bought, answered once.
+ *
+ * What happens to a question that lands here is NOT retirement, and the
+ * difference is the whole design. It stays in the brief, so the gate keeps
+ * checking pages against it and the enricher keeps filling its slot — it simply
+ * stops having searches bought for it. That is exactly how the always-on `pain`
+ * question already works, and pain is the single most valuable thing research
+ * finds: nobody searches for it, it is noticed on a page fetched for something
+ * else. "Cannot be searched for" and "not worth knowing" are different facts,
+ * and conflating them deletes the best question in the brief.
+ *
+ * Reversible for free and on its own. The count is derived from a rolling
+ * window, so a question here drifts back out of it once its old spend ages off,
+ * and the planner gets to try again — roughly one 150-page probe a month per
+ * dead question, which is the right price for noticing that the web changed. And
+ * if the gate files any page under it in the meantime, from a search bought for
+ * some other question, the bar is met and it comes back immediately.
+ */
+export function unreachableQuestions(records: QuestionSearchRecord[]): string[] {
+  return records.filter((r) => r.fetched >= UNREACHABLE_PAGES && !earnsItsSearches(r)).map((r) => r.id);
+}
+
+/**
+ * One question's numbers, and what the planner should do about them, as the line
+ * the planner reads.
+ *
+ * A module-level function rather than a closure inside the prompt builder,
+ * because this sentence is the whole feedback loop: the columns diagnose
+ * DIFFERENT failures, and the wrong reading of the same four numbers deletes a
+ * good question or spends forever on an impossible one. It is worth being able to
+ * assert on directly.
+ */
+export function recordReading(r: QuestionRecord): string {
+  if (r.fetched < FAIR_TRIAL_PAGES) return `  [only ${r.fetched} pages seen so far — TOO EARLY TO JUDGE, keep it]`;
+  const hit = r.fetched ? Math.round((r.kept / r.fetched) * 100) : 0;
+  const parts = [`${r.fetched} pages seen, ${r.kept} kept (${hit}%)`, `${r.facts} facts`, `${r.used} used in a message`];
+  let read: string;
+  if (r.fetched >= UNREACHABLE_PAGES && !earnsItsSearches(r)) {
+    read = 'searching for this does not work — several different searches have now been tried and the pages they bought do not answer it. Searches for it have been STOPPED. KEEP the question anyway and keep its wording: pages bought for the other questions are still read against it, which is how the most valuable answers arrive';
+  } else if (!earnsItsSearches(r)) read = 'the SEARCH is finding the wrong pages — rewrite its query, do NOT drop the question';
+  else if (r.kept >= 5 && r.facts === 0) read = 'right pages, nothing being read off them — keep the question';
+  else if (r.facts >= 10 && r.used === 0) read = 'produces facts no message has ever used — a candidate to drop';
+  else read = 'earning its place — keep it, and keep its wording close';
+  return `  [${parts.join(', ')} -> ${read}]`;
+}
 
 export interface BriefContext {
   about: string;
@@ -321,16 +415,7 @@ export async function planResearchBrief(
   const records = new Map((opts?.records ?? []).map((r) => [r.id, r]));
   const recordLine = (q: BriefQuestion): string => {
     const r = records.get(q.id);
-    if (!r) return '';
-    if (r.fetched < MIN_SAMPLE_FETCHED) return `  [only ${r.fetched} pages seen so far — TOO EARLY TO JUDGE, keep it]`;
-    const hit = r.fetched ? Math.round((r.kept / r.fetched) * 100) : 0;
-    const parts = [`${r.fetched} pages seen, ${r.kept} kept (${hit}%)`, `${r.facts} facts`, `${r.used} used in a message`];
-    let read: string;
-    if (hit < 10) read = 'the SEARCH is finding the wrong pages — rewrite its query, do NOT drop the question';
-    else if (r.kept >= 5 && r.facts === 0) read = 'right pages, nothing being read off them — keep the question';
-    else if (r.facts >= 10 && r.used === 0) read = 'produces facts no message has ever used — a candidate to drop';
-    else read = 'earning its place — keep it, and keep its wording close';
-    return `  [${parts.join(', ')} -> ${read}]`;
+    return r ? recordReading(r) : '';
   };
   // Every id kept is a slot of already-extracted facts that stays readable.
   const continuityBlock = previous.length
@@ -447,34 +532,86 @@ export const RECORD_WINDOW_DAYS = 30;
  * stored: run markers, kept pages, the facts read off them, and the drafts that
  * cited those facts. Writes nothing.
  *
- * This is THE definition of those four numbers, used by both the planner that
- * regenerates the brief and `scripts/research_scorecard.ts`. They were computed
- * separately before, and two implementations of the same measure is how you end
- * up reading one number on screen and feeding a different one to the model — the
- * exact confusion that hid a failing search behind a healthy-looking keep count.
+ * This is THE definition of those numbers, used by the planner that regenerates
+ * the brief, the planner that writes the searches, and
+ * `scripts/research_scorecard.ts`. They were computed separately before, and two
+ * implementations of the same measure is how you end up reading one number on
+ * screen and feeding a different one to the model — the exact confusion that hid
+ * a failing search behind a healthy-looking keep count.
  *
- * `fetched` is per ANGLE (only the run markers know it) summed over the angles
- * serving the question. `kept` is per QUESTION, off the signals, because a page
- * bought by one angle can be kept as answering a different question.
+ * Both numbers are per QUESTION and neither resets when a search is rewritten,
+ * which is what makes a verdict about the question itself possible. `kept` comes
+ * off the signals, because a page bought by one angle can be kept as answering a
+ * different question.
  */
-export async function loadQuestionRecords(
-  supabase: SupabaseClient,
-  workspace_id: string,
-  days = RECORD_WINDOW_DAYS,
-): Promise<QuestionRecord[]> {
-  const since = new Date(Date.now() - days * 86400 * 1000).toISOString();
-  const policy = await getPolicy(supabase, workspace_id);
-  const angles = (policy.research?.strategy ?? []).filter((a) => a.enabled !== false);
+export interface RunMarker {
+  payload: Record<string, Record<string, number> | undefined> | null;
+  created_at: string;
+}
 
-  const ev = (await supabase.from('events').select('payload')
-    .eq('workspace_id', workspace_id).eq('action', 'research_completed')
-    .gte('created_at', since).limit(5000)).data ?? [];
-  const fetchedByAngle: Record<string, number> = {};
-  for (const e of ev as Array<{ payload: Record<string, Record<string, number>> | null }>) {
+/**
+ * How many pages each question cost, folded out of the research run markers.
+ *
+ * Pure, and exported for the assertions, because this is where the whole verdict
+ * can go wrong quietly. It has to hold two things together:
+ *
+ * A marker written since the runner started attributing spend to the question
+ * says so outright, and that is the only number worth trusting. Reconstructing it
+ * from per-angle spend can only credit an angle that STILL serves the question
+ * today, and it sweeps in whatever that angle was buying pages for beforehand.
+ * Measured live: a question two days old reading 216 pages bought and 1 answer,
+ * where the 216 were bought over a month for the question this one replaced. The
+ * numerator and the denominator did not start at the same moment, and that is how
+ * a perfectly good question gets ruled unanswerable.
+ *
+ * So a reconstructed marker is counted only from `briefFloor`, when the current
+ * question ids came into existence — nothing can have answered a question before
+ * it was written. Deliberately NOT applied to `kept`: a regeneration usually
+ * preserves an id, and answers stamped under it earlier are genuinely that
+ * question's, so clamping them would shrink the numerator instead and condemn a
+ * question that was working. Both halves of the asymmetry err the same way,
+ * toward leaving a question searchable.
+ */
+export function foldFetchedByQuestion(
+  markers: RunMarker[],
+  angles: Array<{ id: string; answers?: string }>,
+  briefFloor: number,
+): Record<string, number> {
+  const byQuestion: Record<string, number> = {};
+  const byAngle: Record<string, number> = {};
+  for (const e of markers) {
+    const perQuestion = e.payload?.per_question_fetched;
+    if (perQuestion) {
+      for (const [k, v] of Object.entries(perQuestion)) byQuestion[k] = (byQuestion[k] ?? 0) + (Number(v) || 0);
+      continue;
+    }
+    if (Date.parse(e.created_at) < briefFloor) continue;
     for (const [k, v] of Object.entries(e.payload?.per_angle_fetched ?? {})) {
-      fetchedByAngle[k] = (fetchedByAngle[k] ?? 0) + (Number(v) || 0);
+      byAngle[k] = (byAngle[k] ?? 0) + (Number(v) || 0);
     }
   }
+  for (const a of angles) {
+    if (a.answers && byAngle[a.id]) byQuestion[a.answers] = (byQuestion[a.answers] ?? 0) + byAngle[a.id]!;
+  }
+  return byQuestion;
+}
+
+async function scanQuestionSearch(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  since: string,
+  policy: WorkspacePolicy,
+): Promise<{ records: QuestionSearchRecord[]; sigQ: Map<string, string> }> {
+  const angles = (policy.research?.strategy ?? []).filter((a) => a.enabled !== false);
+
+  const ev = (await supabase.from('events').select('payload, created_at')
+    .eq('workspace_id', workspace_id).eq('action', 'research_completed')
+    .gte('created_at', since).limit(5000)).data ?? [];
+  const fetchedByQuestion = foldFetchedByQuestion(
+    ev as RunMarker[],
+    angles,
+    Date.parse(policy.research?.brief_generated_at ?? '') || 0,
+  );
 
   const sigQ = new Map<string, string>();
   const keptByQuestion: Record<string, number> = {};
@@ -490,6 +627,41 @@ export async function loadQuestionRecords(
     }
     if (!data || data.length < 1000) break;
   }
+
+  const ids = new Set([...resolveBrief(policy).map((q) => q.id), ...Object.keys(keptByQuestion), ...Object.keys(fetchedByQuestion)]);
+  return {
+    sigQ,
+    records: [...ids].map((id) => ({ id, fetched: fetchedByQuestion[id] ?? 0, kept: keptByQuestion[id] ?? 0 })),
+  };
+}
+
+/**
+ * What each question has cost in pages and earned in answers — the half of the
+ * record that decides whether searching for it works at all.
+ *
+ * Split out because that is all the strategy planner needs, and the other two
+ * numbers (facts, and facts a draft used) cost a chunked read over every fact
+ * and every draft in the window. Same scan, same definition, no second
+ * implementation.
+ */
+export async function loadQuestionSearchRecords(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  days = RECORD_WINDOW_DAYS,
+): Promise<QuestionSearchRecord[]> {
+  const since = new Date(Date.now() - days * 86400 * 1000).toISOString();
+  const policy = await getPolicy(supabase, workspace_id);
+  return (await scanQuestionSearch(supabase, workspace_id, since, policy)).records;
+}
+
+export async function loadQuestionRecords(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  days = RECORD_WINDOW_DAYS,
+): Promise<QuestionRecord[]> {
+  const since = new Date(Date.now() - days * 86400 * 1000).toISOString();
+  const policy = await getPolicy(supabase, workspace_id);
+  const { records, sigQ } = await scanQuestionSearch(supabase, workspace_id, since, policy);
 
   const sigIds = [...sigQ.keys()];
   const factsByQuestion: Record<string, number> = {};
@@ -520,14 +692,27 @@ export async function loadQuestionRecords(
     if (q) usedByQuestion[q] = (usedByQuestion[q] ?? 0) + 1;
   }
 
-  const ids = new Set([...resolveBrief(policy).map((q) => q.id), ...Object.keys(keptByQuestion)]);
-  return [...ids].map((id) => ({
-    id,
-    fetched: angles.filter((a) => a.answers === id).reduce((n, a) => n + (fetchedByAngle[a.id] ?? 0), 0),
-    kept: keptByQuestion[id] ?? 0,
-    facts: factsByQuestion[id] ?? 0,
-    used: usedByQuestion[id] ?? 0,
-  }));
+  return records.map((r) => ({ ...r, facts: factsByQuestion[r.id] ?? 0, used: usedByQuestion[r.id] ?? 0 }));
+}
+
+/**
+ * Carry a human's off switch across a regeneration.
+ *
+ * The angle planner had this exact hole and it was fixed there; the brief has
+ * carried it the whole time. `coerceQuestion` returns `enabled: true` on
+ * everything and the persist replaces the array, so a question a customer
+ * switched off in settings comes back on at the next regeneration, in every
+ * workspace, with nothing in any log to say why. Only `false` is carried — a
+ * question nobody touched has no stored intent, and unset already means enabled.
+ *
+ * Survives a rewording for the same reason it survives a query rewrite on the
+ * angle side: switching a question off is a decision about that question, and the
+ * planner rephrasing it is not new information about whether the customer wanted
+ * it asked.
+ */
+export function carryQuestionOffSwitch(next: BriefQuestion[], previous: BriefQuestion[]): BriefQuestion[] {
+  const off = new Set(previous.filter((q) => q.enabled === false).map((q) => q.id));
+  return next.map((q) => (off.has(q.id) ? { ...q, enabled: false } : q));
 }
 
 /** Merge a brief onto workspaces.policy.research.brief (cache write, not user config). */
@@ -543,7 +728,7 @@ export async function persistResearchBrief(
     ...policy,
     research: {
       ...(policy.research ?? {}),
-      brief: questions,
+      brief: carryQuestionOffSwitch(questions, policy.research?.brief ?? []),
       brief_generated_at: new Date().toISOString(),
       ...(input_hash ? { brief_input_hash: input_hash } : {}),
     },
@@ -572,7 +757,15 @@ export async function ensureResearchBrief(supabase: SupabaseClient, workspace_id
   // Measured the day this was found: a regeneration dropped a question sitting at
   // 25 pages seen, which the fair-trial guard exists to protect.
   const withRecords = records ?? await loadQuestionRecords(supabase, workspace_id).catch(() => []);
-  const { questions } = await planResearchBrief(ctx, { previous: policy.research?.brief ?? [], records: withRecords });
+  const stored = policy.research?.brief ?? [];
+  const { questions, source } = await planResearchBrief(ctx, { previous: stored, records: withRecords });
+  // Same trap as the strategy planner, and worse here. A transient planner error
+  // returns BASELINE_BRIEF, and persisting it would replace a workspace's tuned
+  // questions with the generic five, orphan every angle pointed at the old ids,
+  // and stamp a fresh input hash so nothing would ever try again. Keep what is in
+  // place; the inputs have not changed since the last tick, so the regeneration
+  // is still owed and will be attempted next time.
+  if (source === 'baseline' && stored.length) return resolveBrief(policy);
   try {
     await persistResearchBrief(supabase, workspace_id, questions, briefInputHash(ctx));
   } catch {

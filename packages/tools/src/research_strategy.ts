@@ -20,7 +20,15 @@ import { chatComplete, embed } from '@agent-crm/primitives';
 import { getPolicy } from './policy.ts';
 import { runExaSearch } from './exa_search.ts';
 import { cosine } from './icp_embeddings.ts';
-import { resolveBrief, PAIN_QUESTION } from './research_brief.ts';
+import {
+  resolveBrief,
+  PAIN_QUESTION,
+  FAIR_TRIAL_PAGES,
+  earnsItsSearches,
+  unreachableQuestions,
+  loadQuestionSearchRecords,
+  type QuestionSearchRecord,
+} from './research_brief.ts';
 import type { ResearchAngle, BriefQuestion, WorkspacePolicy } from './policy.ts';
 
 // Pro, not flash: the planner runs rarely (≈once per workspace per 14 days, or on a
@@ -156,6 +164,13 @@ function coerceAngle(raw: unknown, idx: number, usedIds: Set<string>, validQuest
   // names a real question — an invented id would make the per-angle yield
   // reporting lie about what the spend was for.
   const answers = typeof r.answers === 'string' && validQuestionIds?.has(r.answers) ? r.answers : undefined;
+  // With a brief in play the prompt calls `answers` required and says an angle
+  // that cannot name its question should not exist. Enforce that here rather than
+  // hoping: an unattributed angle spends on every account forever and appears in
+  // no question's record, so nothing downstream can ever judge it — and the
+  // questions the record has ruled unsearchable are withheld from the planner, so
+  // an angle arriving with no question is the one way that ruling gets bypassed.
+  if (validQuestionIds?.size && !answers) return null;
   return {
     id,
     label: typeof r.label === 'string' && r.label.trim() ? r.label.trim().slice(0, 60) : id,
@@ -198,8 +213,6 @@ export interface AngleRecord {
   kept: number;
 }
 
-/** Below this many pages fetched, an angle has not had a fair trial. */
-const MIN_ANGLE_FETCHED = 30;
 /** How far back the record is summed. Wider than the 14-day regeneration cycle. */
 const RECORD_WINDOW_DAYS = 30;
 
@@ -325,11 +338,11 @@ export function angleRecordBlock(previous: ResearchAngle[], records: AngleRecord
   const byId = new Map(records.map((r) => [r.id, r]));
   const recordLine = (a: ResearchAngle): string => {
     const r = byId.get(a.id);
-    if (!r || r.fetched < MIN_ANGLE_FETCHED) return `    [only ${r?.fetched ?? 0} pages seen so far — TOO EARLY TO JUDGE, keep it as it is]`;
+    if (!r || r.fetched < FAIR_TRIAL_PAGES) return `    [only ${r?.fetched ?? 0} pages seen so far — TOO EARLY TO JUDGE, keep it as it is]`;
     const hit = Math.round((r.kept / r.fetched) * 100);
     let read: string;
     if (r.kept === 0) read = 'this query CANNOT work as written — not one page it bought answered the question it is for. Rewrite it, or change its domain_scope, or replace the angle entirely';
-    else if (hit < 10) read = 'this query is buying mostly the wrong pages — rewrite it';
+    else if (!earnsItsSearches(r)) read = `this query is buying mostly the wrong pages — it has answered its question ${r.kept} time(s) in ${r.fetched} pages. Rewrite it`;
     else read = 'earning its place — keep it, and keep its wording close';
     return `    [${r.fetched} pages seen, ${r.kept} answered its question (${hit}%) -> ${read}]`;
   };
@@ -344,9 +357,38 @@ Keep the id EXACTLY as written for any angle you keep, even if you rewrite its q
 A poor record is a bad SEARCH, not a bad question. Rewrite the query or move it to a different domain_scope; do not stop covering the brief question it answers. An angle that is earning its place stays as it is: do not reword a working query, and do not drop the question it serves in order to fit a new angle in.`;
 }
 
+/**
+ * The questions worth pointing a search at — what the planner is allowed to see.
+ *
+ * Withholding a question IS the enforcement: the planner writes angles only for
+ * what it is shown, so nothing downstream needs a new switch to read, get wrong,
+ * or carry across a regeneration. That makes this the definition of where research
+ * money goes, so it is one function rather than a filter written out at each call
+ * site.
+ *
+ * Two exemptions, and they are the same exemption reached two ways. `pain` is
+ * known in advance to be unsearchable — it is something you NOTICE on a page
+ * fetched for another reason, so an angle pointed at it would spend a search per
+ * account to return nothing. The rest are learned from the record. Both stay in
+ * the brief and are still read by the gate and the extractor; pain is the proof
+ * that has to be true, since a page reporting a company's service buckling under
+ * load answers no other question and is the most valuable page research finds.
+ */
+export function questionsWorthSearching(policy: WorkspacePolicy, records: QuestionSearchRecord[]): BriefQuestion[] {
+  const unreachable = new Set(unreachableQuestions(records));
+  return resolveBrief(policy).filter((q) => q.id !== PAIN_QUESTION.id && !unreachable.has(q.id));
+}
+
 async function loadContext(supabase: SupabaseClient, workspace_id: string): Promise<{ ctx: PlannerContext; policy: WorkspacePolicy }> {
   const policy = await getPolicy(supabase, workspace_id);
   const w = await supabase.from('workspaces').select('about, icp').eq('id', workspace_id).maybeSingle();
+  // Derived, not stored. A persisted verdict would need carrying across every
+  // brief regeneration and clearing on some rule nobody would remember to write
+  // — this session has already lost two feedback loops to exactly that. Deriving
+  // it costs one events read plus one signals scan on a path that runs at most
+  // twice a day per workspace, and it can never go stale or contradict the
+  // scorecard. A failure here returns nothing, which plans as it always did.
+  const records = await loadQuestionSearchRecords(supabase, workspace_id).catch(() => []);
   const icpObj = (w.data?.icp ?? {}) as Record<string, unknown>;
   const ctx: PlannerContext = {
     about: (w.data?.about as string | null)?.trim() ?? '',
@@ -357,10 +399,7 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
     always_include: (policy.research?.always_include ?? []).filter(Boolean),
     social_domains: (policy.research?.social_domains ?? []).filter(Boolean),
     max_age_days: policy.research?.max_age_days,
-    // Minus the always-on pain question: pain is something you NOTICE on a page
-    // fetched for another reason, never something a search finds directly, so an
-    // angle pointed at it would spend a search per account to return nothing.
-    brief: resolveBrief(policy).filter((q) => q.id !== PAIN_QUESTION.id),
+    brief: questionsWorthSearching(policy, records),
     previous: policy.research?.strategy ?? [],
     records: await loadAngleRecords(supabase, workspace_id, policy.research?.strategy ?? []),
   };
@@ -1075,17 +1114,18 @@ export async function persistResearchStrategy(
 }
 
 /**
- * Angles that have had a fair trial and kept nothing, by id.
+ * Angles that have had a fair trial and are not earning their searches, by id.
  *
- * This is the one reading of the record that needs no judgement: pages were
- * bought, enough of them to be sure, and not one answered the question the angle
- * exists to answer. A low keep rate is arguable (11% is a working angle here, 7%
- * is not obviously broken), but zero is not.
+ * Held to `earnsItsSearches` — one answer per fair trial — rather than to zero.
+ * Zero was the original bar because it needs no judgement, but it is also the
+ * only number a single accident can move: the angle this was built for answered
+ * its question once in 264 pages, and one lucky page made it permanently immune
+ * to correction while it went on spending. One answer per 30 pages is still a
+ * bar almost nothing real fails.
  *
  * Reads AngleRecord.kept, which counts only pages kept AS ANSWERING this angle's
- * question. The angle this was built for kept 16 pages while answering its own
- * question zero times, so a check against pages-kept-at-all would have called it
- * healthy.
+ * question. The same angle kept 16 pages for other questions, so a check against
+ * pages-kept-at-all would have called it healthy.
  *
  * Angles a human switched off are excluded — they are not running, so they are
  * not costing anything, and regenerating on their account would overrule the
@@ -1097,7 +1137,7 @@ export function failedAngles(angles: ResearchAngle[], records: AngleRecord[]): s
     .filter((a) => {
       if (a.enabled === false) return false;
       const r = byId.get(a.id);
-      return !!r && r.fetched >= MIN_ANGLE_FETCHED && r.kept === 0;
+      return !!r && r.fetched >= FAIR_TRIAL_PAGES && !earnsItsSearches(r);
     })
     .map((a) => a.id);
 }
@@ -1126,9 +1166,12 @@ export function orphanedAngles(policy: WorkspacePolicy): string[] {
  *
  * Regenerating rewrites the failing query, which resets its record_since, so its
  * record starts empty and it stops looking failed — the loop closes itself. This
- * floor only covers the case where the planner hands back the SAME query, where
- * the record carries forward and the angle still reads as failed. Worst case is
- * two planner calls per workspace per day.
+ * floor covers the cases where it does not: the planner handing back the SAME
+ * query, whose record carries forward and still reads as failed, and a planner
+ * error landing on BASELINE_ANGLES, whose questions belong to the baseline brief
+ * and so read as orphaned against a generated one. Both would otherwise
+ * regenerate on every 4h tick. Worst case is two planner calls per workspace per
+ * day.
  */
 const MIN_REGEN_HOURS = 12;
 
@@ -1150,15 +1193,36 @@ const MIN_REGEN_HOURS = 12;
  */
 export async function ensureResearchStrategy(supabase: SupabaseClient, workspace_id: string): Promise<ResearchAngle[]> {
   const policy = await getPolicy(supabase, workspace_id);
-  if (isStrategyFresh(policy) && !orphanedAngles(policy).length) {
+  if (isStrategyFresh(policy)) {
     const at = Date.parse(policy.research?.strategy_generated_at ?? '');
     const hours = (Date.now() - at) / 3_600_000;
     if (!Number.isFinite(hours) || hours < MIN_REGEN_HOURS) return resolveStrategy(policy);
+    // Orphans are free to check (the brief is already in hand) so they go first
+    // and usually save the read below. Both are evidence triggers, so both sit
+    // under the floor — an orphan that regeneration cannot clear used to fire on
+    // every tick.
     const stored = policy.research?.strategy ?? [];
-    const failed = failedAngles(stored, await loadAngleRecords(supabase, workspace_id, stored));
-    if (!failed.length) return resolveStrategy(policy);
+    const failing = orphanedAngles(policy).length > 0
+      || failedAngles(stored, await loadAngleRecords(supabase, workspace_id, stored)).length > 0;
+    if (!failing) return resolveStrategy(policy);
   }
-  const { angles } = await generateResearchStrategy(supabase, workspace_id);
+  const stored = policy.research?.strategy ?? [];
+  const { angles, source } = await generateResearchStrategy(supabase, workspace_id);
+  // A planner error lands on BASELINE_ANGLES, and persisting those over a working
+  // strategy is worse than not regenerating at all: the baseline answers `moves`
+  // and `buyers`, which no generated brief contains, so every angle in the
+  // workspace would be buying pages for a question nobody is asking — and read as
+  // orphaned, forcing the same failing regeneration again. The baseline is the
+  // right answer for a workspace that has never had a strategy, not for one whose
+  // planner call just timed out. Measured while proving the withholding rule: 1
+  // planner run in 12 came back as a fallback.
+  //
+  // Restamped rather than left alone, so the next attempt waits for the floor
+  // instead of retrying on every tick.
+  if (source === 'baseline' && stored.length) {
+    try { await persistResearchStrategy(supabase, workspace_id, stored); } catch { /* keep using what is in hand */ }
+    return resolveStrategy(policy);
+  }
   try {
     await persistResearchStrategy(supabase, workspace_id, angles);
   } catch {

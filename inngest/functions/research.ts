@@ -437,6 +437,16 @@ export async function runEntityResearch(
       interface Candidate { angleId: string; scope: ResearchAngle['domain_scope']; er: ExaResult }
       const candidates: Candidate[] = [];
       const fetchedPerAngle: Record<string, number> = {};
+      // The same spend attributed to the QUESTION the angle was bought for.
+      //
+      // Derivable from per_angle_fetched only while the angle that ran still
+      // serves that question today, and it often does not: the planner rewrites
+      // a failing search, sometimes under a new id, and the question it was for
+      // then reads as having cost nothing. Measured live — a question showing 0
+      // pages bought and 24 pages kept. Writing it at the point of spend is what
+      // lets "this question has been searched for 264 times and answered once"
+      // survive every rewrite in between.
+      const fetchedPerQuestion: Record<string, number> = {};
       const ownSiteSnippets: string[] = [];
       let filtered_stale = 0;
       // Off-company pages Exa returned despite includeText, killed before the
@@ -487,6 +497,7 @@ export async function runEntityResearch(
           // reads identically for "the web has nothing" and "the query is wrong"
           // — which are opposite fixes.
           fetchedPerAngle[angle.id] = (fetchedPerAngle[angle.id] ?? 0) + 1;
+          if (angle.answers) fetchedPerQuestion[angle.answers] = (fetchedPerQuestion[angle.answers] ?? 0) + 1;
           candidates.push({ angleId: angle.id, scope: angle.domain_scope, er });
           if (angle.domain_scope === 'own_site') {
             const snip = [er.title, (er.text ?? '').slice(0, 200)].filter(Boolean).join(' — ');
@@ -760,6 +771,7 @@ export async function runEntityResearch(
         duplicates_dropped,
         per_angle: perAngle,
         per_angle_fetched: fetchedPerAngle,
+        per_question_fetched: fetchedPerQuestion,
         per_class: perClass,
         per_question: perQuestion,
         ...(gate_unreadable ? { gate_unreadable } : {}),
@@ -769,7 +781,7 @@ export async function runEntityResearch(
         summary: `${created} results from ${searches} search(es)${filtered_by.no_answer ? `, ${filtered_by.no_answer} answered nothing in the brief` : ''}${filtered_out ? `, ${filtered_out} off-topic/same-name filtered` : ''}${filtered_no_name ? `, ${filtered_no_name} never named the company` : ''}${filtered_stale ? `, ${filtered_stale} stale dropped` : ''}${(same_url_dropped + duplicates_dropped) ? `, ${same_url_dropped + duplicates_dropped} duplicate dropped` : ''}${resolver_spent ? (domain ? `, domain resolved to ${domain}` : ', domain resolution found nothing safe') : ''}`,
       });
 
-      return { ok: true, searches, signals_created: created, filtered_out, filtered_by, filtered_no_name, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, per_angle_fetched: fetchedPerAngle, per_class: perClass, per_question: perQuestion, gate_unreadable, gate_omitted, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
+      return { ok: true, searches, signals_created: created, filtered_out, filtered_by, filtered_no_name, filtered_stale, same_url_dropped, duplicates_dropped, per_angle: perAngle, per_angle_fetched: fetchedPerAngle, per_question_fetched: fetchedPerQuestion, per_class: perClass, per_question: perQuestion, gate_unreadable, gate_omitted, ...(resolver_spent ? { domain_resolved: domain || null } : {}), errors: errors.slice(0, 3) };
     }
   }
 }

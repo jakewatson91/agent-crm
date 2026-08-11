@@ -29,7 +29,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { getPolicy, resolveBrief, loadQuestionRecords } from '@agent-crm/tools';
+import { getPolicy, resolveBrief, loadQuestionRecords, earnsItsSearches, unreachableQuestions, FAIR_TRIAL_PAGES, UNREACHABLE_TRIALS } from '@agent-crm/tools';
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
 const argv = process.argv.slice(2);
@@ -39,9 +39,6 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--ws') WS = argv[++i] ?? WS;
   else if (argv[i] === '--days') DAYS = Number(argv[++i]) || DAYS;
 }
-
-/** Below this many pages fetched, a question has not had a fair trial. */
-const MIN_SAMPLE_FETCHED = 30;
 
 async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
   let out: T[] = []; let f = 0; const pg = 1000;
@@ -127,6 +124,16 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
   if (runs && markersWithFetched < runs) {
     console.log(`  note: ${runs - markersWithFetched} run(s) predate per-search fetch counts — "fetched" is understated for those.`);
   }
+  // "fetched" is now charged to the question at the moment the page is bought, so
+  // it survives the search being rewritten. Runs before that are reconstructed
+  // through whichever angle serves the question today, and only from the date the
+  // brief was written — nothing can have answered a question before it existed.
+  // So right after a brief regeneration every row reads as unproven, which is
+  // true, rather than carrying a month of a predecessor question's spend.
+  const briefAt = policy.research?.brief_generated_at;
+  if (briefAt && Date.parse(briefAt) > Date.parse(since)) {
+    console.log(`  note: the brief was rewritten ${briefAt.slice(0, 10)}; pages bought before then are not charged to these questions.`);
+  }
   console.log('');
   const head = 'question'.padEnd(24) + 'searches'.padStart(9) + 'fetched'.padStart(9) + 'kept'.padStart(6) + 'hit%'.padStart(6) + 'facts'.padStart(7) + 'used'.padStart(6) + '   verdict';
   // No derived searches-per-question column. It would be runs x searches aimed
@@ -136,13 +143,14 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
   console.log(head);
   console.log('-'.repeat(head.length + 20));
 
-  // A rewritten search keeps its angle id, so the row below sums pages bought by a
-  // query that no longer exists alongside pages bought by the one running now.
-  // Without saying so, the day after a fix the row still reads THE SEARCH IS
-  // WRONG and the fix looks like it did not land.
+  // A rewritten search keeps its angle id, so pages bought by a query that no
+  // longer exists sit alongside pages bought by the one running now. The
+  // question-level row no longer conflates them, but the per-angle numbers below
+  // still do, and the day after a fix that reads as though the fix did not land.
   const rewritten: string[] = [];
 
   const questionIds = [...new Set([...brief.map((q) => q.id), ...Object.keys(keptByQuestion)])];
+  const unreachable = new Set(unreachableQuestions([...shared.values()]));
   for (const qid of questionIds) {
     const inBrief = brief.some((q) => q.id === qid);
     const serving = angles.filter((a) => a.answers === qid);
@@ -155,9 +163,12 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
 
     let verdict: string;
     if (!inBrief) verdict = 'RETIRED — facts kept and still readable';
+    // Read before "no search points at it": once a question is ruled unreachable
+    // it HAS no angle, and the older line would report that as an oversight.
+    else if (unreachable.has(qid)) verdict = `NO SEARCH ANSWERS THIS — ${UNREACHABLE_TRIALS} fair trials spent, searches stopped; still watched on pages bought for other questions`;
     else if (!serving.length) verdict = 'no search points at it (found only in passing)';
-    else if (fetched < MIN_SAMPLE_FETCHED) verdict = `unproven (needs ${MIN_SAMPLE_FETCHED}+ pages seen)`;
-    else if (hit < 10) verdict = 'THE SEARCH IS WRONG — reword the query, keep the question';
+    else if (fetched < FAIR_TRIAL_PAGES) verdict = `unproven (needs ${FAIR_TRIAL_PAGES}+ pages seen)`;
+    else if (!earnsItsSearches({ fetched, kept })) verdict = 'THE SEARCH IS WRONG — reword the query, keep the question';
     else if (kept >= 5 && facts === 0) verdict = 'pages are right, nothing being read off them';
     else if (facts >= 10 && used === 0 && posts.length >= 20) verdict = 'RETIRE CANDIDATE — produces facts no message uses';
     else verdict = 'earning its place';
@@ -175,7 +186,7 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
         ? n + serving.reduce((m, a) => m + ((e.payload?.per_angle_fetched ?? {})[a.id] ?? 0), 0) : n, 0);
       const keptSince = sigs.filter((s) => s.structured_tags?.answers_question === qid
         && Date.parse(s.observed_at) >= at).length;
-      rewritten.push(`  ${qid}: search rewritten ${newest.slice(0, 10)}. Since then ${fetchedSince} fetched, ${keptSince} kept. The row above still counts the retired search.`);
+      rewritten.push(`  ${qid}: search rewritten ${newest.slice(0, 10)}. Since then ${fetchedSince} fetched by that angle, ${keptSince} kept.`);
     }
   }
 

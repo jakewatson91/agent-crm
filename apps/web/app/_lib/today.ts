@@ -31,6 +31,7 @@ import {
   type ResolveStateInput,
   type Pricing,
 } from '@agent-crm/tools';
+import { humanizePredicate } from './labels';
 
 // ---------------------------------------------------------------- shapes
 
@@ -201,6 +202,20 @@ export interface TodayAlert {
   hrefLabel: string | null;
 }
 
+/**
+ * A named, quoted pick from movers/drafts/learned/contacts — same items the
+ * sections below show in full, just the one line worth reading first. See
+ * `buildHighlights`.
+ */
+export interface TodayHighlight {
+  id: string;
+  kind: 'mover' | 'pain' | 'fact' | 'draft' | 'contact';
+  title: string;
+  detail: string;
+  href: string;
+  hrefLabel: string;
+}
+
 export interface TodaySpend {
   byModel: Array<{
     model: string;
@@ -230,6 +245,7 @@ export interface TodayData {
   pipeline: { paused: boolean; scope: string | null; reason: string | null; provider: string | null; pausedAt: string | null };
   counters: TodayCounters;
   alerts: TodayAlert[];
+  highlights: TodayHighlight[];
   runs: TodayRun[];
   movers: TodayMove[];
   moversMore: number;
@@ -258,6 +274,25 @@ const SIGNALS_CAP = 30;
 const LEARNED_CAP = 18;
 const CONTACTS_CAP = 20;
 const DECLINES_CAP = 12;
+// Named, quoted picks at the top of the page. Each category gets its own
+// small cap rather than sharing one pool — sharing meant facts (which came
+// first in priority) were fine, but drafts/moves/contacts fought over
+// whatever was left, and on a quiet-facts day a single pool starves whichever
+// category comes last.
+const HIGHLIGHTS_FACTS_CAP = 4;
+const HIGHLIGHTS_MOVES_CAP = 2;
+const HIGHLIGHTS_DRAFTS_CAP = 2;
+const HIGHLIGHTS_CONTACTS_CAP = 1;
+/** Sum of the caps above — a hard ceiling, not expected to ever trim anything. */
+const HIGHLIGHTS_MAX = HIGHLIGHTS_FACTS_CAP + HIGHLIGHTS_MOVES_CAP + HIGHLIGHTS_DRAFTS_CAP + HIGHLIGHTS_CONTACTS_CAP;
+/**
+ * A prior score at or near 0 is the scorer's no-evidence floor (see
+ * sweep.ts: "entities with zero substantive facts land at score=0 by
+ * design"), not a real prior verdict. "0.00 → 0.84" reads like a move but is
+ * really a first meaningful score wearing a stale zero as its "before" —
+ * exclude it so a highlighted move is always one established score to another.
+ */
+const HIGHLIGHT_MOVE_FLOOR = 0.05;
 
 /** How much of a single pass's own output to sample on its run card. */
 const RUN_LEARNED_ENTITIES_CAP = 4;
@@ -297,6 +332,106 @@ function firstSentences(s: string, max: number): string {
   const lastStop = slice.lastIndexOf('. ');
   if (lastStop > 60) return slice.slice(0, lastStop + 1);
   return slice.trimEnd() + '…';
+}
+
+/**
+ * Named, quoted picks for the top of the page, deterministic — no model call,
+ * just the same ranking the sections below already use (movers sorted by
+ * |delta|, pains flagged by predicate). Each category fills its own cap
+ * independently (see HIGHLIGHTS_*_CAP) so a busy fact day can't crowd out
+ * moves, and a quiet mover day can't crowd out facts. Every item points at
+ * the section that shows it in full.
+ */
+function buildHighlights(
+  movers: TodayMove[],
+  drafts: TodayDraft[],
+  learned: TodayLearned[],
+  contacts: TodayContact[],
+): TodayHighlight[] {
+  const out: TodayHighlight[] = [];
+
+  // Facts: pains first (the most sales-relevant thing the agent can find),
+  // then backfill with whatever else substantive it learned, so a workspace
+  // with few pains still shows real content instead of an empty section.
+  const factPicks: TodayHighlight[] = [];
+  for (const l of learned) {
+    if (factPicks.length >= HIGHLIGHTS_FACTS_CAP) break;
+    const pain = l.facts.find((f) => f.pain);
+    if (!pain) continue;
+    factPicks.push({
+      id: `fact_${pain.id}`,
+      kind: 'pain',
+      title: `New pain at ${l.name}`,
+      detail: firstSentences(pain.object, 160),
+      href: '#learned',
+      hrefLabel: 'See fact',
+    });
+  }
+  if (factPicks.length < HIGHLIGHTS_FACTS_CAP) {
+    for (const l of learned) {
+      if (factPicks.length >= HIGHLIGHTS_FACTS_CAP) break;
+      for (const f of l.facts) {
+        if (f.pain) continue; // already covered above
+        if (factPicks.length >= HIGHLIGHTS_FACTS_CAP) break;
+        factPicks.push({
+          id: `fact_${f.id}`,
+          kind: 'fact',
+          title: `New fact on ${l.name}`,
+          detail: `${humanizePredicate(f.predicate)}: ${firstSentences(f.object, 130)}`,
+          href: '#learned',
+          hrefLabel: 'See fact',
+        });
+      }
+    }
+  }
+  out.push(...factPicks);
+
+  // Moves: excludes a prior score at/near the no-evidence floor — see
+  // HIGHLIGHT_MOVE_FLOOR. movers is already sorted by |delta| descending.
+  let moveCount = 0;
+  for (const m of movers) {
+    if (moveCount >= HIGHLIGHTS_MOVES_CAP) break;
+    if (m.scorePrev === null || m.scorePrev < HIGHLIGHT_MOVE_FLOOR) continue;
+    out.push({
+      id: `mover_${m.entity_id}`,
+      kind: 'mover',
+      title: `${m.name} moved ${m.scorePrev.toFixed(2)} → ${m.scoreNew.toFixed(2)}`,
+      detail: firstSentences(m.reasoning ?? m.claim?.body ?? '', 140),
+      href: '#moved',
+      hrefLabel: 'See why',
+    });
+    moveCount += 1;
+  }
+
+  // Drafts: whatever was written today, decided or not — #outreach shows
+  // both, so a highlight isn't limited to only what's still awaiting a yes/no.
+  let draftCount = 0;
+  for (const d of drafts) {
+    if (draftCount >= HIGHLIGHTS_DRAFTS_CAP) break;
+    out.push({
+      id: `draft_${d.post_id}`,
+      kind: 'draft',
+      title: `Draft written for ${d.entity_name}`,
+      detail: firstSentences(d.body, 140),
+      href: '#outreach',
+      hrefLabel: 'See draft',
+    });
+    draftCount += 1;
+  }
+
+  if (contacts.length > 0) {
+    const top = [...contacts].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]!;
+    out.push({
+      id: `contact_${top.entity_id}`,
+      kind: 'contact',
+      title: `New contact: ${top.name}`,
+      detail: [top.role, top.account_name ? `at ${top.account_name}` : null].filter(Boolean).join(' '),
+      href: '#people',
+      hrefLabel: 'See contact',
+    });
+  }
+
+  return out.slice(0, HIGHLIGHTS_MAX);
 }
 
 /**
@@ -1214,21 +1349,25 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     });
   }
 
+  const learned = learnedAll.slice(0, LEARNED_CAP);
+  const contacts = [...contactSet].slice(0, CONTACTS_CAP).map((id) => toTodayContact(id, roleOf, emailOf, worksAtOf, contactScoreOf, N));
+
   return {
     window,
     generatedAt: until,
     pipeline,
     counters,
     alerts,
+    highlights: buildHighlights(movers, drafts, learned, contacts),
     runs,
     movers,
     moversMore: Math.max(0, moverCandidates.length - movers.length),
     signals: todaySignals,
     signalsMore: Math.max(0, signals.length - todaySignals.length),
     signalAngles,
-    learned: learnedAll.slice(0, LEARNED_CAP),
+    learned,
     learnedMore: Math.max(0, learnedAll.length - LEARNED_CAP),
-    contacts: [...contactSet].slice(0, CONTACTS_CAP).map((id) => toTodayContact(id, roleOf, emailOf, worksAtOf, contactScoreOf, N)),
+    contacts,
     drafts,
     declines: declineRows.slice(0, DECLINES_CAP).map((d) => toTodayDecline(d, N)),
     decided,

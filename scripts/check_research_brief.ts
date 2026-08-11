@@ -22,7 +22,10 @@
  * Run: tsx scripts/check_research_brief.ts   (exits non-zero on failure)
  */
 import { currentFactRows } from '../packages/tools/src/reads.ts';
-import { resolveBrief, BASELINE_BRIEF, PAIN_QUESTION, sysPrompt, briefInputHash } from '../packages/tools/src/research_brief.ts';
+import {
+  resolveBrief, BASELINE_BRIEF, PAIN_QUESTION, sysPrompt, briefInputHash,
+  earnsItsSearches, unreachableQuestions, recordReading, foldFetchedByQuestion, carryQuestionOffSwitch, UNREACHABLE_PAGES,
+} from '../packages/tools/src/research_brief.ts';
 import type { WorkspacePolicy } from '../packages/tools/src/policy.ts';
 
 let fail = 0;
@@ -139,6 +142,111 @@ eq('a moved floor hashes differently',
   briefInputHash({ ...baseCtx, max_age_days: 30 }) === briefInputHash({ ...baseCtx, max_age_days: 90 }), false);
 eq('an unset floor is not the same as a set one',
   briefInputHash({ ...baseCtx }) === briefInputHash({ ...baseCtx, max_age_days: 90 }), false);
+
+// The correction loop had no exit. A failing search is rewritten, the rewrite
+// resets that angle's record, the fresh record reads "too early to judge", and
+// the same question is searched for again forever — the brief planner cannot
+// break the tie because it is told, correctly, that a low hit rate means the
+// SEARCH is wrong and never the question. Measured live: a question rewritten
+// twice, 264 pages bought, answered once.
+console.log('\na question no search can answer is recognised, and only after several fair trials:');
+{
+  const r = (id: string, fetched: number, kept: number) => ({ id, fetched, kept });
+  eq('one answer per fair trial is the bar', earnsItsSearches(r('a', 30, 1)), true);
+  eq('and one page over it is not', earnsItsSearches(r('a', 31, 1)), false);
+  eq('a working search clears it easily', earnsItsSearches(r('a', 199, 84)), true);
+
+  eq('the real failing question is caught', unreachableQuestions([r('technical_leader', 264, 1)]), ['technical_leader']);
+  eq('zero answers over the same spend too', unreachableQuestions([r('a', UNREACHABLE_PAGES, 0)]), ['a']);
+  // One lucky page used to make an angle permanently immune to correction,
+  // because zero is the only number a single accident can move.
+  eq('one lucky page does not buy immunity', unreachableQuestions([r('a', 216, 1)]), ['a']);
+  eq('a question that has not been tried enough survives',
+    unreachableQuestions([r('a', UNREACHABLE_PAGES - 1, 0)]), []);
+  eq('one fair trial is not enough to condemn a question', unreachableQuestions([r('a', 40, 0)]), []);
+  eq('a thin but real hit rate survives', unreachableQuestions([r('cdn_infrastructure', 179, 11)]), []);
+  eq('a question nothing has been spent on is not condemned', unreachableQuestions([r('a', 0, 0)]), []);
+}
+
+// The angle planner had this exact hole and it was fixed there. The brief has
+// carried it the whole time: coerceQuestion returns enabled:true on everything and
+// the persist replaces the array, so a question a customer switched off came back
+// on at the next regeneration, in every workspace.
+console.log('\na human off switch on a question survives a regeneration:');
+{
+  const q = (id: string, question: string, enabled?: boolean) => ({ id, label: id, question, ...(enabled === undefined ? {} : { enabled }) });
+  const before = [q('scale', 'How big?', false), q('moves', 'What changed?')];
+  const replanned = [q('scale', 'How big are they now?', true), q('moves', 'What changed?', true), q('stack', 'What do they run on?', true)];
+  const after = carryQuestionOffSwitch(replanned, before);
+  eq('a question switched off stays off', after[0]!.enabled, false);
+  eq('rewording it does not switch it back on', after[0]!.question, 'How big are they now?');
+  eq('a question left alone stays on', after[1]!.enabled, true);
+  eq('a brand-new question is on', after[2]!.enabled, true);
+  eq('nothing switched off changes nothing', carryQuestionOffSwitch(replanned, []), replanned);
+  eq('and the gate never sees the one that is off', resolveBrief({ research: { brief: after } } as WorkspacePolicy).map((x) => x.id), ['moves', 'stack', PAIN_QUESTION.id]);
+}
+
+// The verdict is only as good as its denominator, and the denominator was wrong.
+// Live on Sudden: a question two days old read 216 pages bought against 1 answer,
+// and would have been ruled unanswerable — the 216 were bought over a month by an
+// angle that had been serving the question this one replaced.
+console.log('\npages bought are counted against the question that was actually being asked:');
+{
+  const angles = [{ id: 'leader_search', answers: 'technical_leader' }];
+  const m = (created_at: string, payload: Record<string, Record<string, number>>) => ({ created_at, payload });
+  const FLOOR = Date.parse('2026-08-10T00:00:00Z');
+
+  eq('a marker that names the question is believed',
+    foldFetchedByQuestion([m('2026-08-11T00:00:00Z', { per_question_fetched: { technical_leader: 40 } })], angles, FLOOR),
+    { technical_leader: 40 });
+  // Both fields are written on every new marker; counting both would double it.
+  eq('and its per-angle copy is not counted twice',
+    foldFetchedByQuestion([m('2026-08-11T00:00:00Z', {
+      per_question_fetched: { technical_leader: 40 }, per_angle_fetched: { leader_search: 40 },
+    })], angles, FLOOR),
+    { technical_leader: 40 });
+  eq('an old marker is reconstructed through the angle',
+    foldFetchedByQuestion([m('2026-08-10T06:00:00Z', { per_angle_fetched: { leader_search: 9 } })], angles, FLOOR),
+    { technical_leader: 9 });
+  eq('but not from before the question existed',
+    foldFetchedByQuestion([m('2026-07-20T00:00:00Z', { per_angle_fetched: { leader_search: 216 } })], angles, FLOOR),
+    {});
+  eq('spend by an angle serving nothing is not attributed to anything',
+    foldFetchedByQuestion([m('2026-08-11T00:00:00Z', { per_angle_fetched: { orphan: 50 } })], angles, FLOOR),
+    {});
+  // The whole point of writing it at the point of spend: it survives the rewrite.
+  eq('a question keeps its history when its search is replaced',
+    foldFetchedByQuestion([
+      m('2026-08-11T00:00:00Z', { per_question_fetched: { technical_leader: 90 } }),
+      m('2026-08-12T00:00:00Z', { per_question_fetched: { technical_leader: 70 } }),
+    ], [{ id: 'a_completely_different_angle', answers: 'technical_leader' }], FLOOR),
+    { technical_leader: 160 });
+}
+
+// Unsearchable is not worthless, and conflating the two deletes the best
+// question in the brief. `pain` is the proof: nobody can search for it, and a
+// page reporting a company's service buckling under load is the most valuable
+// page research ever finds.
+console.log('\nbeing unsearchable never takes a question out of the brief:');
+{
+  const p = { research: { brief: [{ id: 'technical_leader', label: 't', question: 'What has a leader there said?' }] } } as WorkspacePolicy;
+  eq('the question is still read by the gate and the extractor',
+    resolveBrief(p).map((q) => q.id), ['technical_leader', PAIN_QUESTION.id]);
+}
+
+// The planner that writes the questions has to be told the difference, or it
+// reads "0 kept" as a search it should wait on and keeps the question pointed at
+// a search that has stopped running.
+console.log('\nthe brief planner is given the reading, not just the numbers:');
+{
+  const line = (fetched: number, kept: number, facts = 0) =>
+    recordReading({ id: 'q', fetched, kept, facts, used: 0 });
+  eq('a fresh question is protected', line(10, 0).includes('TOO EARLY TO JUDGE'), true);
+  eq('a bad search is called a bad search', line(100, 1).includes('rewrite its query'), true);
+  eq('an unreachable question is called unreachable', line(264, 1).includes('searching for this does not work'), true);
+  eq('and it is told to keep it anyway', line(264, 1).includes('KEEP the question'), true);
+  eq('a working question is left alone', line(199, 84, 5).includes('earning its place'), true);
+}
 
 console.log(fail === 0 ? '\nALL PASS\n' : `\n${fail} FAILED\n`);
 process.exit(fail === 0 ? 0 : 1);

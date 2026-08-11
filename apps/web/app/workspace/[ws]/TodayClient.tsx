@@ -30,7 +30,7 @@ import { SCORE_DIMENSIONS } from '../../_lib/score_labels';
 import { DailyBars } from './TodayCharts';
 import type {
   TodayData, TodayMove, TodayRun, TodaySignal, TodayLearned, TodayContact,
-  TodayDraft, TodayDecline, TodayConnector, TodaySource, TodayAlert, TodayTrendPoint,
+  TodayDraft, TodayDecline, TodayConnector, TodaySource, TodayAlert, TodayHighlight, TodayTrendPoint,
 } from '../../_lib/today';
 import type { FeedItem } from '../../_lib/feed_items';
 
@@ -104,6 +104,12 @@ export function TodayClient({
       )}
 
       <StatRow today={today} ws={ws} />
+
+      {today.highlights.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem', margin: '1.25rem 0' }}>
+          {today.highlights.map((h) => <HighlightCard key={h.id} highlight={h} />)}
+        </div>
+      )}
 
       <nav aria-label="Jump to a section" style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap', margin: '1.5rem 0 1.75rem' }}>
         {sections.filter(([, , show]) => show).map(([id, label]) => (
@@ -324,6 +330,35 @@ function AlertCard({ alert }: { alert: TodayAlert }) {
           {alert.hrefLabel} →
         </Link>
       )}
+    </div>
+  );
+}
+
+const HIGHLIGHT_BADGE: Record<TodayHighlight['kind'], string> = {
+  pain: 'badge-coral',
+  fact: 'badge-purple',
+  draft: 'badge-green',
+  mover: 'badge-blue',
+  contact: 'badge-mute',
+};
+
+/** A named, quoted pick — same shape as AlertCard, calmer styling since this
+ *  is interesting, not a problem. Links to the full item in the section below. */
+function HighlightCard({ highlight }: { highlight: TodayHighlight }) {
+  return (
+    <div className="card" style={{ padding: '.75rem 1rem', display: 'flex', gap: '.7rem', alignItems: 'flex-start' }}>
+      <span className={`badge ${HIGHLIGHT_BADGE[highlight.kind]}`} style={{ flexShrink: 0, marginTop: 1 }}>
+        {highlight.kind === 'mover' ? 'moved' : highlight.kind}
+      </span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontWeight: 600, fontSize: '.9rem', color: 'var(--text)' }}>{highlight.title}</div>
+        {highlight.detail && (
+          <div style={{ fontSize: '.83rem', color: 'var(--text-2)', marginTop: '.15rem' }}>{highlight.detail}</div>
+        )}
+      </div>
+      <a href={highlight.href} style={{ fontSize: '.8rem', whiteSpace: 'nowrap', flexShrink: 0 }}>
+        {highlight.hrefLabel} →
+      </a>
     </div>
   );
 }

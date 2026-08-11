@@ -681,6 +681,86 @@ The gate rejects them correctly, so this is Exa spend, not data quality. **Not f
 decision from Jake**, since the obvious fix (drop `/in/` profile URLs before the gate) means a
 URL-pattern list in code.
 
+### FINDING 10 (fixed) — the correction loop had no exit, and its denominator was wrong
+
+`technical_leader` had been rewritten twice and still answered its question roughly 0 times in 264
+pages. Nothing in the system could conclude "no web search can answer this": a failing angle is
+rewritten, the rewrite resets that angle's `record_since`, the fresh record reads TOO EARLY TO
+JUDGE, and the question is searched for again. The brief planner cannot break the tie either — it is
+told, correctly, that a low hit rate means the SEARCH is wrong and never the question. Both readings
+are right per attempt. Neither can look across attempts.
+
+**One rule, stated once, applied at two altitudes.** A search must answer the question it was bought
+for at least once per fair trial (30 pages) — `earnsItsSearches`, the only bar in the loop now.
+
+- Applied to one ANGLE past a fair trial: the query gets rewritten. This replaces `kept === 0`, which
+  was the only number a single accident could move: the live angle sat at 1 answer in 264 pages and
+  was permanently immune to correction while it went on spending.
+- Applied to a QUESTION past five fair trials (150 pages): no search answers it. Stop buying them.
+
+**What happens to a condemned question is not retirement, and that is the whole design.** It stays in
+the brief, so the gate keeps checking pages against it and the enricher keeps filling its slot. It
+simply stops having searches bought for it. That is exactly how `pain` already works, and pain is the
+most valuable thing research finds — nobody searches for it, it is noticed on a page fetched for
+something else. "Cannot be searched for" and "not worth knowing" are different facts.
+
+Withholding the question from the planner IS the enforcement (`questionsWorthSearching`). No new
+switch to read, get wrong, or carry across a regeneration. Nothing is persisted, so nothing can go
+stale or disagree with the scorecard, and the verdict reverses for free two ways: the 30-day window
+rolls, so a dead question's spend ages off and it gets one ~150-page probe a month in case the web
+changed; and if the gate ever files a page under it from a search bought for something else, the bar
+is met immediately.
+
+**The denominator was wrong, and it nearly condemned a good question.** First live run flagged both
+`technical_leader` (264/1) and `delivery_scale` (216/1). The second was a false positive. `kept` is
+stamped on the signal with the question id live at gate time; `fetched` was reconstructed by summing
+run markers of whichever angles serve the question NOW. Sudden's brief was regenerated that day, so
+every question id was hours old while its denominator spanned a month of a predecessor question's
+spend — a numerator and denominator that did not start at the same moment.
+
+Two fixes, and the asymmetry is deliberate — both halves err toward leaving a question searchable:
+
+- The runner writes `per_question_fetched` on the run marker, charging each page to the question at
+  the moment it is bought. Survives every rewrite, and every id change, in between.
+- Reconstruction from old markers counts only from `brief_generated_at`. Nothing can have answered a
+  question before it was written. NOT applied to `kept`: a regeneration usually preserves an id, so
+  clamping answers would shrink the numerator and condemn a question that was working.
+
+Proven live (`_gq_29`, 5 Exa searches): runner writes it, the events row stores it, and the fold
+reads it back with the brief floor set to now so reconstruction is impossible.
+
+```
+returned/stored per_angle_fetched    = {"customer_case_studies":4}
+returned/stored per_question_fetched = {"delivery_scale":4}
+MATCH — every page bought is charged to the question it was bought for
+```
+
+Proven live (`_gq_30`, 12 planner runs): a withheld question got **0 angles in 12 runs**, every angle
+named its question, and coverage of the shown questions was 4/4 every time.
+
+**Three defects found while building it.**
+
+1. **A planner error overwrote a working strategy with the baseline.** 1 run in 12 fell back.
+   `BASELINE_ANGLES` answer `moves`/`buyers`, which no generated brief contains, so every angle in
+   the workspace would buy pages for a question nobody asks — and read as orphaned, forcing the same
+   failing regeneration again, every tick. The baseline is right for a workspace that never had a
+   strategy, not for one whose planner call timed out. Same trap in `ensureResearchBrief`, worse:
+   it would replace tuned questions with the generic five AND stamp a fresh input hash, so nothing
+   would ever try again. Both now keep what is in place.
+2. **A human's off switch on a QUESTION came back on every regeneration.** The identical hole that
+   was fixed for angles; the brief has carried it the whole time.
+3. **An assertion that could never fail.** "a keep rate under 10% says rewrite" tested
+   `.includes('rewrite it')` against the whole prompt block, and matched the word "rewrite **it**s
+   query" in the boilerplate footer. It held whatever the verdict said. Now tested against the
+   per-angle verdict line only.
+
+Also: `answers` is now required in `coerceAngle` when a brief exists, because an unattributed angle
+spends on every account forever and appears in no question's record — and arriving with no question
+is the one way a withheld question could get an angle anyway. `MIN_SAMPLE_FETCHED` /
+`MIN_ANGLE_FETCHED` were two copies of the same 30 in two files; there is one `FAIR_TRIAL_PAGES` now.
+
+Cost of the whole verification: ~10 Exa searches (~$0.10) and 15 planner calls.
+
 ## Not done / known open
 
 - **The 33k facts already stored are untouched.** They keep their old flat predicates and read
