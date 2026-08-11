@@ -19,7 +19,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchAll, chunk } from './paginate.ts';
 import { isSubstantiveFact } from './scoring.ts';
 import { sweepWorkspace, type CheckResult } from './sweep.ts';
-import { resolveEnvVar } from './policy.ts';
+import { resolveEnvVar, getPolicy } from './policy.ts';
+import { resolveBrief, loadQuestionSearchRecords, unreachableQuestions, UNREACHABLE_WINDOW_DAYS } from './research_brief.ts';
 import { fetchExaActualCost } from './exa_usage.ts';
 
 // ---------- pricing (unchanged from the old daily_report) ----------
@@ -179,6 +180,11 @@ export interface PeriodData {
    *  service key is configured. Null (no key / call failed) means the spend
    *  section falls back to the modeled per-search estimate. */
   exaActual: { totalCostUsd: number | null; error?: string } | null;
+  /** Questions the record says no web search answers, so the planner has stopped
+   *  buying searches for them. The agent makes this call on its own, which makes
+   *  telling the operator part of the change rather than an extra. Reversible: it
+   *  comes back the moment a page bought for another question answers it. */
+  unsearchable: Array<{ id: string; label: string; fetched: number; kept: number }>;
 }
 
 /** The advance pass, summed over every run in the window. This is the account
@@ -240,6 +246,20 @@ export async function collectPeriod(
   } = {},
 ): Promise<PeriodData> {
   const { since, until } = window;
+
+  // Read over UNREACHABLE_WINDOW_DAYS, not the report window: the verdict is
+  // about months of spend, and a one-day digest window would never see it.
+  const unsearchable = await (async () => {
+    try {
+      const records = await loadQuestionSearchRecords(sb, wsId, UNREACHABLE_WINDOW_DAYS);
+      const dead = new Set(unreachableQuestions(records));
+      if (!dead.size) return [];
+      const byId = new Map(records.map((r) => [r.id, r]));
+      return resolveBrief(await getPolicy(sb, wsId)).filter((q) => dead.has(q.id)).map((q) => ({
+        id: q.id, label: q.label, fetched: byId.get(q.id)?.fetched ?? 0, kept: byId.get(q.id)?.kept ?? 0,
+      }));
+    } catch { return []; }
+  })();
 
   const events = await fetchAll<EventRow>((f, t) =>
     sb.from('events').select('action, created_at, payload, target_id').eq('workspace_id', wsId).gte('created_at', since).lt('created_at', until).order('created_at', { ascending: true }).range(f, t));
@@ -481,6 +501,7 @@ export async function collectPeriod(
     domainBackfill,
     advance, rescoring, health,
     exaActual,
+    unsearchable,
   };
 }
 
@@ -638,6 +659,12 @@ export function renderMarkdown(d: PeriodData): string {
   H(`Research: ${research.length} runs, ${searches} searches, ${fmt(d.signals.length)} signals`);
   L.push(`Top accounts: ${topAccounts.map(([k, v]) => `${k} (${v})`).join(', ') || 'none'}`);
   for (const e of by('research_error')) L.push(`ERROR ${ts(e.created_at)}: ${JSON.stringify(e.payload).slice(0, 200)}`);
+  if (d.unsearchable.length) {
+    L.push('', 'Searches stopped for these questions — no search has answered them:');
+    for (const q of d.unsearchable) {
+      L.push(`- **${q.label}** (${q.id}): ${q.fetched} pages bought, answered ${q.kept} time(s). Still watched on pages bought for the other questions, and it comes back on its own if one answers it. Reword it in Settings if you think a different search would work.`);
+    }
+  }
   const highlights = topByMagnitude(d.signals, SIGNAL_HIGHLIGHTS);
   if (highlights.length) L.push('', 'Signal highlights:');
   for (const s of highlights) {

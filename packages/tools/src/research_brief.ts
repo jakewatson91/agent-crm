@@ -287,21 +287,39 @@ export interface QuestionRecord extends QuestionSearchRecord {
 export const FAIR_TRIAL_PAGES = 30;
 
 /**
- * THE BAR, and the only one: a search must answer the question it was bought for
- * at least once per fair trial.
+ * How often a search has to answer its own question to be worth buying: 3% of
+ * the pages it brings back.
  *
- * Stated this way it reads at both altitudes, which is the point. Applied to ONE
- * angle it means "this query is not working, write a different one". Applied to
- * a QUESTION — across every query that has ever been pointed at it — it means
- * something the loop could not previously conclude at all: no search answers
- * this, so stop buying them.
+ * A judgement call, and worth saying so plainly rather than dressing it up. This
+ * was first written as `kept * FAIR_TRIAL_PAGES >= fetched`, which reads as
+ * though the threshold follows from the fair-trial sample size. It does not. A
+ * sample size and a rate are unrelated quantities, and reusing one constant for
+ * both bought nothing except a sentence that sounded derived. The number is
+ * fitted to one workspace's four angles: the one earning its place runs at 6%,
+ * the two being condemned at 0.4%.
+ *
+ * Code rather than workspace policy, deliberately. It does not vary by customer
+ * or by vertical, and nobody could pick it from a settings page with any idea
+ * what they were choosing. Threading it through the four call sites as an
+ * optional argument is precisely how the last feedback loop in this file died.
+ */
+export const MIN_ANSWER_RATE = 0.03;
+
+/**
+ * THE BAR, and the only one: a search has to answer the question it was bought
+ * for often enough to be worth the pages.
+ *
+ * One test read at both altitudes, which is the point. Applied to ONE angle it
+ * means "this query is not working, write a different one". Applied to a QUESTION
+ * across every query ever pointed at it, it means something the loop could not
+ * previously conclude at all: no search answers this, so stop buying them.
  *
  * Deliberately not "kept === 0". An angle sitting at one lucky page in 264 was
  * immune to correction under a zero test, because zero is the only number a
  * single accident can move.
  */
 export function earnsItsSearches(r: { fetched: number; kept: number }): boolean {
-  return r.kept * FAIR_TRIAL_PAGES >= r.fetched;
+  return r.kept >= r.fetched * MIN_ANSWER_RATE;
 }
 
 /**
@@ -316,6 +334,24 @@ export function earnsItsSearches(r: { fetched: number; kept: number }): boolean 
  */
 export const UNREACHABLE_TRIALS = 5;
 export const UNREACHABLE_PAGES = FAIR_TRIAL_PAGES * UNREACHABLE_TRIALS;
+
+/**
+ * How far back this one verdict looks, and why it is not RECORD_WINDOW_DAYS.
+ *
+ * 30 days is right for "is this search working", which is a question about the
+ * search running now. It is the wrong window for "can this question ever be
+ * answered", because that needs 150 pages inside it — about 5 pages a day for one
+ * question. Sudden's failing question runs at 9 a day and gets there. A workspace
+ * researching a few accounts a week never would, so the loop it is meant to end
+ * would run forever on exactly the workspaces least able to afford it.
+ *
+ * 90 days brings the bar down to under 2 pages a day. Below that the honest
+ * answer is that there is no evidence yet: a verdict drawn from 20 pages is a
+ * guess, and this measure has already produced one false positive from a
+ * denominator that did not line up. A workspace that quiet is also spending a few
+ * dollars a year on the question, so waiting costs it almost nothing.
+ */
+export const UNREACHABLE_WINDOW_DAYS = 90;
 
 /**
  * Questions no web search can answer — the exit the loop did not have.

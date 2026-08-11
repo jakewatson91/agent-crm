@@ -761,6 +761,39 @@ is the one way a withheld question could get an angle anyway. `MIN_SAMPLE_FETCHE
 
 Cost of the whole verification: ~10 Exa searches (~$0.10) and 15 planner calls.
 
+### Tried and rejected on measurement — schema-enforced planner output
+
+Jake asked why the planners parse JSON by hand instead of declaring a schema. Good question, and
+`ai@6` + `zod@3` + `@ai-sdk/deepseek` are already dependencies of `packages/primitives`, with
+`generateObject` sitting unused. Built it: a `completeObject` wrapper, a zod schema per planner, and
+`answers` narrowed to a `z.enum` of the questions the workspace is allowed to search for, which makes
+an unsearchable question **unrepresentable** rather than merely unmentioned.
+
+It measured worse and was reverted.
+
+```
+chatComplete + hand parsing (baseline)   1 fallback in 10 runs
+generateObject, default mode             8 in 8   "the model did not return a response"
+generateObject, mode:'json', 3x budget   3 in 8   (no response / unparseable / did not match schema)
+```
+
+Two reasons, and both are worth remembering before anyone tries again:
+
+1. **deepseek-v4-pro does not do provider-side structured output on either route.** In isolation all
+   three modes answer a toy schema fine on both the gateway and direct; under the real planner prompt
+   the default mode returned nothing 8 times out of 8.
+2. **Whole-response validation turns partial failures into total ones.** `coerceAngle` drops ONE bad
+   angle and keeps the rest. A schema over the whole array throws the good angles away with the bad
+   one, which is how a 10% failure rate became 37%. When the items are independent, tolerant
+   per-item validation beats strict batch validation. The schema was buying type checks that
+   `coerceAngle` already does, and paying for them with the whole response.
+
+**Real finding from that thread, unfixed and worth its own pass:** `callOnce` in
+`packages/primitives/src/llm.ts` accepts `response_format` and never sends it to the provider. It is
+read only to decide whether to retry a failed `JSON.parse`. So every structured call in this codebase
+is a prompt instruction plus a parse-and-retry, and the provider is never told to emit JSON at all.
+Plumbing it through is the cheap version of what the schema was trying to buy.
+
 ## Not done / known open
 
 - **The 33k facts already stored are untouched.** They keep their old flat predicates and read

@@ -27,6 +27,7 @@ import {
   earnsItsSearches,
   unreachableQuestions,
   loadQuestionSearchRecords,
+  UNREACHABLE_WINDOW_DAYS,
   type QuestionSearchRecord,
 } from './research_brief.ts';
 import type { ResearchAngle, BriefQuestion, WorkspacePolicy } from './policy.ts';
@@ -388,7 +389,7 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
   // it costs one events read plus one signals scan on a path that runs at most
   // twice a day per workspace, and it can never go stale or contradict the
   // scorecard. A failure here returns nothing, which plans as it always did.
-  const records = await loadQuestionSearchRecords(supabase, workspace_id).catch(() => []);
+  const records = await loadQuestionSearchRecords(supabase, workspace_id, UNREACHABLE_WINDOW_DAYS).catch(() => []);
   const icpObj = (w.data?.icp ?? {}) as Record<string, unknown>;
   const ctx: PlannerContext = {
     about: (w.data?.about as string | null)?.trim() ?? '',

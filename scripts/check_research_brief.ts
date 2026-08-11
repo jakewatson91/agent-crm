@@ -152,9 +152,10 @@ eq('an unset floor is not the same as a set one',
 console.log('\na question no search can answer is recognised, and only after several fair trials:');
 {
   const r = (id: string, fetched: number, kept: number) => ({ id, fetched, kept });
-  eq('one answer per fair trial is the bar', earnsItsSearches(r('a', 30, 1)), true);
-  eq('and one page over it is not', earnsItsSearches(r('a', 31, 1)), false);
+  eq('3% of the pages it buys is the bar', earnsItsSearches(r('a', 100, 3)), true);
+  eq('under it does not clear', earnsItsSearches(r('a', 100, 2)), false);
   eq('a working search clears it easily', earnsItsSearches(r('a', 199, 84)), true);
+  eq('nothing bought, nothing to answer for', earnsItsSearches(r('a', 0, 0)), true);
 
   eq('the real failing question is caught', unreachableQuestions([r('technical_leader', 264, 1)]), ['technical_leader']);
   eq('zero answers over the same spend too', unreachableQuestions([r('a', UNREACHABLE_PAGES, 0)]), ['a']);
