@@ -613,6 +613,25 @@ export interface ResearchPolicy {
   guidance?: string;
   always_include?: string[];
   searches_per_run?: number;
+  /**
+   * Hours between research passes per tier. Any key omitted falls back to
+   * DEFAULT_TIER_CADENCE_HOURS.
+   *
+   * This is config rather than a constant because the right cadence depends on
+   * how big the book is, which varies per customer: a 200-account book can
+   * afford to revisit its best accounts every day, a 2,000-account one cannot.
+   *
+   * Measured on a 2,243-account book before the default moved from 24h to 96h:
+   * yield held between 0.64 and 0.97 kept pages per search through roughly the
+   * 7th visit in a month, then fell off a cliff — 0.33 on the 8th, 0.26 on the
+   * 9th, 0.22 from the 10th on. At a 24h cadence the heaviest accounts were
+   * getting 16-21 passes a month, so about a third of the entire search budget
+   * was being spent past that cliff. 96h lands at ~7 passes, which keeps the
+   * yield and returns the rest of the budget to accounts never looked at.
+   *
+   * The existing yield backoff still multiplies whatever is set here.
+   */
+  tier_cadence_hours?: { hot?: number; default?: number; cold?: number };
   selection_mix?: { high_value?: number; active_comms?: number; exploration?: number };
   strategy?: ResearchAngle[];
   strategy_generated_at?: string;
@@ -838,6 +857,24 @@ export function resolveEnvVar(
  * that's flat against the prior behavior (RESEARCH_FANOUT_LIMIT 25/tick × 1 search).
  */
 export const DEFAULT_RESEARCH_SEARCHES_PER_RUN = 30;
+
+/**
+ * Default hours between research passes per tier. See
+ * ResearchPolicy.tier_cadence_hours for why hot is 96 and not 24.
+ */
+export const DEFAULT_TIER_CADENCE_HOURS = { hot: 96, default: 24 * 7, cold: 24 * 30 } as const;
+
+/** Merge a workspace's tier cadence over the defaults, ignoring junk values. */
+export function resolveTierCadenceHours(
+  policy: WorkspacePolicy,
+): { hot: number; default: number; cold: number } {
+  const set = policy.research?.tier_cadence_hours ?? {};
+  const pick = (k: 'hot' | 'default' | 'cold') => {
+    const v = set[k];
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULT_TIER_CADENCE_HOURS[k];
+  };
+  return { hot: pick('hot'), default: pick('default'), cold: pick('cold') };
+}
 export const DEFAULT_SELECTION_MIX = { high_value: 0.55, active_comms: 0.30, exploration: 0.15 } as const;
 /** Exa searches each tier spends per entity researched. Exploration grants a cold account 1. */
 export const TIER_ANGLE_COUNT = { hot: 3, default: 1, cold: 0 } as const;

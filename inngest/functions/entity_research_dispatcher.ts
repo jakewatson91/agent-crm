@@ -7,9 +7,14 @@
  * score_signal_strength as an independent override and engagement as a
  * second override.
  *
- *   Hot     — score_total ≥ 0.5 OR signal_strength ≥ 0.7 OR engaged → every 24h
+ *   Hot     — score_total ≥ 0.5 OR signal_strength ≥ 0.7 OR engaged → every 96h
  *   Default — score_total ∈ [0.3, 0.5) → every 7d
  *   Cold    — score_total < 0.3       → every 30d
+ *
+ * Those gaps are defaults; policy.research.tier_cadence_hours overrides any of
+ * them per workspace. Hot was 24h until 2026-08-10, when the yield curve showed
+ * a cliff after ~7 passes a month and about a third of the search budget was
+ * being spent past it.
  *   Suppressed — dropped_until in the future → never
  *
  * Yield backoff: an already-researched account whose signal stays weak (research keeps
@@ -37,7 +42,7 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   entityIdsOfType, recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS,
-  getPolicy, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, ensureResearchBrief, currentFactRows, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
+  getPolicy, resolveTierCadenceHours, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, ensureResearchBrief, currentFactRows, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
   RESEARCH_DISPATCH_CRON, runExaSearch, resolveEnvVar, resolveContactStrategy, DEFAULT_THRESHOLDS,
 } from '@agent-crm/tools';
 import { inngest } from '../client.ts';
@@ -91,7 +96,10 @@ async function chunkedInPaged<T>(
   return out;
 }
 
-const TIER_CADENCE_HOURS = { hot: 24, default: 24 * 7, cold: 24 * 30 } as const;
+// Cadence now comes from policy (resolveTierCadenceHours) so it can be tuned per
+// workspace without a code change — the right gap between passes depends on how
+// big the book is. See ResearchPolicy.tier_cadence_hours for the yield data that
+// moved the hot default from 24h to 96h.
 const HOT_ICP_THRESHOLD = 0.5;
 const HOT_SIGNAL_THRESHOLD = 0.7;
 const COLD_ICP_THRESHOLD = 0.3;
@@ -412,7 +420,13 @@ export async function runResearchDispatch(
       }
     }
 
+    // Read once here rather than after the tiering loop: the cadence below needs
+    // it. Nothing between this and its former position writes the fields read off
+    // it (ensureResearchStrategy/Brief write `strategy` and `brief`, not these).
+    const policy = await getPolicy(supabase, ws.id);
+
     // Tier each entity; keep only those whose cadence cooldown has elapsed ("due").
+    const tierCadenceHours = resolveTierCadenceHours(policy);
     const candidates: Candidate[] = [];
     for (const a of accounts) {
       const s = stateByEntity.get(a.id)!;
@@ -436,7 +450,7 @@ export async function runResearchDispatch(
       // returns to 1 the moment a pass lifts the signal. sig<0.3 -> 3x, sig<0.5 -> 2x.
       const sig = s.signal_strength ?? 0;
       const backoff = (s.last_research_at > 0 && !engaged.has(a.id) && sig < 0.5) ? (sig < 0.3 ? 3 : 2) : 1;
-      const cadenceMs = TIER_CADENCE_HOURS[tier] * backoff * 3600 * 1000;
+      const cadenceMs = tierCadenceHours[tier] * backoff * 3600 * 1000;
       if (s.last_research_at && now - s.last_research_at < cadenceMs) continue;
       candidates.push({
         entity_id: a.id, entity_name: a.name, tier,
@@ -458,7 +472,6 @@ export async function runResearchDispatch(
     const angles = await ensureResearchStrategy(supabase, ws.id);
     const hotAngleCount = Math.min(Math.max(angles.length, 1), MAX_HOT_ANGLES);
 
-    const policy = await getPolicy(supabase, ws.id);
     const totalBudget = policy.research?.searches_per_run ?? DEFAULT_RESEARCH_SEARCHES_PER_RUN;
     // Contact-signal search (what linked PEOPLE have posted, not the company)
     // is carved off the top of this SAME budget, not a second pool -- total

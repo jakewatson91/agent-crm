@@ -16,8 +16,10 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { buildAngleRequest } from '../inngest/functions/research.ts';
-import { clampQuery, angleRecordBlock, stampRecordSince, carryOffSwitch, failedAngles, orphanedAngles } from '../packages/tools/src/research_strategy.ts';
-import type { ResearchAngle } from '../packages/tools/src/policy.ts';
+import { clampQuery, angleRecordBlock, stampRecordSince, carryOffSwitch, failedAngles, orphanedAngles, questionsWorthSearching } from '../packages/tools/src/research_strategy.ts';
+import { resolveBrief, PAIN_QUESTION } from '../packages/tools/src/research_brief.ts';
+import { resolveTierCadenceHours, DEFAULT_TIER_CADENCE_HOURS } from '../packages/tools/src/policy.ts';
+import type { ResearchAngle, WorkspacePolicy } from '../packages/tools/src/policy.ts';
 
 let fail = 0;
 function eq(label: string, got: unknown, want: unknown) {
@@ -80,15 +82,26 @@ eq('what survives still names the entity', clampQuery(long('(a OR b)')).includes
 // writes questions, so "the search is wrong" landed on something that could not
 // rewrite a search.
 console.log('\nan angle carries its own track record into the next regeneration:');
-const withRecord = (fetched: number, kept: number) =>
+const block = (fetched: number, kept: number) =>
   angleRecordBlock([angle('social', 30)], [{ id: 'social', fetched, kept }]);
+// The per-angle verdict only, not the whole block. Asserting against the block
+// let a test pass on its boilerplate: "a keep rate under 10% says rewrite"
+// matched the word "rewrite its query" in the closing paragraph, so it held
+// whatever the verdict said and could never have failed.
+const withRecord = (fetched: number, kept: number) =>
+  block(fetched, kept).split('\n').find((l) => l.trim().startsWith('[')) ?? '';
 eq('no prior angles means no block at all', angleRecordBlock([], []), '');
 eq('an unmeasured angle is left alone', withRecord(0, 0).includes('TOO EARLY TO JUDGE'), true);
 eq('a small sample is still too early', withRecord(29, 0).includes('TOO EARLY TO JUDGE'), true);
 eq('fetching plenty and keeping none is called out', withRecord(183, 0).includes('CANNOT work as written'), true);
-eq('a keep rate under 10% says rewrite', withRecord(100, 5).includes('rewrite it'), true);
+// The bar is one answer per fair trial, so 5 in 100 is a working angle and 1 in
+// 264 — the live one — is not. Under the old 10% reading the first was condemned
+// and under the old zero test the second was untouchable.
+eq('one answer per 30 pages is working, and says so', withRecord(100, 5).includes('earning its place'), true);
+eq('one answer in 264 pages is not, and says rewrite', withRecord(264, 1).includes('Rewrite it'), true);
+eq('and it quotes the numbers back', withRecord(264, 1).includes('1 time(s) in 264 pages'), true);
 eq('a working angle is told to stay put', withRecord(100, 40).includes('earning its place'), true);
-eq('a bad record never reads as a bad question', withRecord(183, 0).includes('not a bad question'), true);
+eq('a bad record never reads as a bad question', block(183, 0).includes('not a bad question'), true);
 
 // The id is kept across a rewrite so the record survives, which is exactly why a
 // rewritten query must not inherit it: the LinkedIn angle became a news angle
@@ -136,15 +149,18 @@ eq('a brand-new angle is on', carryOffSwitch(replanned, off)[2]!.enabled, true);
 eq('nothing switched off changes nothing', carryOffSwitch(replanned, []), replanned);
 
 // Age was the only staleness test, so a search provably buying nothing kept
-// running for up to 14 days. Zero keeps after a fair trial is the one reading of
-// the record that needs no judgement.
-console.log('\nan angle that bought nothing forces a rewrite; an unproven one does not:');
+// running for up to 14 days. The bar is now the same one the whole loop uses: a
+// search must answer the question it was bought for at least once per fair trial.
+console.log('\nan angle that is not earning its searches forces a rewrite; an unproven one does not:');
 const rec = (id: string, fetched: number, kept: number) => ({ id, fetched, kept });
 const one = [{ ...angle('news', 30), id: 'a' }];
 eq('a fair trial with zero keeps has failed', failedAngles(one, [rec('a', 183, 0)]), ['a']);
 eq('a small sample has not', failedAngles(one, [rec('a', 29, 0)]), []);
-eq('one keep is not zero', failedAngles(one, [rec('a', 183, 1)]), []);
-eq('a low keep rate is not zero either', failedAngles(one, [rec('a', 100, 5)]), []);
+// Under the old zero test, one accidental page bought an angle permanent
+// immunity: the live one sat at 1 answer in 264 pages and was never rewritten.
+eq('one lucky page in 183 does not save it', failedAngles(one, [rec('a', 183, 1)]), ['a']);
+eq('a thin but real keep rate is left alone', failedAngles(one, [rec('a', 100, 5)]), []);
+eq('exactly one answer per fair trial is enough', failedAngles(one, [rec('a', 30, 1)]), []);
 eq('an angle with no record at all has not failed', failedAngles(one, []), []);
 eq('an angle a human switched off is not counted',
   failedAngles([{ ...one[0]!, enabled: false }], [rec('a', 183, 0)]), []);
@@ -162,6 +178,48 @@ eq('an angle whose question is gone is orphaned', orphanedAngles(withBrief(serve
 eq('an angle with no question at all is not an orphan', orphanedAngles(withBrief(served(undefined), ['recent_launch'])), []);
 eq('a switched-off orphan does not force anything', orphanedAngles(withBrief(served('retired_q', false), ['recent_launch'])), []);
 eq('the always-on pain question counts as live', orphanedAngles(withBrief(served('pain'), ['recent_launch'])), []);
+
+// Withholding a question from the planner is the whole enforcement — there is no
+// "do not search for this" switch anywhere, only a question the planner is never
+// shown. So this is where research money is decided.
+console.log('\nthe planner is shown only the questions worth pointing a search at:');
+{
+  const q = (id: string) => ({ id, label: id, question: `q ${id}`, why: '', kind: 'state' as const, enabled: true });
+  const pol = { research: { brief: [q('recent_launch'), q('technical_leader')] } } as WorkspacePolicy;
+  const r = (id: string, fetched: number, kept: number) => ({ id, fetched, kept });
+
+  eq('with nothing measured, every question is fair game',
+    questionsWorthSearching(pol, []).map((x) => x.id), ['recent_launch', 'technical_leader']);
+  eq('pain is never searched for even though it is in the brief',
+    questionsWorthSearching(pol, []).some((x) => x.id === PAIN_QUESTION.id), false);
+  eq('a question no search answers is withheld',
+    questionsWorthSearching(pol, [r('technical_leader', 264, 1)]).map((x) => x.id), ['recent_launch']);
+  eq('and the working one is still shown',
+    questionsWorthSearching(pol, [r('technical_leader', 264, 1), r('recent_launch', 199, 84)]).map((x) => x.id), ['recent_launch']);
+  // Withheld from the SEARCH planner only. The gate and the extractor read the
+  // brief, and that is how a question like pain gets answered at all.
+  eq('but it stays in the brief the gate reads',
+    resolveBrief(pol).map((x) => x.id), ['recent_launch', 'technical_leader', PAIN_QUESTION.id]);
+  // The record window rolls, so a dead question's spend ages off and it gets
+  // tried again — roughly one probe a month rather than a permanent verdict.
+  eq('once its old spend ages out of the window it is tried again',
+    questionsWorthSearching(pol, [r('technical_leader', 0, 0)]).map((x) => x.id), ['recent_launch', 'technical_leader']);
+}
+
+// Hot cadence was a hardcoded 24h until 2026-08-10. Measured on a 2,243-account
+// book, yield per search held through ~7 passes a month then fell off a cliff
+// (0.33 on the 8th, 0.22 from the 10th), so roughly a third of the search budget
+// was being spent past the point it stopped paying. 96h lands at ~7 passes.
+console.log('\ntier cadence is config, with a default that keeps the budget off the cliff:');
+const cad = (research?: unknown) => resolveTierCadenceHours({ research } as WorkspacePolicy);
+eq('unset falls back to the defaults', cad(), { ...DEFAULT_TIER_CADENCE_HOURS });
+eq('the hot default is 96h, not 24h', DEFAULT_TIER_CADENCE_HOURS.hot, 96);
+eq('a workspace can override one tier', cad({ tier_cadence_hours: { hot: 24 } }).hot, 24);
+eq('overriding one tier leaves the others alone', cad({ tier_cadence_hours: { hot: 24 } }).cold, DEFAULT_TIER_CADENCE_HOURS.cold);
+eq('zero is not a cadence', cad({ tier_cadence_hours: { hot: 0 } }).hot, DEFAULT_TIER_CADENCE_HOURS.hot);
+eq('negative is not a cadence', cad({ tier_cadence_hours: { hot: -5 } }).hot, DEFAULT_TIER_CADENCE_HOURS.hot);
+eq('a string is not a cadence', cad({ tier_cadence_hours: { hot: '48' } }).hot, DEFAULT_TIER_CADENCE_HOURS.hot);
+eq('NaN is not a cadence', cad({ tier_cadence_hours: { hot: Number.NaN } }).hot, DEFAULT_TIER_CADENCE_HOURS.hot);
 
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);
