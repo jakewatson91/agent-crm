@@ -2931,3 +2931,96 @@ survived on its record. Full policy backed up before the first write.
 (the evidence check against real production numbers, and the run that caught the wrong `kept`
 measure), `_cfg_sudden_clear_social.ts`, `_cfg_sudden_regen_strategy.ts`,
 `_cfg_sudden_stamp_record_since.ts`, `_cfg_sudden_reconcile.ts`, `_cfg_sudden_replan_brief.ts`.
+
+---
+
+## 2026-08-10 (later) — where the money actually goes, and a third of it was being wasted
+
+Jake asked whether we are losing the token-efficiency angle, whether it holds at scale, and whether
+the cost gain is material enough that a buyer doesn't just go to HubSpot / Day / Rox / Cowork.
+
+**Shipped: `54aee48`** (hot research cadence 24h → 96h, now a policy knob). `pnpm verify` 338
+assertions, typecheck clean. Full review in `.claude/cost_position_review.md`.
+
+### The answer to the question as asked
+
+Measured on Sudden, 30 days: **$29.15 total — Exa $27.49 (94%), every LLM call combined $1.66
+(6%)**. Prompt caching already at 82% of input tokens. So the thing we have been selling optimises
+6% of the bill, and the headroom inside that is small.
+
+Real billed Exa (read from their team-management API) was $38.22 account-wide against $26.54
+modeled for Sudden alone — the model is roughly right.
+
+Competitors, for the comparison that does work: HubSpot Sales Hub Pro $90/seat/mo + $1,500
+onboarding; Day.ai $30+/user/mo; Rox $50 per 5,000 agent actions. Our whole monthly volume fits in
+one $50 Rox bucket, so at their pricing gross margin is ~42%.
+
+### Measuring the read layer took three attempts, two of them wrong
+
+- **fake 7.0x** — `select('*')` on signals pulls `embedding`, 19,189 chars of serialized pgvector
+  per row. Nobody puts that in a prompt.
+- **fake 1.0x** — fixing that, I handed the naive baseline pre-resolved current facts, a capped
+  signal list and no internal ids. That is doing the competitor's join *for* it. Jake caught this by
+  asking how our way could possibly not beat something that joins five tables.
+- **honest 2.1x** measured, 3.8x with round trips modeled. Only the 2.1x is safe to quote; a
+  competitor who writes one `get_account` tool erases the rest.
+
+**The finding worth more than the ratio:** 2,066 fact rows exist across 15 accounts, 395 are
+current — 5.2x more rows than answers — and the obvious filter (`supersedes is null`) returns the
+OLDEST value. A generic agent reads stale numbers and cannot tell. That is a correctness argument,
+not a cost one, and it is the one thing a competitor cannot fix by picking a cheaper model.
+
+### The waste, found by following the money
+
+Yield per search by visit number to the SAME account:
+
+```
+visit 1        0.76 kept pages per search
+visits 2-7     0.64 - 0.97   (no real decline)
+visit 8        0.33
+visit 9        0.26
+visit 10+      0.22
+```
+
+Visits 8-and-later were **1,401 searches a month, 36% of the entire Exa bill**, at 0.24. Meanwhile
+772 accounts with a domain had never been looked at once. Hot cadence was 24h, so the heaviest
+accounts got 16-21 passes a month.
+
+**Two wrong diagnoses were killed by testing before building:**
+
+1. *"Repeat visits are worth half a first visit."* Confounded — we revisit high-scoring accounts on
+   purpose, so that gap could have been about which accounts they are. Tested by visit number
+   within the same account: the decay is real, but it is a cliff after ~7, not a slope.
+2. *"The yield backoff is exempting hot accounts because it keys on signal_strength."* Sounded
+   right, was wrong. 5 of the 12 heaviest accounts **do** back off and still got 16-19 passes,
+   because 2x on a 24h cadence is still every two days. The multiplier was fine; the number it
+   multiplied was too small.
+
+So the fix is one number, exposed as config because the right gap depends on book size:
+`policy.research.tier_cadence_hours`, defaults 96/168/720.
+
+### Corrected an alarm I raised earlier the same day
+
+`used = 0` on every research question is NOT research failing. 14 of the 35 facts cited across 20
+drafts came off research pages — 40% of what drafts lean on. The scorecard counts `used` per
+question via `answers_question`, and question tagging only started 2026-08-09: 180 of 1,676 pages
+carry a tag. The corpus is a day old, not worthless. `scripts/_cost_07_who_is_lying.ts`.
+
+### Also found, not fixed
+
+- **The real-Exa-cost path has never fired.** `report.ts:300` resolves `EXA_SERVICE_API_KEY`, the
+  env holds `EXA_SERVICE_KEY`. Every cost number the product has shown is a model, not a bill.
+- **Scoring rewrites 81,295 fact rows/month** against 7,378 new facts; 99% are nine score
+  predicates. That is what creates the 5.2x read bloat. Cannot simply overwrite — `ScoreTimeline`
+  and the digest "movers" read the history. `retention.ts` is the right home for a keep-window.
+- Using the model's own web search instead of Exa costs *more*: $10/1k vs Exa's $7/1k with page
+  content included. The good version of that idea is a cheap model call that decides whether a
+  search is worth buying at all — $0.0002 against $0.007.
+
+### Housekeeping
+
+`b245bc8` is a concurrent session's uncommitted work, committed separately and labelled `wip`
+rather than swept into the cadence commit. My change could not compile without it. It passes
+verify; its author still needs to confirm it was ready.
+
+**New scripts:** `_cost_01_unit_economics` through `_cost_11_backoff_gap`, all read-only.

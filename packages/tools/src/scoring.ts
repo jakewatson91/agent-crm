@@ -22,6 +22,7 @@ import { act } from '@agent-crm/primitives';
 import { graphProximity } from './graph.ts';
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
+import { resolveMaxOutputTokens, type WorkspacePolicy } from './policy.ts';
 
 const SCORE_MODEL = 'deepseek-v4-flash';
 const DEFAULT_RRF_GATE = 0.3;           // below this, skip LLM
@@ -829,7 +830,14 @@ Score this account on the three rubric dimensions.`;
       llm = await chatCompleteForWorkspace(supabase, workspace_id, {
         model: SCORE_MODEL,
         behavior: 'scoring',
-        max_tokens: 350,
+        // 350 was the tightest ceiling in the codebase, on the busiest LLM call
+        // in the system, and it almost never fit: measured over 30 days, 2286 of
+        // 2295 scoring runs came back above it, which can only happen on
+        // chatComplete's retry. So 99.6% of scores were paying for one discarded
+        // call plus a second full one. Median output is 899 tokens.
+        // SCORE_MODEL reasons before it writes, so the budget has to cover the
+        // reasoning too, and it is a ceiling rather than a target.
+        max_tokens: resolveMaxOutputTokens(ws.policy as WorkspacePolicy, 'scoring'),
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: sysPrompt },

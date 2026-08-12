@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -815,17 +815,24 @@ export async function runAgent(
   });
   const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, recommended, behavior === 'drafter');
 
+  // DeepSeek-v4 spends output tokens on reasoning before emitting content, so a
+  // fact-heavy account needs headroom or the JSON body comes back cut off. It is
+  // a ceiling, not a target: a run that finishes early still costs what it uses,
+  // which is why it is set generously. DEFAULT_MAX_OUTPUT_TOKENS carries the
+  // measured distribution these numbers come from.
+  //
+  // Resolved ONCE. This used to be `behavior === 'drafter' ? 3000 : 1200`
+  // written out twice, here and in the unparseable-JSON event below, so the
+  // number the failure reported was only accidentally the number the call used.
+  // The whole point of that field is to be compared against output_tokens.
+  const maxOutputTokens = resolveMaxOutputTokens(policy, behavior);
+
   let llm;
   try {
     llm = await chatCompleteForWorkspace(supabase, payload.workspace_id, {
       model,
       behavior,
-      // DeepSeek-v4 spends output tokens on reasoning before emitting content;
-      // a rich hiring post needs headroom or the JSON body comes back empty.
-      // Drafter got 3000 after a high-fact account (53 facts) burned the whole
-      // 1500 budget on reasoning and truncated the JSON. It is a cap, not a
-      // target, so drafts that finish early still cost what they use.
-      max_tokens: behavior === 'drafter' ? 3000 : 1200,
+      max_tokens: maxOutputTokens,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },
@@ -875,7 +882,7 @@ export async function runAgent(
         payload: {
           reason: 'unparseable_json', behavior, model,
           output_tokens: llm.output_tokens ?? null,
-          max_tokens: behavior === 'drafter' ? 3000 : 1200,
+          max_tokens: maxOutputTokens,
           fragment: (llm.text ?? '').slice(0, 300),
         },
         parent_event_id: payload.parent_event_id ?? null,

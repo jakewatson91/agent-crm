@@ -309,6 +309,23 @@ export interface LLMPolicy {
   default_chat_model?: string;
   /** Optional override of the drafter model specifically (the customer-facing one). */
   drafter_model?: string;
+  /**
+   * Ceiling on output tokens per LLM call, by behavior. Any key omitted falls
+   * back to DEFAULT_MAX_OUTPUT_TOKENS.
+   *
+   * This is config rather than a constant because the right ceiling depends on
+   * how much the model is being asked to read, which varies per customer: the
+   * enricher and drafter prompts carry the account's active facts, and an
+   * account with 139 of them makes the model reason for far longer than one
+   * with 6.
+   *
+   * A ceiling that is too LOW is not a saving. The model never sees it, so it
+   * writes the same answer either way; the ceiling only decides where the
+   * answer gets cut off. A cut-off answer is unparseable JSON, and chatComplete
+   * responds by re-sending the whole prompt at 3x the budget, so an under-set
+   * ceiling means paying for one thrown-away call plus a second full one.
+   */
+  max_output_tokens?: { enricher?: number; drafter?: number; scoring?: number; claim_poster?: number };
 }
 
 /**
@@ -875,6 +892,43 @@ export function resolveTierCadenceHours(
   };
   return { hot: pick('hot'), default: pick('default'), cold: pick('cold') };
 }
+/**
+ * Default output-token ceiling per LLM behavior. See LLMPolicy.max_output_tokens
+ * for why this is config, and why a low ceiling costs money rather than saving it.
+ *
+ * Set from what the calls actually emit. Measured over 30 days of
+ * `agent_run_metrics`, against the ceilings that were in force at the time:
+ *
+ *   behavior   old ceiling   runs    p50    p90    p99    max    re-sent
+ *   scoring          350     2295    899   1751   3482   3995     99.6%
+ *   enricher        1200     1674   1840   3283   3905   3997     69.8%
+ *   drafter         3000      103   1945   4253   7253   7595     17.5%
+ *
+ * "re-sent" is the share of runs whose recorded output exceeds their own
+ * ceiling, which can only happen on chatComplete's retry. So essentially every
+ * scoring call in the system was being billed twice, and the scorer is the
+ * busiest LLM caller there is.
+ *
+ * The scoring and enricher tails are censored: the retry ran at 4000 and both
+ * maxima sit just under it, so their real p99 is unknown. The drafter's is not
+ * censored (its retry had room to 9000) and it runs to 3.9x its own median.
+ * Applying that ratio to the other two is what puts the enricher at 8000 rather
+ * than at the 3905 its clipped sample suggests.
+ *
+ * Raising a ceiling cannot make a call that already fits cost more: the model is
+ * not told the number, so a run that finishes in 900 tokens still bills 900.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = { enricher: 8000, drafter: 8000, scoring: 4000, claim_poster: 2000 } as const;
+
+/** Merge a workspace's per-behavior output ceiling over the defaults, ignoring junk values. */
+export function resolveMaxOutputTokens(
+  policy: WorkspacePolicy,
+  behavior: keyof typeof DEFAULT_MAX_OUTPUT_TOKENS,
+): number {
+  const v = (policy.llm?.max_output_tokens ?? {})[behavior];
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_OUTPUT_TOKENS[behavior];
+}
+
 export const DEFAULT_SELECTION_MIX = { high_value: 0.55, active_comms: 0.30, exploration: 0.15 } as const;
 /** Exa searches each tier spends per entity researched. Exploration grants a cold account 1. */
 export const TIER_ANGLE_COUNT = { hot: 3, default: 1, cold: 0 } as const;

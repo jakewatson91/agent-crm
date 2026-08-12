@@ -182,8 +182,13 @@ function looksLikeHandle(name: string): boolean {
   return /^[a-z][a-z0-9_-]+$/.test(s);
 }
 
+/** Items per LLM call. Matches EXTRACT_BATCH in connectors/exa.ts, which carries
+ *  the reasoning: an id-echoing classifier's reply grows with the input, so the
+ *  input is what has to be bounded. */
+const IDENTIFY_BATCH = 10;
+
 /** RSS feeds don't tell us which company each post is about. In discover mode we
- *  ask the LLM in one batched call. Returns the same items array with company_name
+ *  ask the LLM in batches. Returns the same items array with company_name
  *  and company_domain populated when extractable. Captures rejection reasons for
  *  the audit trail. */
 export async function enrichItemsWithCompanyName(
@@ -191,6 +196,33 @@ export async function enrichItemsWithCompanyName(
   opts: { hint: string; roles: string[]; keywords: string[] },
   model: string,
 ): Promise<{ items: ExtractedItem[]; notes: Map<string, string>; silently_dropped: number }> {
+  if (items.length === 0) return { items, notes: new Map<string, string>(), silently_dropped: 0 };
+  // Same ceiling problem the Exa classifier has, from the same shape: the model
+  // echoes every guid back, and extractWithLLM upstream allows 30 items against
+  // a max_tokens of 2500. A reply that does not fit is cut mid-object, and the
+  // guids the model never reached are indistinguishable here from guids it chose
+  // to skip, so they are filed as `silently_dropped_by_llm` and the items lose
+  // their company. See EXTRACT_BATCH in connectors/exa.ts.
+  if (items.length > IDENTIFY_BATCH) {
+    const chunks: ExtractedItem[][] = [];
+    for (let i = 0; i < items.length; i += IDENTIFY_BATCH) chunks.push(items.slice(i, i + IDENTIFY_BATCH));
+    // A failed batch gives up only its own items, rather than the caller
+    // abandoning every item on the feed.
+    const parts = await Promise.all(chunks.map((c) =>
+      enrichItemsWithCompanyName(c, opts, model)
+        .catch(() => ({ items: c.map((it) => ({ ...it, company_name: undefined })), notes: new Map<string, string>(), silently_dropped: c.length })),
+    ));
+    const notes = new Map<string, string>();
+    let silently_dropped = 0;
+    const out: ExtractedItem[] = [];
+    for (const p of parts) {
+      out.push(...p.items);
+      for (const [k, v] of p.notes) notes.set(k, v);
+      silently_dropped += p.silently_dropped;
+    }
+    return { items: out, notes, silently_dropped };
+  }
+
   const filterClauses: string[] = [];
   if (opts.roles.length) filterClauses.push(`Only include items whose role/title matches: ${opts.roles.join(' | ')}.`);
   if (opts.keywords.length) filterClauses.push(`Only include items matching: ${opts.keywords.join(' | ')}.`);

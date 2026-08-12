@@ -248,6 +248,28 @@ export async function batchExtractCompanies(
   return companies;
 }
 
+/**
+ * Results per LLM call, for the same reason the research page gate has one.
+ *
+ * This classifier makes the model echo every input's Exa id back, and an Exa id
+ * is a full URL rather than a short number, so the response grows about 50
+ * output tokens per result before any company name is written. The default
+ * num_results is 25 and a source can configure more, against a max_tokens of
+ * 2500. Past roughly 40 results the reply cannot fit, and the way it fails is
+ * expensive: the JSON is cut mid-object, chatComplete re-sends the entire
+ * prompt at 3x the budget and then again on the fallback model, and if the
+ * third try is also short the run ends having paid three times for nothing.
+ *
+ * The symptom was already in production. A discover source recorded "LLM
+ * omitted 14 ids from response (spec violation)" on its last run, which is what
+ * a truncated tail looks like from the caller's side: the ids the model never
+ * reached are read as ids it chose to skip.
+ *
+ * 10 at a time is ~500 output tokens against 2500, the same margin the page
+ * gate settled on.
+ */
+const EXTRACT_BATCH = 10;
+
 /** Detailed variant: returns the companies map plus the rejection notes and any
  *  silently dropped ids (LLM violated the "every id must appear" rule). Used by
  *  the connector to log spec violations and by debug scripts. */
@@ -260,8 +282,31 @@ export async function batchExtractCompaniesDetailed(
   rejected: Map<string, string>;
   silently_dropped: string[];
 }> {
-  const empty = { companies: new Map<string, { name: string; domain: string | null }>(), rejected: new Map<string, string>(), silently_dropped: [] };
-  if (results.length === 0) return empty;
+  if (results.length === 0) {
+    return { companies: new Map<string, { name: string; domain: string | null }>(), rejected: new Map<string, string>(), silently_dropped: [] };
+  }
+  if (results.length > EXTRACT_BATCH) {
+    const chunks: ExaResult[][] = [];
+    for (let i = 0; i < results.length; i += EXTRACT_BATCH) chunks.push(results.slice(i, i + EXTRACT_BATCH));
+    // One bad batch used to be one bad run: the caller catches whatever this
+    // throws and abandons every result, including the ones already classified.
+    // A batch that fails now surrenders only its own ids, which land in
+    // silently_dropped and are skipped downstream exactly as an unclassified
+    // result already is.
+    const parts = await Promise.all(chunks.map((c) =>
+      batchExtractCompaniesDetailed(c, hints, model)
+        .catch(() => ({ companies: new Map<string, { name: string; domain: string | null }>(), rejected: new Map<string, string>(), silently_dropped: c.map((r) => r.id) })),
+    ));
+    const companies = new Map<string, { name: string; domain: string | null }>();
+    const rejected = new Map<string, string>();
+    const silently_dropped: string[] = [];
+    for (const p of parts) {
+      for (const [k, v] of p.companies) companies.set(k, v);
+      for (const [k, v] of p.rejected) rejected.set(k, v);
+      silently_dropped.push(...p.silently_dropped);
+    }
+    return { companies, rejected, silently_dropped };
+  }
 
   const filterClauses: string[] = [];
   if (hints.roles.length) filterClauses.push(`Strongly prefer items where the role/title matches one of: ${hints.roles.join(' | ')}.`);
