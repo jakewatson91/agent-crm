@@ -3024,3 +3024,62 @@ rather than swept into the cadence commit. My change could not compile without i
 verify; its author still needs to confirm it was ready.
 
 **New scripts:** `_cost_01_unit_economics` through `_cost_11_backoff_gap`, all read-only.
+
+---
+
+## 2026-08-12 — two different LLM failures were being read as one, and only one of them was fixed
+
+The sweep flagged `llm_failures` at 14/112 runs (13%) and the working tree happened to hold the
+max_output_tokens work, so the obvious read was "the ceiling fix will clear this". It will not.
+They are separate failures with separate causes.
+
+### What the sweep was actually seeing
+
+`agent_llm_failed` carries a `reason`. Two values, and the difference is the whole story:
+
+- `unparseable_json` — the call returned and the JSON was cut off. This is what output ceilings fix.
+- `llm_error` — the call threw. The ceiling is irrelevant.
+
+Last 24h: 15 failures, **all `llm_error`, zero truncation.** Over 7 days: 72 failures, 64 of them
+`llm_error` (44 "Failed to process successful response", 20 "Insufficient Balance" on or before
+Aug 9) and only 8 truncation. So the ceiling work addresses 8 of 72 in a week and 0 of 15 today.
+
+### Why one hiccup ended the whole run
+
+`chatComplete` had no try/catch. Its retry and its fallback to deepseek-v4-pro only ever ran when
+the call *returned* bad JSON. A throw went straight up, `agentRun` wrote the failure event and
+skipped.
+
+The specific error matters. `Failed to process successful response` is raised by the AI SDK when
+the provider answers **200** and the response body will not parse, and it builds that APICallError
+with `statusCode: 200`, so `isRetryable` is false and generateText's own retry (maxRetries 2,
+which only covers 408/409/429/5xx) declines it. One bad body, run over.
+
+Cost of that, 24h to today: enricher 12 failures against 57 completions (17.4%), scoring 3 against
+49 (5.8%). None of the 15 completed on a later pass, and CrunchyRoll failed four hourly attempts in
+a row. Nine different accounts, roughly one an hour, so this reads as a per-call provider flake,
+not something about big accounts.
+
+### The fix
+
+`callWithRetry` in `packages/primitives/src/llm.ts` wraps `callOnce`: 3 attempts, 400ms then 800ms
+apart, used by all three call sites inside `chatComplete`. What it will not retry is anything a
+person has to fix, since repeating those only delays the alert: 400, 401, 402 (DeepSeek returns 402
+for "Insufficient Balance"), 403, 404. `chatCompleteStream` deliberately does not get it, because
+replaying text a user already watched stream in is worse than letting them ask again.
+
+`scripts/check_llm_retry.ts`, 18 assertions, in `pnpm check`.
+
+### Read the sweep differently now
+
+An `llm_error` after this means the provider failed **three** times, not once. If the rate does not
+drop well below today's 13%, the next suspect is the DeepSeek account itself, not our retry logic.
+
+### Still open, unchanged by any of this
+
+- **Exa is out of credit** and that is the only thing actually stopping work. Research paused
+  2026-08-11 20:09. Everything downstream is running on evidence that stops getting fresher.
+- **Score clustering (54% of 2,132 accounts in decile 8/10)** is untouched by the ceiling change.
+  Production already scored at 4,000 tokens in practice, because the retry recomputed at
+  `max(3 x 350, 4000)` and that second call is the one whose output got written. Raising the first
+  call to 4,000 removes a duplicate call and produces the same scores.

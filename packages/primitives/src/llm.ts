@@ -15,6 +15,7 @@ import {
   tool,
   jsonSchema,
   stepCountIs,
+  APICallError,
   type ModelMessage,
   type ToolSet,
 } from 'ai';
@@ -142,6 +143,58 @@ function toToolChoice(tc: ChatCompleteArgs['tool_choice']) {
 
 const FALLBACK_MODEL = 'deepseek/deepseek-v4-pro';
 
+/** Attempts per call: the first try plus this many. */
+const TRANSPORT_RETRIES = 2;
+/** Wait before retry n, in ms: 400, then 800. Long enough to clear a blip, short enough that a background run doesn't stall. */
+const RETRY_BACKOFF_MS = 400;
+
+/**
+ * Statuses where trying again cannot help, because the provider is telling us
+ * something a person has to fix: 400 malformed request, 401 bad key, 402 out of
+ * credit, 403 not allowed, 404 unknown model id. Repeating those just delays
+ * the error an operator needs to see.
+ */
+const PERMANENT_STATUS = new Set([400, 401, 402, 403, 404]);
+
+/**
+ * Is this failure worth another attempt with the same request?
+ *
+ * generateText already retries what the SDK marks retryable (429, 5xx). The
+ * gap is the one it marks NOT retryable but that a repeat almost always fixes:
+ * the provider answers 200 and the SDK cannot parse the body, which it reports
+ * as APICallError("Failed to process successful response") with statusCode 200,
+ * so isRetryable is false and it gives up on the spot. Measured over the 24h to
+ * 2026-08-12 that killed 12 of 69 enricher runs and 3 of 52 scoring runs on
+ * deepseek-v4-flash, every one of them terminal: agentRun writes
+ * agent_llm_failed and skips, so no fallback model and no second try.
+ *
+ * Anything that is not a provider call failure (a missing key, an abort, a bug
+ * in our own code) is left alone — looping on those hides them.
+ */
+export function isWorthRetrying(e: unknown): boolean {
+  if (!APICallError.isInstance(e)) return false;
+  if (e.statusCode != null && PERMANENT_STATUS.has(e.statusCode)) return false;
+  return true;
+}
+
+/**
+ * callOnce, with the transport retry above. `call` is a parameter so the
+ * assertions in scripts/check_llm_retry.ts can count attempts without a network.
+ */
+export async function callWithRetry(
+  args: ChatCompleteArgs,
+  call: (a: ChatCompleteArgs) => Promise<ChatCompleteResult> = callOnce,
+): Promise<ChatCompleteResult> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await call(args);
+    } catch (e) {
+      if (attempt >= TRANSPORT_RETRIES || !isWorthRetrying(e)) throw e;
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
+    }
+  }
+}
+
 async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   const tools = toToolSet(args.tools);
   const { system, rest } = extractSystem(args.messages);
@@ -172,16 +225,23 @@ async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
 }
 
 /**
- * Chat completion with JSON resilience (unchanged behavior):
+ * Chat completion with JSON resilience:
+ *   0. Every attempt below retries a provider blip up to TRANSPORT_RETRIES times.
  *   1. Retry once on empty/malformed JSON when response_format=json_object.
  *   2. If still bad and not already on it, fall back to deepseek-v4-pro.
- * Tool-shaped responses skip this (empty content alongside tool_calls is valid).
+ * Tool-shaped responses skip 1 and 2 (empty content alongside tool_calls is valid).
+ *
+ * Step 1 only ever ran when the call returned. When it threw instead, the error
+ * went straight to the caller and the run was over, which is what callWithRetry
+ * now covers. chatCompleteStream is deliberately left without it: it is the
+ * interactive chat path, where a retry would replay text the user already saw
+ * and the user can just ask again.
  */
 export async function chatComplete(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   const wantsJson = args.response_format?.type === 'json_object';
   const usingTools = (args.tools?.length ?? 0) > 0;
 
-  let result = await callOnce(args);
+  let result = await callWithRetry(args);
   if (usingTools || !wantsJson || isValidJson(result.text)) return result;
 
   // Empty/non-JSON on a json_object call almost always means a reasoning model
@@ -189,11 +249,11 @@ export async function chatComplete(args: ChatCompleteArgs): Promise<ChatComplete
   // The retry + fallback only help if they get more room than the first try —
   // same budget = same failure. Give content space after reasoning.
   const roomy: ChatCompleteArgs = { ...args, max_tokens: Math.max((args.max_tokens ?? 1024) * 3, 4000) };
-  result = await callOnce(roomy);
+  result = await callWithRetry(roomy);
   if (isValidJson(result.text)) return result;
 
   if (args.model !== FALLBACK_MODEL) {
-    const fb = await callOnce({ ...roomy, model: FALLBACK_MODEL });
+    const fb = await callWithRetry({ ...roomy, model: FALLBACK_MODEL });
     return fb; // return whatever we got; caller surfaces the error
   }
   return result;
