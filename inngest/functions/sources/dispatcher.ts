@@ -2,6 +2,7 @@ import { createServerClient } from '@agent-crm/db';
 import { cronToMinIntervalMinutes, getPipelineStatus } from '@agent-crm/tools';
 import { inngest } from '../../client.ts';
 import { getConnector } from './registry.ts';
+import { sourceRunStatus } from './types.ts';
 
 /**
  * source-dispatcher: hourly tick that fans out a `source.run` event for each
@@ -108,7 +109,7 @@ export const sourceRun = inngest.createFunction(
         last_run_at: (source.last_run_at as string | null) ?? null,
       });
 
-      const status = out.errors.length === 0 ? 'ok' : 'error';
+      const status = sourceRunStatus(out);
 
       // Yield tracking: how many signals has this source produced over the
       // last 7d? Used to detect dead queries and silently auto-deactivate so

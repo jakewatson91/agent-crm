@@ -100,13 +100,75 @@ const DESCRIPTION_EXCERPT_FOR_EMBEDDING = 1500;
 // ---- Per-provider fetchers ----
 
 const FETCH_TIMEOUT_MS = 10_000;
+// One slow response used to end an entity's whole fetch: the throw was recorded
+// as a source error and the board was left alone until the next run. CrunchyRoll
+// failed this way 19.5h straight while its board answered a manual request in
+// 0.4s, so a single timeout is not evidence the board is unreachable.
+const FETCH_RETRIES = 2;
+const FETCH_RETRY_BACKOFF_MS = 400;
+
+// Retries the transport, never a status. A 404 or 403 on a known slug means the
+// board moved or closed, and re-probing (which the caller already does) is the
+// right answer — repeating the same request just delays it. An unparseable body
+// on a 200 is retried, because that is a truncated response, not a real answer.
+export function isTransportFailure(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  return e.name === 'TimeoutError' || e.name === 'AbortError' || e.name === 'TypeError' || e.name === 'SyntaxError';
+}
+
+type JsonFetch<T> = { ok: true; status: number; body: T } | { ok: false; status: number; body: null };
+
+// Wraps the body read as well as the request. AbortSignal.timeout stays armed
+// while the body streams, and Greenhouse boards with ?content=true run near a
+// megabyte, so the timeout fires inside r.json() as often as inside fetch().
+//
+// `impl` is a parameter so scripts/check_ats_retry.ts can count attempts
+// without a network.
+export async function fetchJson<T>(
+  url: string,
+  init: RequestInit = {},
+  impl: typeof fetch = fetch,
+): Promise<JsonFetch<T>> {
+  return withRetry(url, init, impl, (r) => r.json() as Promise<T>);
+}
+
+/**
+ * Same retry, for the discovery probe, which reads HTML rather than JSON.
+ * That path swallows its own failures (`catch {}` → try the next URL), so a
+ * timeout there does not surface as an error at all — it reads as "this board
+ * is not our company's", and the entity gets marked as having no ATS until the
+ * next re-probe, up to reprobe_days away.
+ */
+export async function fetchText(
+  url: string,
+  init: RequestInit = {},
+  impl: typeof fetch = fetch,
+): Promise<JsonFetch<string>> {
+  return withRetry(url, init, impl, (r) => r.text());
+}
+
+async function withRetry<T>(
+  url: string,
+  init: RequestInit,
+  impl: typeof fetch,
+  read: (r: Response) => Promise<T>,
+): Promise<JsonFetch<T>> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await impl(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      if (!r.ok) return { ok: false, status: r.status, body: null };
+      return { ok: true, status: r.status, body: await read(r) };
+    } catch (e) {
+      if (attempt >= FETCH_RETRIES || !isTransportFailure(e)) throw e;
+      await new Promise((resolve) => setTimeout(resolve, FETCH_RETRY_BACKOFF_MS * (attempt + 1)));
+    }
+  }
+}
 
 async function fetchGreenhouse(slug: string): Promise<JobsFetchResult> {
   // ?content=true returns the description inline so we don't need a per-job fetch.
   const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=true`;
-  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const j = await r.json() as { jobs?: Array<{
+  const res = await fetchJson<{ jobs?: Array<{
     id: number;
     title: string;
     absolute_url: string;
@@ -115,7 +177,9 @@ async function fetchGreenhouse(slug: string): Promise<JobsFetchResult> {
     content?: string;
     departments?: Array<{ name?: string }>;
     pay_input_ranges?: Array<{ min_cents?: number; max_cents?: number; currency_type?: string; interval?: string }>;
-  }> };
+  }> }>(url);
+  if (!res.ok) return { ok: false, jobs: [], status: res.status };
+  const j = res.body;
   const jobs: JobPosting[] = (j.jobs ?? []).map((p) => {
     const pay = p.pay_input_ranges?.[0];
     return {
@@ -137,9 +201,7 @@ async function fetchGreenhouse(slug: string): Promise<JobsFetchResult> {
 
 async function fetchLever(slug: string): Promise<JobsFetchResult> {
   const url = `https://api.lever.co/v0/postings/${encodeURIComponent(slug)}?mode=json`;
-  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const arr = await r.json() as Array<{
+  const res = await fetchJson<Array<{
     id: string;
     text: string;
     hostedUrl: string;
@@ -148,8 +210,9 @@ async function fetchLever(slug: string): Promise<JobsFetchResult> {
     descriptionPlain?: string;
     description?: string;
     salaryRange?: { min?: number; max?: number; currency?: string; interval?: string };
-  }>;
-  const jobs: JobPosting[] = arr.map((p) => {
+  }>>(url);
+  if (!res.ok) return { ok: false, jobs: [], status: res.status };
+  const jobs: JobPosting[] = res.body.map((p) => {
     const descPlain = p.descriptionPlain ?? (p.description ? htmlToText(p.description) : null);
     return {
       external_id: `lv:${p.id}`,
@@ -173,9 +236,7 @@ async function fetchLever(slug: string): Promise<JobsFetchResult> {
 async function fetchAshby(slug: string): Promise<JobsFetchResult> {
   // includeCompensation=true asks Ashby to include comp on roles that opt in to display it.
   const url = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}?includeCompensation=true`;
-  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const j = await r.json() as { jobs?: Array<{
+  const res = await fetchJson<{ jobs?: Array<{
     id: string;
     title: string;
     jobUrl: string;
@@ -190,7 +251,9 @@ async function fetchAshby(slug: string): Promise<JobsFetchResult> {
       compensationTierSummary?: string;
       summaryComponents?: Array<{ minValue?: number; maxValue?: number; currencyCode?: string; interval?: string }>;
     };
-  }> };
+  }> }>(url);
+  if (!res.ok) return { ok: false, jobs: [], status: res.status };
+  const j = res.body;
   const jobs: JobPosting[] = (j.jobs ?? []).map((p) => {
     const descPlain = p.descriptionPlain ?? (p.descriptionHtml ? htmlToText(p.descriptionHtml) : null);
     const comp = p.compensation?.summaryComponents?.[0];
@@ -217,9 +280,12 @@ async function fetchWorkable(slug: string): Promise<JobsFetchResult> {
   // List endpoint has no description — only metadata. The description requires
   // a per-job detail fetch (done lazily for NEW jobs only, capped per run).
   const url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(slug)}/jobs`;
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '' }), signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!r.ok) return { ok: false, jobs: [], status: r.status };
-  const j = await r.json() as { results?: Array<{ id: string; title: string; shortcode?: string; locations?: Array<{ location_str?: string }>; department?: string; published_on?: string; employment_type?: string }> };
+  const res = await fetchJson<{ results?: Array<{ id: string; title: string; shortcode?: string; locations?: Array<{ location_str?: string }>; department?: string; published_on?: string; employment_type?: string }> }>(
+    url,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '' }) },
+  );
+  if (!res.ok) return { ok: false, jobs: [], status: res.status };
+  const j = res.body;
   const jobs: JobPosting[] = (j.results ?? []).map((p) => ({
     external_id: `wk:${p.id}`,
     title: p.title,
@@ -246,14 +312,14 @@ async function enrichWorkableJob(slug: string, shortcode: string): Promise<{
 }> {
   try {
     const url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(slug)}/jobs/${encodeURIComponent(shortcode)}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!r.ok) return {};
-    const j = await r.json() as {
+    const res = await fetchJson<{
       description?: string;
       requirements?: string;
       benefits?: string;
       salary?: { salary_from?: number; salary_to?: number; salary_currency?: string };
-    };
+    }>(url);
+    if (!res.ok) return {};
+    const j = res.body;
     const combined = [j.description, j.requirements, j.benefits].filter(Boolean).join('\n\n');
     return {
       description: combined ? htmlToText(combined).slice(0, MAX_DESCRIPTION_CHARS) : null,
@@ -335,10 +401,9 @@ async function verifyBoardMatchesEntity(
   if (sampleJob?.url) urls.push(sampleJob.url);
   for (const url of urls) {
     try {
-      const r = await fetch(url, { headers: { 'User-Agent': 'agent-crm-ats-discovery/1.0' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-      if (!r.ok) continue;
-      const html = (await r.text()).toLowerCase();
-      if (html.includes(target)) return true;
+      const res = await fetchText(url, { headers: { 'User-Agent': 'agent-crm-ats-discovery/1.0' } });
+      if (!res.ok) continue;
+      if (res.body.toLowerCase().includes(target)) return true;
     } catch {
       // try next url
     }

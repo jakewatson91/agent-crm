@@ -4,9 +4,11 @@
  *   pnpm status                     # full overview
  *   pnpm status <signal_type>       # dump 20 most recent signals of that type (full body + tags)
  *   pnpm status <signal_type> 50    # ...N most recent
- *   WORKSPACE_ID=<uuid> pnpm status
+ *   WORKSPACE_ID=<uuid> pnpm status    # override the workspace for one run
  *
  * Reads prod Supabase via .env.local (service role). Pure read-only.
+ * WORKSPACE_ID is required and lives in .env.local — there is no default, because
+ * a wrong default reports a healthy workspace as dead (or the reverse).
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
@@ -23,7 +25,11 @@ const db = createClient(
   { auth: { persistSession: false } },
 );
 
-const ws = process.env.WORKSPACE_ID ?? 'af602fa1-1e0b-4bee-9841-01894553e0a9';
+const ws = process.env.WORKSPACE_ID;
+if (!ws) {
+  console.error('WORKSPACE_ID is not set. Add it to .env.local, or pass it inline: WORKSPACE_ID=<uuid> pnpm status');
+  process.exit(1);
+}
 const arg = process.argv[2];
 const argN = parseInt(process.argv[3] ?? '20', 10);
 

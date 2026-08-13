@@ -9,6 +9,7 @@
     ".": "./client.ts",
     "./functions": "./functions/index.ts",
     "./functions/sources/registry": "./functions/sources/registry.ts",
+    "./functions/sources/types": "./functions/sources/types.ts",
     "./functions/sources/registry_meta": "./functions/sources/registry_meta.ts",
     "./functions/sources/connectors/yc": "./functions/sources/connectors/yc.ts"
   },

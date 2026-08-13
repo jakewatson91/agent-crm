@@ -18,6 +18,26 @@ export interface ConnectorResult {
 
 export type Connector = (ctx: ConnectorContext) => Promise<ConnectorResult>;
 
+/**
+ * `error` means the run did no work, not that something went wrong in it.
+ *
+ * Connectors collect per-entity errors alongside everything they did manage to
+ * fetch, and the old rule (`errors.length === 0 ? 'ok' : 'error'`) made any one
+ * of them a source-level failure. Sudden's ATS source sat red for 19.5h on a
+ * single board timing out, in a run that processed the other ~495 and created a
+ * signal. Red on a working source is worse than no signal at all — it trains
+ * you to ignore the colour.
+ *
+ * A run that produced nothing AND hit errors is the state a person needs to
+ * look at. Per-entity errors are recorded in last_run_summary.errors either
+ * way, so nothing is hidden by this.
+ */
+export function sourceRunStatus(out: ConnectorResult): 'ok' | 'error' {
+  if (out.errors.length === 0) return 'ok';
+  const didWork = out.signals_created > 0 || out.entities_created > 0 || out.skipped > 0;
+  return didWork ? 'ok' : 'error';
+}
+
 export interface ConnectorMeta {
   type: string;              // e.g. 'hn'
   label: string;             // e.g. 'Hacker News'

@@ -26,6 +26,7 @@ config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
 import { runAgent } from '../inngest/functions/agent_logic.js';
 import { getConnector } from '../inngest/functions/sources/registry.js';
+import { sourceRunStatus } from '../inngest/functions/sources/types.js';
 import { runRetention } from '@agent-crm/tools';
 import { advanceAccounts } from '../inngest/functions/advance_accounts.js';
 
@@ -78,7 +79,7 @@ async function tick() {
       });
       await sb.from('sources').update({
         last_run_at: new Date().toISOString(),
-        last_run_status: out.errors.length === 0 ? 'ok' : 'error',
+        last_run_status: sourceRunStatus(out),
         last_run_summary: {
           signals_created: out.signals_created,
           entities_created: out.entities_created,

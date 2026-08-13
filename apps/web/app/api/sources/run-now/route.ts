@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { getConnector } from '@agent-crm/inngest/functions/sources/registry';
+import { sourceRunStatus } from '@agent-crm/inngest/functions/sources/types';
 
 export const runtime = 'nodejs';
 
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
     last_run_at: (source.last_run_at as string | null) ?? null,
   });
 
-  const status = out.errors.length === 0 ? 'ok' : 'error';
+  const status = sourceRunStatus(out);
   await supabase
     .from('sources')
     .update({
