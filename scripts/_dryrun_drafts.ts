@@ -11,13 +11,24 @@
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
-import { chatCompleteForWorkspace, scoreFacts, pickDraftAngle, type AngleDecision } from '@agent-crm/tools';
+import { chatCompleteForWorkspace, scoreFacts, pickDraftAngle, resolveMaxOutputTokens, type AngleDecision } from '@agent-crm/tools';
 import { buildSystemPrompt, buildUserPrompt } from '../inngest/functions/agent_logic.js';
 
 const WS = 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
 const OUT = process.env.DRYRUN_OUT ?? '/tmp/sudden_dryrun.txt';
+
+// DRYRUN_ANGLE_CACHE pins the picked problem across runs. Without it, comparing
+// two prompt or model settings compares two things at once: the angle picker is
+// its own LLM call and it hands different runs different problems, so a draft
+// that turned into a refusal can be the picker's doing rather than the change
+// under test. First run with the file absent writes its picks; every later run
+// pointed at the same file reuses them. Delete the file to re-pick.
+const ANGLE_CACHE = process.env.DRYRUN_ANGLE_CACHE ?? '';
+const angleCache = new Map<string, AngleDecision>(
+  ANGLE_CACHE && existsSync(ANGLE_CACHE) ? JSON.parse(readFileSync(ANGLE_CACHE, 'utf8')) : [],
+);
 
 // Node buffers stdout to a pipe, so a long run shows nothing until it exits.
 // Append to a file instead so progress is readable while it runs.
@@ -77,7 +88,7 @@ async function main() {
     .slice(0, limit);
   log(`${ranked.length} accounts selected from ${scoreRows.length} score facts\n`);
 
-  let drafted = 0, gated = 0;
+  let drafted = 0, gated = 0, totalOut = 0;
   const bodies: Array<{ name: string; body: string }> = [];
   // Diagnostic, NOT a score. Sudden's product does one thing for one situation,
   // so most accounts landing on the same problem is the menu being honest, not
@@ -158,7 +169,9 @@ async function main() {
     // live drafter uses. A null angle means the picker declined or failed, and
     // the prompt falls back to the full menu.
     let decision: AngleDecision = { choice: null, reason: 'menu_too_small' };
-    if ((policy.drafter?.templates ?? []).length) {
+    if (angleCache.has(acct.id)) {
+      decision = angleCache.get(acct.id)!;
+    } else if ((policy.drafter?.templates ?? []).length) {
       decision = await pickDraftAngle(sb as any, WS, {
         model: 'deepseek-v4-flash',
         account_name: acct.name,
@@ -166,6 +179,8 @@ async function main() {
         pain_points: policy.drafter?.pain_points ?? [],
         templates: policy.drafter?.templates ?? [],
       });
+      angleCache.set(acct.id, decision);
+      if (ANGLE_CACHE) writeFileSync(ANGLE_CACHE, JSON.stringify([...angleCache], null, 2));
     }
     const angle = decision.choice;
     const system = buildSystem(angle);
@@ -173,13 +188,24 @@ async function main() {
     const user = buildUserPrompt('claims_outbound_drafter', 'dry-run', 'dry-run grading pass',
       sig ?? {}, { id: acct.id, name: acct.name, attributes: acct.attributes }, activeFacts, [], contacts, recommended as any, true);
 
-    // Same model, max_tokens and response_format the live drafter uses
-    // (agent_logic.ts DRAFTER_MODEL). Not a choice made here.
+    // Same model, ceiling and response_format the live drafter uses. The ceiling
+    // is RESOLVED, not typed in: it was hardcoded 3000 here while bf234ba moved
+    // the live default to 8000, so a run that truncated in this harness proved
+    // nothing about production and read as catastrophic draft loss.
+    //
+    // DRYRUN_THINKING lets one run be compared against another with the model's
+    // pre-answer reasoning turned off. Unset matches live exactly, because the
+    // live drafter never passes `thinking` either, so it inherits the provider
+    // default. The llm.ts guidance to leave thinking on for anything that writes
+    // was measured on cost and truncation, never on how the writing reads, so
+    // whether it helps the voice is an open question this flag exists to answer.
+    const thinking = process.env.DRYRUN_THINKING as 'enabled' | 'disabled' | undefined;
     const res = await chatCompleteForWorkspace(sb as any, WS, {
       model: 'deepseek-v4-pro',
       behavior: 'drafter',
-      max_tokens: 3000,
+      max_tokens: resolveMaxOutputTokens(policy, 'drafter'),
       response_format: { type: 'json_object' },
+      ...(thinking ? { thinking } : {}),
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     } as any);
 
@@ -195,7 +221,13 @@ async function main() {
       continue;
     }
 
-    log(`── ${acct.name}  (score=${Number(acct.score).toFixed(2)}, ${activeFacts.length} facts, ${contacts.length} contacts)`);
+    // Output tokens are the whole cost story on a reasoning model: the body is
+    // ~120 of them and everything above that was spent thinking. Printed per
+    // account so a prompt change that quietly triples the reasoning is visible
+    // here rather than on the bill.
+    const outTok = Number((res as any).output_tokens ?? 0);
+    totalOut += outTok;
+    log(`── ${acct.name}  (score=${Number(acct.score).toFixed(2)}, ${activeFacts.length} facts, ${contacts.length} contacts, ${outTok} out tok)`);
     log(`   angle: ${angle ? `${angle.problem.slice(0, 90)}  [withheld: ${angle.withheld_template_ids.join(', ') || 'none'}]  (${angle.why})` : `(none — ${decision.reason}, full menu rendered)`}`);
     if (angle) angleCounts.set(angle.problem, (angleCounts.get(angle.problem) ?? 0) + 1);
     if (parsed.action === 'request_gate') {
@@ -212,6 +244,18 @@ async function main() {
     const flags: string[] = [];
     if (body.length > 440) flags.push(`over budget (${body.length})`);
     if (!/\?/.test(body)) flags.push('NO QUESTION');
+    // A dash standing in for a comma is the loudest machine tell in a short
+    // message, and it ran 4 of 12 before the craft rule went in.
+    if (/[—–]/.test(body)) flags.push('em/en dash');
+    const slot = body.match(/\[[^\]]{2,30}\]|\{\{[^}]{2,30}\}\}|<[a-z][a-z_ ]{1,29}>/i);
+    if (slot) flags.push(`PLACEHOLDER ${slot[0]}`);
+    // The think question has to be answerable from memory. One that opens "how
+    // much" or "what share" is asking them to go and look, and the honest reply
+    // is no reply. A fork ("or") or a yes/no opener is fine; this only catches
+    // the shape STEP 3 already rules out.
+    const questions = body.split(/(?<=[.?!])\s+/).filter((s) => s.trim().endsWith('?'));
+    const answerable = questions.some((q) => /\bor\b/i.test(q) || /^(is|are|was|were|do|does|did|have|has|had|can|could|would|will|should|who)\b/i.test(q.trim()));
+    if (questions.length && !answerable) flags.push(`question needs homework: "${questions[0]!.slice(0, 60)}"`);
     for (const re of BANNED_CTA) if (re.test(body)) flags.push(`banned CTA: ${re.source.slice(0, 30)}`);
     for (const re of BANNED_CLAIM) if (re.test(body)) flags.push(`banned claim: ${re.source.slice(0, 30)}`);
     if (FILLER.test(body)) flags.push(`filler: ${body.match(FILLER)![0]}`);
@@ -221,7 +265,9 @@ async function main() {
 
   // Sameness check: do any two drafts share too much wording? This is the failure
   // the last batch had (ten messages, one message with the nouns swapped).
-  log(`\n=== ${drafted} drafted, ${gated} gated ===`);
+  // v4-pro output rate, off-peak, from DEFAULT_PRICING. Peak UTC hours bill 2x.
+  const perDraft = drafted + gated ? totalOut / (drafted + gated) : 0;
+  log(`\n=== ${drafted} drafted, ${gated} gated | ${totalOut} output tokens, ${perDraft.toFixed(0)} avg/account, $${((totalOut / 1e6) * 1.98).toFixed(3)} ===`);
   if (angleCounts.size) {
     log('problems chosen (diagnostic, not a score — see the note at angleCounts):');
     for (const [problem, n] of [...angleCounts].sort((a, b) => b[1] - a[1])) log(`  ${n}×  ${problem.slice(0, 100)}`);
@@ -232,6 +278,35 @@ async function main() {
       const b = new Set(bodies[j]!.body.toLowerCase().split(/\W+/).filter((t) => t.length > 4));
       const overlap = [...a].filter((t) => b.has(t)).length / Math.max(1, Math.min(a.size, b.size));
       if (overlap > 0.45) log(`SAMENESS ${(overlap * 100).toFixed(0)}%: "${bodies[i]!.name}" vs "${bodies[j]!.name}"`);
+    }
+  }
+
+  // The closing line, checked on its own. The whole-body measure above cannot
+  // see a repeated closer: one shared sentence out of five moves total overlap
+  // by a few points, well under the 45% bar. Measured on a real batch where
+  // three of four drafts ended "Want me to put/run your numbers to it?" — bodies
+  // scored 4-25% overlap and nothing flagged, while a prospect reading two of
+  // them in a row sees the same form letter. The last sentence is also the ask,
+  // so it is the line that decides whether the message reads as written for
+  // this account.
+  const closer = (b: string) => (b.trim().match(/[^.?!]+[.?!]?\s*$/)?.[0] ?? b).trim();
+  const closerGroups = new Map<string, string[]>();
+  for (const { name, body } of bodies) {
+    const key = closer(body).toLowerCase().replace(/[^a-z ]/g, '');
+    closerGroups.set(key, [...(closerGroups.get(key) ?? []), name]);
+  }
+  for (const [key, names] of closerGroups) {
+    if (names.length > 1) log(`SAME CLOSER (${names.length}): "${key}" — ${names.join(', ')}`);
+  }
+  for (let i = 0; i < bodies.length; i++) {
+    for (let j = i + 1; j < bodies.length; j++) {
+      const a = new Set(closer(bodies[i]!.body).toLowerCase().split(/\W+/).filter((t) => t.length > 4));
+      const b = new Set(closer(bodies[j]!.body).toLowerCase().split(/\W+/).filter((t) => t.length > 4));
+      if (!a.size || !b.size) continue;
+      const overlap = [...a].filter((t) => b.has(t)).length / Math.max(1, Math.min(a.size, b.size));
+      if (overlap > 0.6 && closer(bodies[i]!.body).toLowerCase() !== closer(bodies[j]!.body).toLowerCase()) {
+        log(`NEAR-SAME CLOSER ${(overlap * 100).toFixed(0)}%: "${closer(bodies[i]!.body)}" vs "${closer(bodies[j]!.body)}"`);
+      }
     }
   }
 }

@@ -18,6 +18,7 @@
  *    fallback-model rung each rebuild the args; either one dropping `thinking`
  *    puts the expensive path back exactly where the first call escaped it.
  */
+import { readFileSync } from 'node:fs';
 import { providerOptionsFor, chatComplete, type ChatCompleteArgs, type ChatCompleteResult } from '../packages/primitives/src/llm.ts';
 
 let fail = 0;
@@ -63,6 +64,17 @@ async function main() {
   await chatComplete({ ...base, max_tokens: 900, response_format: { type: 'json_object' } }, badJson);
   ok('a call that never asked stays unset on every rung',
     seen.every((s) => s.thinking === undefined), JSON.stringify(seen));
+
+  // The drafter, pinned by reading the call site. It is the one behavior where
+  // the setting was measured on the writing itself rather than on cost, and it
+  // shares a call with the enricher and the scorer, so a careless edit there
+  // silently puts every draft back on the reasoning path at 22x the tokens.
+  console.log('\nThe drafter call site, which shares one call with three other behaviors:');
+  const src = readFileSync(new URL('../inngest/functions/agent_logic.ts', import.meta.url), 'utf8');
+  const call = src.slice(src.indexOf('llm = await chatCompleteForWorkspace'), src.indexOf('} catch (e) {'));
+  ok('the drafter asks for thinking off', /behavior === 'drafter' \? \{ thinking: 'disabled'/.test(call), call.slice(0, 200));
+  ok('and only the drafter, so the enricher and scorer are untouched',
+    !/thinking: 'disabled' as const \}\s*:\s*\{ thinking/.test(call));
 
   console.log(fail === 0 ? '\nOK: thinking-off assertions passed\n' : `\nFAILED: ${fail} assertion(s)\n`);
   process.exit(fail === 0 ? 0 : 1);

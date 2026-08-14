@@ -833,6 +833,26 @@ export async function runAgent(
       model,
       behavior,
       max_tokens: maxOutputTokens,
+      // The drafter writes better without pre-answer reasoning, which is the
+      // opposite of what c2882f6 assumed when it left thinking on for anything
+      // that writes prose. Measured on 5 accounts, same prompts, same model,
+      // only this setting different:
+      //
+      //   reasoning on    49,175 output tokens   ~5 min/account   $0.097
+      //   reasoning off    2,176 output tokens   ~35 s/account    $0.004
+      //
+      // and the writing was worse on the expensive side, not better. Reasoning
+      // on tripped the dry-run sameness check at 50% between two drafts, which
+      // reasoning off never did in any run; it opened messages by reciting the
+      // account's own facts back with a date in them; and one of its questions
+      // was not grammatical. On Watcha it wrote a pitch to a company in Seoul
+      // bankruptcy court that both reasoning-off runs read correctly and
+      // refused. The model still explains its choice either way, in the
+      // "reasoning" field of its own JSON, so the audit trail is unchanged.
+      //
+      // Only the drafter. The enricher and the scorer are doing extraction and
+      // judgment, not writing, and nothing here was measured on them.
+      ...(behavior === 'drafter' ? { thinking: 'disabled' as const } : {}),
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },
@@ -1783,6 +1803,16 @@ export function draftAuditFlags(args: {
   const url = args.body.match(/https?:\/\/\S+|\bwww\.\S+/i);
   if (url) {
     flags.push(`draft contains a link (${url[0].slice(0, 60)}); links in a first touch hurt reply rates`);
+  }
+
+  // A slot the sender was expected to fill in by hand. Seen in a dry run as
+  // "Hi [First Name]" on an account with no contact attached: STEP 6 says to
+  // drop the greeting when there is no name, and the model wrote a mail-merge
+  // field instead. Nothing in Sudden's 41 live drafts has ever carried one, so
+  // this is cheap insurance against the worst thing this system could send.
+  const slot = args.body.match(/\[[^\]]{2,30}\]|\{\{[^}]{2,30}\}\}|<[a-z][a-z_ ]{1,29}>/i);
+  if (slot) {
+    flags.push(`draft has an unfilled placeholder "${slot[0]}"; it would send with the brackets in it`);
   }
 
   // Craft checks, same shapes for every workspace (see OUTREACH_CRAFT in

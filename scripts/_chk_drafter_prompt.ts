@@ -61,6 +61,12 @@ async function main() {
       ['chosen problem replaces the menu', withAngle.includes('THE PROBLEM YOU ARE WRITING TO') && !withAngle.includes('PROBLEMS WE SOLVE')],
       [`${victim.id} exemplar body is gone`, !withAngle.includes(victim.body.slice(0, 60))],
       ['withheld notice renders', withAngle.includes('EXEMPLAR: WITHHELD')],
+      // The body is not the only place the exemplar's wording lives. Assert on
+      // the withheld block alone, not the whole prompt: an unwithheld exemplar
+      // legitimately quotes itself in its own anatomy, so a prompt-wide search
+      // for a quoted span can never fail and would pin nothing.
+      ['withheld anatomy quotes no sentence', !/["“][^"”]{4,}["”]/.test(
+        withAngle.slice(withAngle.indexOf('EXEMPLAR: WITHHELD')).split('\n\n')[0] ?? '')],
       ['other exemplars still render', /EXEMPLAR: "/.test(withAngle)],
       ['reasoning asks for the fact behind the problem', withAngle.includes('quote the one fact')],
     ];

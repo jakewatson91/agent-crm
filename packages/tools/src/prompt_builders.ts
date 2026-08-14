@@ -157,11 +157,22 @@ export interface DrafterDecisionOpts {
  * State the rule positively (what every sentence must have), or describe the
  * bad SHAPE without handing over a phrase that can be pasted.
  *
- * Quoting is still right in three places, all kept deliberately: the input
- * formats the user message uses, the ranked CTAs in STEP 5 that are prescribed
- * rather than banned, and the industry-cliché bans whose whole value is naming
- * a phrase the model would otherwise reach for on its own. The test is whether
- * the quoted string could be dropped into this message and read as normal.
+ * Quoting is still right in two places, both kept deliberately: the input
+ * formats the user message uses, and the industry-cliché bans whose whole value
+ * is naming a phrase the model would otherwise reach for on its own. The test is
+ * whether the quoted string could be dropped into this message and read as
+ * normal.
+ *
+ * STEP 5's ranked CTAs used to be the third exception, on the reasoning that a
+ * PRESCRIBED phrase is safe to quote where a banned one is not. It is not: it
+ * fails the same test, and harder, because the model is being told the sentence
+ * is the best available. Measured on the 41 real drafts Sudden produced in the
+ * 60 days to 2026-08-14: before the craft rules shipped (2026-07-21), 13 of 14
+ * drafts closed on a banned CTA. After, banned CTAs went to zero and 17 of 27
+ * closed on one of STEP 5's own two example sentences, word for word. The rules
+ * did not stop the copying, they changed what got copied. The four asks are
+ * described by what they do now, with no finished sentence to paste, which is
+ * the same treatment the templated path already gives exemplars.
  *
  * Nothing vertical goes in this block. It is shared by every workspace, so an
  * example borrowed from whichever book we happen to be running is a bug even
@@ -215,6 +226,7 @@ STEP 3 — WRITE THE THINK QUESTION. This is the most important line in the mess
 It makes them check an assumption about the way they do things now. It is never a question about your product.
 It must be answerable from memory in one line. If they would have to open a dashboard to answer it, it is too heavy.
 Prefer a fork over an open question: two named options cost less to answer than a blank page. "Is that still the same team, or did it move?" and "Did that come out of the existing budget, or a new one?" are forks. "How do you think about X?" is not.
+TEST IT ON THE FIRST WORD. A question opening with how much, how big, where, or what share is asking them to go and look something up, and the honest reply is silence. Either give it two options to choose between, or turn it into one they can answer yes or no to from memory. Who, and whether, are cheap. A number they would have to pull is not.
 Those two are SHAPES, not scripts, and neither is yours. Build the fork out of the two outcomes THIS account is actually choosing between.
 A fork you have already seen in one of the exemplars is the one to avoid. Reusing it is how ten different companies get sent the same question.
 Do not answer it about THEM. A pattern you have seen across the category is allowed to come first and set the question up: "most teams at that size find X" followed by "where does yours sit?" is a real question, and handing them something to disagree with is the point of asking. That is what an expert sounds like. What kills the question is asserting the answer for THIS company, because then there is nothing left for them to tell you.
@@ -229,11 +241,13 @@ The strongest cred names a cost they cannot currently see, rather than a benefit
 With no honest pattern and no sourced number, write no cred at all. A missing cred beats an invented one.
 
 STEP 5 — TALK. NEVER ASK FOR TIME.
-Asking for a slot on the calendar is the most common way these messages die. Ranked, best first:
-  1. Offer to do the work for them: "Want me to put your numbers to it?"
-  2. Status-quo exit that lets them decline: "Already got that handled?"
-  3. No-oriented ask, where "no" still moves it forward: "Would you be opposed to me sending it over?"
+Asking for a slot on the calendar is the most common way these messages die. Four asks that work, ranked, best first:
+  1. Offer to do the work for them. Name the thing you would produce for THIS account, and offer to produce it.
+  2. Status-quo exit that lets them decline. Ask whether the problem from STEP 2 is already covered, in a form where "yes, handled" is an easy reply.
+  3. No-oriented ask, where "no" still moves it forward. Ask permission to send the one thing you have.
   4. Nothing at all, when the shape says so. The reply is the win.
+THESE ARE FOUR SHAPES, NOT FOUR SENTENCES. Write the ask in your own words, and put this account's own subject inside it: what exactly you would run the numbers on, what exactly might already be handled. An ask that would fit any company in this industry with no edit is the wrong ask. It is also the line most likely to come out identical across every message you write, because it is the last thing written and the least anchored, so give it the same fresh wording STEP 3 demands of the question.
+KEEP IT UNDER TEN WORDS. Naming their subject costs two or three words, not a clause. One short question, and stop: everything after the question mark is you talking past the ask.
 BANNED with no exceptions: "Open to a quick chat?", "Worth a quick call?", "Do you have 15 minutes?", "Can we sync?", any proposed day, time or meeting length, and any calendar link.
 
 STEP 6 — WELD IT INTO ONE VOICE, THEN LINE EDIT. The steps above are how you THINK; they are not a list of sentences to emit. Your message has fewer sentences than there are steps, because beats share sentences. Weld them: the trigger and the problem it creates belong in one sentence; the credibility number never stands alone, it rides inside a sentence that says what it costs them; the pitch and the ask carry the close. Now read it back as the recipient, out loud. It should sound like one person talking, not parts with the bullets removed.
@@ -242,6 +256,7 @@ STEP 6 — WELD IT INTO ONE VOICE, THEN LINE EDIT. The steps above are how you T
 - Use their first name if you have it. A bare greeting with no name is worse than no greeting at all: drop the greeting entirely instead.
 - Never tell them what they think, feel, worry about or wonder. Anything that assigns them an emotion, or tells them what a fact makes them wonder, is out. State the fact and ask the question; let them supply the feeling.
 - Fifth-grade reading level: common words, plain sentences. Short does not mean chopped. A sentence may carry two welded beats joined by a comma or "and" when that makes it flow.
+- Punctuation you would actually type into a message box: commas, full stops, question marks. No dashes of any length standing in for a comma or a colon. Nobody reaches for that key on a phone, everybody notices it, and it is the fastest way to look like something a machine produced. If a dash is holding two halves of a sentence together, use a comma, or make it two sentences.
 - EVERY sentence has a subject and a verb, the closing one included. A final line that starts with a bare verb is a fragment: give it a subject, or fold it into the sentence before it.
 - Cut every word that survives being cut. Kill "just", "quick", "really", "I hope this finds you well", and every exclamation mark.
 - No abstract product nouns ("single source of truth", "all-in-one platform", "seamless integration"). A noun phrase that names a category instead of a behavior is the shape to watch for. No filler verbs (streamline, leverage, optimize, empower, unlock, revolutionize).
@@ -332,14 +347,22 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
       // available. The anatomy stays, so sentence count, beat order and rhythm
       // still transfer — only the argument is gone.
       const withheld = new Set((opts.angle?.withheld_template_ids ?? []).filter((id) => typeof id === 'string' && id.trim()));
+      // Cutting the body is not enough on its own. An anatomy is written to
+      // explain the exemplar, so it tends to quote its sharpest lines back, and
+      // a quoted sentence in the anatomy is the same paste-ready sentence the
+      // withholding exists to remove. Sudden's anatomies quote the closing ask
+      // word for word, and that ask came back in 17 of 27 live drafts. Quoted
+      // spans go only on the withheld ones: on a template the model is allowed
+      // to read in full, the anatomy quoting it changes nothing.
+      const stripQuoted = (s: string) => s.replace(/["“][^"”]{4,}["”]/g, '[wording withheld]');
       const templatesBlock = templates
         .map((t, i) => {
           const head = `[${i + 1}] ${t.label}\n    AUDIENCE: ${t.audience}`;
-          const anatomy = t.anatomy ? `\n    ANATOMY: ${t.anatomy}` : '';
           if (withheld.has(t.id)) {
+            const anatomy = t.anatomy ? `\n    ANATOMY: ${stripQuoted(t.anatomy)}` : '';
             return `${head}\n    EXEMPLAR: WITHHELD — this one argues the same point you are writing to, so its wording is not available to you. Its shape is still yours to use: build it from the anatomy.${anatomy}`;
           }
-          return `${head}\n    EXEMPLAR: "${t.body}"${anatomy}`;
+          return `${head}\n    EXEMPLAR: "${t.body}"${t.anatomy ? `\n    ANATOMY: ${t.anatomy}` : ''}`;
         })
         .join('\n\n');
       // The menu STEP 4 refers to. Both are derived from the workspace's own
