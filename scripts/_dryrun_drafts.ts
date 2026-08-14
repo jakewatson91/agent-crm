@@ -272,7 +272,12 @@ async function main() {
     // much" or "what share" is asking them to go and look, and the honest reply
     // is no reply. A fork ("or") or a yes/no opener is fine; this only catches
     // the shape STEP 3 already rules out.
-    const questions = body.split(/(?<=[.?!])\s+/).filter((s) => s.trim().endsWith('?'));
+    // English only. The patterns below are English words, so on a message
+    // written in another language every question looks unanswerable: an Italian
+    // draft's fork uses "o" rather than "or" and got flagged. Two common English
+    // function words is enough to tell them apart on a message this short.
+    const looksEnglish = (body.match(/\b(the|you|your|and|is|are|does|do|that|with|for)\b/gi) ?? []).length >= 2;
+    const questions = looksEnglish ? body.split(/(?<=[.?!])\s+/).filter((s) => s.trim().endsWith('?')) : [];
     // The yes/no word can sit after a leading clause: "When hundreds watch at
     // once, do you know what you pay?" is answerable and was being flagged
     // because the sentence opens with "When". Look for it at the start of the
