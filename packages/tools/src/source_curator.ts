@@ -207,7 +207,12 @@ Decide. Return JSON only.`;
   const llm = await chatCompleteForWorkspace(sb, workspace_id, {
     model: CURATOR_MODEL,
     behavior: 'curator',
-    max_tokens: 300,
+    // Keep / tune / kill on a whole data source, argued from its metrics. This
+    // one is worth thinking about, so the thinking stays on and the ceiling
+    // moves up to hold it: at 300 the call could not finish and the answer only
+    // ever arrived on the retry, so every decision was billed twice. Raising a
+    // ceiling cannot make a call that already fits cost more.
+    max_tokens: 4000,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: systemPrompt },

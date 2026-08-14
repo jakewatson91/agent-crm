@@ -359,6 +359,9 @@ reason_code is one of:
   const llm = await chatComplete({
     model,
     max_tokens: 2500,
+    // Labels each search result against a fixed set. Same job as the research
+    // relevance gate, where thinking cost ~4,400 tokens to change 1 verdict in 10.
+    thinking: 'disabled',
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: sysPrompt },

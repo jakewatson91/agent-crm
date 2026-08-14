@@ -152,6 +152,11 @@ export async function classifyRole(
     model: CLASSIFY_MODEL,
     behavior: 'connector_extract',
     max_tokens: 60,
+    // A job title in, three fields out. 60 tokens is the right size for the
+    // answer and far too small for a reasoning model to reach it, so with
+    // thinking on this call returned nothing and every uncached title was
+    // answered by the 4000-token retry instead.
+    thinking: 'disabled',
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },

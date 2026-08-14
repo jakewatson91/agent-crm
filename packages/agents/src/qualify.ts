@@ -422,6 +422,10 @@ Return the JSON verdict.`;
       model: 'deepseek-v4-flash',
       behavior: 'intake',
       max_tokens: 400,
+      // A verdict, a confidence, a role, an angle and one sentence. The prompt
+      // above already says "be decisive"; thinking here just bills for the
+      // deliberation the prompt asked it to skip.
+      thinking: 'disabled',
       response_format: { type: 'json_object' },
       messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
     });

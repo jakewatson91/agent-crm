@@ -137,6 +137,9 @@ Resolve relative URLs against ${sourceUrl}. Skip nav/footer/cookie banners. Max 
   const llm = await chatComplete({
     model,
     max_tokens: 2000,
+    // Copying items out of HTML into a fixed shape. Up to 30 of them, so
+    // thinking scales with the page and buys nothing: the title is the title.
+    thinking: 'disabled',
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: sysPrompt },
@@ -263,6 +266,8 @@ reason_code is one of:
   const llm = await chatComplete({
     model,
     max_tokens: 2500,
+    // One company name per item. Fixed shape, one field each.
+    thinking: 'disabled',
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: sysPrompt },

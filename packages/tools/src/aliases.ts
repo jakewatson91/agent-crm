@@ -231,6 +231,11 @@ Return JSON only: {"aliases":["Name One","Name Two"]}`;
   const llm = await chatComplete({
     model: ALIAS_MODEL,
     max_tokens: 200,
+    // A list of names read off a page. Measured on rumble.com: with thinking on
+    // the 200-token call returned an empty string every time (all 200 spent
+    // reasoning) and the answer only arrived on the 4000-token retry, so every
+    // account was paying for two calls to get one list. Off, it fits in 38.
+    thinking: 'disabled',
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: sys },

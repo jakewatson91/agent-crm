@@ -134,6 +134,9 @@ export async function pickDraftAngle(
       model: args.model,
       behavior: 'connector_extract',
       max_tokens: 200,
+      // Picks one problem by number and lists which arguments are already used.
+      // Nothing here is written prose, so the thinking is spend with no output.
+      thinking: 'disabled',
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },

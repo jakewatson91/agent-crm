@@ -57,6 +57,23 @@ export interface ChatCompleteArgs {
    * gateway-routed vendors authenticate via AI_GATEWAY_API_KEY.
    */
   api_keys?: ModelKeys;
+  /**
+   * Whether the model thinks before it answers. Leave unset for anything that
+   * writes, judges, or plans. Set 'disabled' when the answer is a short fixed
+   * shape — a verdict, a label, a number, a mapping — because thinking tokens
+   * are billed as output AND counted against max_tokens, so a small ceiling on
+   * a reasoning model returns nothing at all.
+   *
+   * Measured on the relevance gate, one batch of 10 pages, deepseek-v4-flash:
+   * thinking on spent all 900 tokens on reasoning and returned an empty string
+   * (the batch was then dropped unjudged); the retry at 4000 did the same; the
+   * fallback model did the same. Thinking off answered the same batch in 149
+   * tokens and 2.1 seconds. On the batches where thinking on did finish, it
+   * cost ~4,400 tokens and 33 seconds for a verdict that differed on 1 page in
+   * 10. So this is not a quality/cost trade at the margin — for fixed-shape
+   * answers the thinking is close to pure waste.
+   */
+  thinking?: 'enabled' | 'disabled';
 }
 
 export interface ChatCompleteResult {
@@ -195,6 +212,20 @@ export async function callWithRetry(
   }
 }
 
+/**
+ * The `thinking` setting on the wire. DeepSeek reads `thinking.type` in the
+ * request body (the AI SDK's deepseek provider serializes it from here);
+ * options under a provider key another vendor doesn't own are dropped, so a
+ * workspace that points a call at Claude or GPT is unaffected.
+ *
+ * Exported for scripts/check_thinking_off.ts: the shape is the whole fix, and a
+ * typo in it fails silently — the call just goes back to thinking.
+ */
+export function providerOptionsFor(args: ChatCompleteArgs) {
+  if (!args.thinking) return undefined;
+  return { deepseek: { thinking: { type: args.thinking } } };
+}
+
 async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
   const tools = toToolSet(args.tools);
   const { system, rest } = extractSystem(args.messages);
@@ -206,6 +237,7 @@ async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
     temperature: args.temperature,
     tools,
     toolChoice: tools ? toToolChoice(args.tool_choice) : undefined,
+    providerOptions: providerOptionsFor(args),
   });
 
   const tool_calls = res.toolCalls?.length
@@ -237,23 +269,29 @@ async function callOnce(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
  * interactive chat path, where a retry would replay text the user already saw
  * and the user can just ask again.
  */
-export async function chatComplete(args: ChatCompleteArgs): Promise<ChatCompleteResult> {
+export async function chatComplete(
+  args: ChatCompleteArgs,
+  call: (a: ChatCompleteArgs) => Promise<ChatCompleteResult> = callOnce,
+): Promise<ChatCompleteResult> {
   const wantsJson = args.response_format?.type === 'json_object';
   const usingTools = (args.tools?.length ?? 0) > 0;
 
-  let result = await callWithRetry(args);
+  let result = await callWithRetry(args, call);
   if (usingTools || !wantsJson || isValidJson(result.text)) return result;
 
   // Empty/non-JSON on a json_object call almost always means a reasoning model
   // spent its entire output budget on reasoning before emitting any content.
   // The retry + fallback only help if they get more room than the first try —
   // same budget = same failure. Give content space after reasoning.
+  // Both rungs keep the caller's `thinking` setting. Dropping it here would put
+  // the retry back on the reasoning path the first call was trying to escape,
+  // which is the failure this whole ladder exists to catch.
   const roomy: ChatCompleteArgs = { ...args, max_tokens: Math.max((args.max_tokens ?? 1024) * 3, 4000) };
-  result = await callWithRetry(roomy);
+  result = await callWithRetry(roomy, call);
   if (isValidJson(result.text)) return result;
 
   if (args.model !== FALLBACK_MODEL) {
-    const fb = await callWithRetry({ ...roomy, model: FALLBACK_MODEL });
+    const fb = await callWithRetry({ ...roomy, model: FALLBACK_MODEL }, call);
     return fb; // return whatever we got; caller surfaces the error
   }
   return result;

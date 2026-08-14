@@ -526,6 +526,7 @@ export async function runEntityResearch(
       // it happens to notice.
       let answersById = new Map<string, string>();
       let gate_unreadable = 0;
+      let gate_unreadable_reasons: string[] = [];
       let gate_omitted = 0;
       const dropSample: Array<{ why: string; angle: string; title: string; url: string }> = [];
       if (allForGate.length) {
@@ -557,6 +558,7 @@ export async function runEntityResearch(
         filtered_out = rel.dropped;
         filtered_by = rel.droppedBy;
         gate_unreadable = rel.unreadable_batches;
+        gate_unreadable_reasons = rel.unreadable_reasons;
         gate_omitted = rel.omitted;
         // A sample of what was thrown away, kept on the run marker. Drops are not
         // stored as signals, so without this the only way to ask "should that page
@@ -579,7 +581,14 @@ export async function runEntityResearch(
         // errors so a run where the gate was down looks like a failed run rather
         // than a quiet zero — otherwise a model outage reads as "the web had
         // nothing about these companies today".
-        if (gate_unreadable) errors.push(`relevance gate unreadable on ${gate_unreadable} batch(es)`);
+        // The reason rides along in the error text, not just in the marker
+        // payload: this string is what the Today card shows, and "unreadable on
+        // 2 batch(es)" with no cause is what turned a model out of credit into
+        // a two-hour investigation.
+        if (gate_unreadable) {
+          const why = gate_unreadable_reasons.length ? ` (${gate_unreadable_reasons.join(' | ')})` : '';
+          errors.push(`relevance gate unreadable on ${gate_unreadable} batch(es)${why}`);
+        }
       }
 
       // --- Dedup phase: collapse near-identical accepted results (two articles on the
@@ -759,6 +768,29 @@ export async function runEntityResearch(
         }
       }
 
+      // The model provider hitting the same kind of wall, which the Exa check
+      // above cannot see: the searches all succeed, the pages arrive, and then
+      // every judgment on them fails. On 2026-08-13 DeepSeek ran out of credit
+      // at 8pm and research kept running hourly until midnight, paying Exa for
+      // pages it then dropped unjudged, while the advance pass (which does latch
+      // an LLM wall) was not due to run again until morning.
+      //
+      // The gate's own failure reason is the signal, because the gate calls
+      // nothing but the model — an Exa error can never appear in it. Scope
+      // 'all': there is no part of this system that works without a model.
+      const modelWall = gate_unreadable_reasons.find((r) => isPersistentWall(r));
+      if (modelWall) {
+        await setPipelineStatus(supabase, workspace_id, {
+          state: 'paused',
+          scope: 'all',
+          provider: 'llm',
+          reason: /insufficient balance|credit|402|payment|quota/i.test(modelWall)
+            ? `The model provider is out of credit, so nothing can be judged, scored or written. Research kept paying for pages it could not read. Top the account up, then click Continue. (${modelWall.slice(0, 120)})`
+            : `The model provider rejected our calls and the pipeline is paused: ${modelWall.slice(0, 140)}. Fix it, then click Continue.`,
+          paused_at: new Date().toISOString(),
+        });
+      }
+
       // Event-log marker the dispatcher / action_selector read to time the next pass.
       await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_COMPLETED, entity_id, {
         results_created: created,
@@ -774,7 +806,7 @@ export async function runEntityResearch(
         per_question_fetched: fetchedPerQuestion,
         per_class: perClass,
         per_question: perQuestion,
-        ...(gate_unreadable ? { gate_unreadable } : {}),
+        ...(gate_unreadable ? { gate_unreadable, gate_unreadable_reasons } : {}),
         ...(gate_omitted ? { gate_omitted } : {}),
         ...(dropSample.length ? { drop_sample: dropSample } : {}),
         ...(resolver_spent ? { domain_resolved: domain || null } : {}),

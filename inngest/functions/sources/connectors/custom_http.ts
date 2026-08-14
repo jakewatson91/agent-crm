@@ -226,6 +226,10 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
         model,
         behavior: 'connector_extract',
         max_tokens: 1500,
+        // Pulls named fields out of items that are already structured. Thinking
+        // adds tokens and seconds per batch and cannot make a field appear that
+        // the item does not contain.
+        thinking: 'disabled',
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: extractSpec.system_prompt },

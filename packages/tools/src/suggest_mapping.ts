@@ -86,6 +86,10 @@ export async function suggestColumnMapping(
       model: MAPPING_MODEL,
       behavior: 'wizard',
       max_tokens: Math.max(400, columns.length * 40),
+      // Column name in, field name out. This one runs with a person waiting on
+      // the import wizard, so the seconds thinking would add are the seconds
+      // they spend looking at a spinner.
+      thinking: 'disabled',
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },

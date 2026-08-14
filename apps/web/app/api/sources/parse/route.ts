@@ -125,6 +125,9 @@ Output: {"connector_type":"github","name":"<company>_github_releases","config":{
     llm = await chatComplete({
       model: META_MODEL,
       max_tokens: 600,
+      // Maps a sentence a user typed onto a connector type and its config, with
+      // a person waiting on the response.
+      thinking: 'disabled',
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: META_PROMPT },

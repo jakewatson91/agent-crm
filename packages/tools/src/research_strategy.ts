@@ -695,6 +695,14 @@ export interface RelevanceResult {
    */
   unreadable_batches: number;
   /**
+   * Why those batches could not be read, deduplicated. The catch used to
+   * discard the error, so the run marker said "unreadable" and nothing else —
+   * a model out of credit, a timeout and an output ceiling too small to reach
+   * the answer all looked identical, and telling them apart meant reproducing
+   * the batch by hand. Empty whenever unreadable_batches is 0.
+   */
+  unreadable_reasons: string[];
+  /**
    * Pages the model listed in neither array, and which were therefore bucketed
    * as `no_answer`. Distinct from `unreadable_batches`: the gate DID answer, it
    * just skipped some pages. Non-zero is tolerable; a rising number means the
@@ -704,6 +712,28 @@ export interface RelevanceResult {
 }
 
 export type GateRejectReason = 'identity' | 'substance' | 'relevance' | 'no_answer' | 'unreported';
+
+/**
+ * Why one gate batch could not be read, in words an operator can act on.
+ *
+ * Three failures used to look identical in the run marker, and they need three
+ * different responses: the provider refusing the call (top up the account, fix
+ * the key), an answer that arrived empty (the output ceiling cannot reach the
+ * verdict), and an answer that arrived malformed (the prompt contract slipped).
+ * The provider message is passed through verbatim on the first, because that is
+ * the one a person has to go and fix.
+ */
+export function gateFailureReason(
+  ctx: { answered: boolean; text: string; finish: string; error: unknown },
+): string {
+  const msg = ctx.error instanceof Error ? ctx.error.message : String(ctx.error);
+  const reason = !ctx.answered
+    ? msg
+    : ctx.text.trim()
+    ? `model returned unparseable JSON: ${msg}`
+    : `model returned no content (finish_reason=${ctx.finish || 'unknown'})`;
+  return reason.slice(0, 200);
+}
 
 /**
  * Pages per LLM call.
@@ -791,7 +821,7 @@ export async function filterResultsByEntity(
     return { r, own };
   });
   if (!toCheck.length) {
-    return { accepted, classById, answersById, checked: 0, auto: 0, dropped: 0, droppedBy, rejectReasonById, unreadable_batches: 0, omitted: 0 };
+    return { accepted, classById, answersById, checked: 0, auto: 0, dropped: 0, droppedBy, rejectReasonById, unreadable_batches: 0, unreadable_reasons: [], omitted: 0 };
   }
 
   // With real grounding an unsure-but-fitting page is probably right, so lean toward
@@ -889,6 +919,12 @@ For every entry in "keep", "c" is required. If you are keeping a page you must s
     const payload = chunk
       .map((c, i) => `#${i} ${c.own ? '[own site] ' : ''}${c.r.title ?? '(untitled)'}\n${c.r.url}\n${(c.r.text ?? '').slice(0, 500).replace(/\s+/g, ' ')}`)
       .join('\n\n');
+    // Kept outside the try so the catch can say which of the three failures
+    // this was: the call never came back, it came back empty, or it came back
+    // with something that is not JSON. They need different fixes.
+    let answered = false;
+    let text = '';
+    let finish = '';
     try {
       const llm = await chatComplete({
         model: opts?.model ?? RELEVANCE_MODEL,
@@ -897,13 +933,24 @@ For every entry in "keep", "c" is required. If you are keeping a page you must s
         // subscriber-count story and a founder's post — which makes the gate's
         // verdict partly a coin toss and makes any A/B against it unreadable.
         temperature: 0,
+        // Same reason, taken one step further: no thinking either. A batch of 10
+        // needs ~4,300 reasoning tokens before it writes a single character of
+        // the verdict, which does not fit under max_tokens and did not fit under
+        // the 4000-token retry — the model returned an empty string and the
+        // whole batch was dropped unjudged. On 2026-08-14 that was 36% of runs
+        // and 269 pages, all of them already paid for at Exa. Off, the same
+        // batch answers in ~150 tokens and 2 seconds.
+        thinking: 'disabled',
         // Index-addressed verdicts for `batchSize` pages, with room to spare.
         // The old budget was 1200 for an unbounded batch of URL-addressed ones.
         max_tokens: 900,
         response_format: { type: 'json_object' },
         messages: [{ role: 'system', content: sys }, { role: 'user', content: payload }],
       });
-      const parsed = JSON.parse(llm.text) as {
+      answered = true;
+      text = llm.text ?? '';
+      finish = llm.finish_reason ?? '';
+      const parsed = JSON.parse(text) as {
         keep?: Array<{ i?: number; q?: string; c?: string }>;
         drop?: Array<{ i?: number; f?: string }>;
       };
@@ -931,8 +978,8 @@ For every entry in "keep", "c" is required. If you are keeping a page you must s
       // ever looks wrong.
       let omitted = 0;
       for (let i = 0; i < chunk.length; i++) if (!seen.has(i)) { drops.push({ i, f: 'no_answer' }); omitted++; }
-      return { chunk, keeps, drops, unreadable: false, omitted };
-    } catch {
+      return { chunk, keeps, drops, unreadable: false, omitted, reason: '' };
+    } catch (e) {
       // FAIL CLOSED. The old behaviour here was to keep every own-domain page
       // unjudged, on the reasoning that losing real own-site context is worse
       // than admitting one off-topic page. Live data says otherwise: when this
@@ -942,12 +989,20 @@ For every entry in "keep", "c" is required. If you are keeping a page you must s
       // dropped. The dispatcher re-researches on cadence, so the cost of
       // dropping is one delayed pass; the cost of keeping was a permanent bad
       // fact the drafter reads forever.
-      return { chunk, keeps: [], drops: chunk.map((_, i) => ({ i, f: 'unreported' as GateRejectReason })), unreadable: true, omitted: 0 };
+      //
+      // What is NOT free is dropping in silence, which is what this did until
+      // 2026-08-14: the provider message is the difference between "top up the
+      // account" and "the ceiling is too low", and it costs nothing to carry.
+      return {
+        chunk, keeps: [], drops: chunk.map((_, i) => ({ i, f: 'unreported' as GateRejectReason })),
+        unreadable: true, omitted: 0, reason: gateFailureReason({ answered, text, finish, error: e }),
+      };
     }
   }));
 
+  const reasons = new Set<string>();
   for (const v of verdicts) {
-    if (v.unreadable) unreadable_batches += 1;
+    if (v.unreadable) { unreadable_batches += 1; if (v.reason) reasons.add(v.reason); }
     omitted += v.omitted;
     for (const k of v.keeps) {
       const id = v.chunk[k.i]!.r.id;
@@ -982,6 +1037,7 @@ For every entry in "keep", "c" is required. If you are keeping a page you must s
     droppedBy,
     rejectReasonById,
     unreadable_batches,
+    unreadable_reasons: [...reasons],
     omitted,
   };
 }
