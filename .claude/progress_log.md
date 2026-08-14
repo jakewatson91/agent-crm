@@ -3083,3 +3083,142 @@ drop well below today's 13%, the next suspect is the DeepSeek account itself, no
   Production already scored at 4,000 tokens in practice, because the retry recomputed at
   `max(3 x 350, 4000)` and that second call is the one whose output got written. Raising the first
   call to 4,000 removes a duplicate call and produces the same scores.
+
+## 2026-08-14 — the drafts read like a machine, and none of it was the model
+
+Started from Jake's pushback on the previous session: the only proposal on the table was
+to move the drafter to a more expensive model, and he did not accept that a DeepSeek-tier
+model could not write a good message. He was right. Nothing shipped today involved
+changing a model.
+
+Everything below was measured on the same 12 Sudden accounts through
+`scripts/_dryrun_drafts.ts`, which writes nothing. New `DRYRUN_ANGLE_CACHE` pins the
+problem picks across runs, because the angle picker is its own model call and hands each
+run different problems, so two runs otherwise differ by two things at once.
+
+### Reasoning off for the drafter (`fa3eb4b`)
+
+12 matched pairs, angles pinned:
+
+    reasoning on   153,056 out tok   12,755/account   ~5 min each   $0.303
+    reasoning off    5,807 out tok      484/account    ~35 s each   $0.011
+
+And the expensive side wrote worse. It opened by reading the account's own facts back
+with a date in them ("Apple TV+ premiered Ted Lasso Season 4 on August 5"), stacked
+twenty words of nouns before a verb, and produced one question that is not English ("Is
+that repeat delivery peak concurrent viewing, or spread across the catalog?"). Sentence
+length is the tell: same mean both ways near 14 words, but reasoning off varies 5.7-6.4
+with 3- and 6-word sentences against 3.3-5.1 with a 7-word floor. Even sentence length
+reads as machine-written. It also refused nothing at all — 12 of 12 drafted, including a
+pitch to a company in Seoul bankruptcy court that both reasoning-off runs declined.
+
+One claim from the 5-account sample did NOT survive the 12-account run and was corrected
+to Jake: reasoning-on tripping the similarity check where reasoning-off never did. At 12
+it was 1 against 2.
+
+c2882f6 had left thinking on for anything writing prose. That was measured on cost and
+truncation, never on the writing.
+
+### The prompt was handing over the sentences (`fa3eb4b`, `829c89a`)
+
+41 real drafts over 60 days. Before the craft rules shipped (07-21), 13 of 14 closed on a
+banned CTA. After, banned CTAs went to zero and 17 of 27 closed on one of STEP 5's own two
+example sentences word for word; counting rewordings the last 7 were 7 of 7. The rules did
+not stop the copying, they changed what got copied. The file header already carried this
+lesson and carved STEP 5 out as an exception on the theory that a PRESCRIBED phrase is
+safe to quote where a banned one is not. It is not, and it fails harder.
+
+Cutting a hidden example's body was also not enough: an anatomy is written to explain its
+example, so it quotes its sharpest lines back, and Sudden's four quote the closing ask
+verbatim. Quoted spans are stripped from hidden examples only.
+
+### The lists were written in vendor language (config, Sudden)
+
+The single biggest change to how the messages read, and it was config, not code.
+"On ad-funded catalogue, delivery comes out of a fixed yield per view" became "Ads pay you
+a fixed amount per view, but every extra view costs you more to deliver". Drafts inherit
+the register of the menu because the craft block tells them to keep approved wording word
+for word. Median draft length fell 437 → 333 in the same move, because plain English is
+shorter than vendor language.
+
+### Example messages were the repetition, and were mandatory in all but name (`829c89a`)
+
+With Sudden's four examples rendering: 4 repeated-wording flags. With none: 0, at the same
+median length. Cost is about two more refusals in twelve.
+
+They were effectively required. `if (templates.length)` chose between a DM at char_budget
+and a 250-character connection request, so a workspace with no examples got a different,
+shorter message rather than the same message without them. The LENGTH decides the shape
+now: at or under 300 it is a connection request, above it a DM. 47 lines of duplicated
+branch went with it — the second copy had its own problem menu, value menu, tone line,
+refusal instruction and output shape in slightly different words, which is how it once
+went months with no think question at all.
+
+### Two structural bugs found by reading the output (`dd46e25`)
+
+Apple TV+ is a subscription service and was handed "ads pay a fixed amount per view".
+Since the drafter may not substitute a different problem, it refused rather than write the
+message: the choice upstream was wrong and everything downstream behaved correctly.
+`pickDraftAngle` now numbers the facts it sees and must return the number of the one that
+shows the problem is real; out of range, missing or zero and the pick is discarded. Same
+trick cite_quotes plays on the drafter. Discarding is safe (the drafter reads the whole
+menu itself under STEP 2, which demands evidence); a wrong pick is not.
+
+YouTube TV passed the account-level can't-serve check because it has replays, then
+anchored on ESPN Unlimited, which is live. STEP 0 now says to read the anchor against the
+same conditions as if the anchor were the whole company. Nothing in it names live, sport
+or video, and it renders only for workspaces that configured conditions.
+
+### The one that mattered most: it invented the person (`7eaa244`)
+
+Across 123 dry-run drafts, idilio TV was addressed as "Esteban" six times and "Gabriela"
+three, Apple TV+ as "Alex" twice. Both accounts have zero contacts and neither name
+appears in any fact. It picked a different fake person per run. Never reached production
+only because Sudden's 41 live drafts were all on accounts that had contacts.
+
+### Four rules that only held once they were checked
+
+The finished closing sentence, dashes standing in for punctuation (4 of 12), telling a
+stranger what they feel (ClipFix: "The clip feature worried you on cloud costs. Did that
+fear win?"), and the invented name. All four had prose rules. All four kept happening.
+`draftAuditFlags` also gained an unfilled `[placeholder]` check, our own schema vocabulary
+("your prospect notes"), and the vague-closer family ("Worth a look?", "a one-pager").
+Refusals were audited for the first time (`refusalAuditFlags`): a draft gets read by a
+human, a refusal was silent, and Apple TV+ had refused with "no fact shows… they would buy
+from an outside vendor", which is a guess about behaviour rather than a missing fact.
+
+### Where I was wrong, twice, and it cost time
+
+I told Jake the ceiling on every message asking the same question was his three problems
+being one idea. Tested with the list emptied and examples already off: all 8 drafts asked
+the same question anyway. Sudden solves one problem. The list is not the limit and was
+restored.
+
+Then I rewrote his live-only can't-serve condition twice, both times wrong, after he said
+FAST is back catalogue and then that live FAST is not his market. His original wording
+("web HLS video on demand and replay catalogs") already excluded it correctly. Reverted to
+his text verbatim; my live line is out of message_rules entirely; char_budget back to 400
+from the 450 I had raised it to without asking.
+
+### Inbox redrafted (`f1bba67`)
+
+`scripts/_redraft_pending.ts`, through `runAgent(behavior=drafter)` so nothing
+re-implements the drafter. 4 of 6 replaced; Stingray refused as out of scope and
+MicroVerse on insufficient facts, both keeping their existing drafts because the script
+writes the replacement before closing the old gate. `DRAFT_SUPPRESSION_DAYS` (14) blocks a
+re-draft and has to be lowered deliberately via `policy.routing.draft_suppression_days`.
+Three of the four replacements still open on live sport — see the open item in
+project_state.
+
+### Also
+
+`_dryrun_drafts.ts` had been grading against `max_tokens: 3000` while production moved to
+8000 in `bf234ba`, so a truncation there proved nothing about production and read as
+catastrophic draft loss. That was the "two of three drafts silently lost" claim from the
+previous session, corrected. It resolves the real ceiling now, prints output tokens per
+account, checks the closing line separately (whole-body overlap cannot see a repeated
+closer), and skips the English-only question check on a non-English body after flagging an
+Italian fork that used "o".
+
+`scripts/check_pick_angle.ts` (10 assertions) wired into `pnpm check`; `pickDraftAngle`
+takes its network call as a parameter so they run offline, following `check_llm_retry.ts`.
