@@ -257,7 +257,11 @@ async function main() {
     log(`   [${body.length} chars]  reasoning: ${String(parsed.reasoning ?? '').slice(0, 220)}`);
 
     const flags: string[] = [];
-    if (body.length > 440) flags.push(`over budget (${body.length})`);
+    // The workspace's own budget with the same 10% tolerance draftAuditFlags
+    // allows, not a number typed in here. This was hardcoded at 440 while the
+    // budget moved to 450, so two drafts inside the budget were reported over it.
+    const budget = policy.drafter?.char_budget ?? 400;
+    if (body.length > Math.round(budget * 1.1)) flags.push(`over budget (${body.length} vs ${budget})`);
     if (!/\?/.test(body)) flags.push('NO QUESTION');
     // A dash standing in for a comma is the loudest machine tell in a short
     // message, and it ran 4 of 12 before the craft rule went in.
@@ -279,6 +283,14 @@ async function main() {
     if (questions.length && !answerable) flags.push(`question needs homework: "${questions[0]!.slice(0, 60)}"`);
     for (const re of BANNED_CTA) if (re.test(body)) flags.push(`banned CTA: ${re.source.slice(0, 30)}`);
     for (const re of MIND_READ) { const m = body.match(re); if (m) { flags.push(`MIND-READING "${m[0]}"`); break; } }
+    // The same invented-recipient check production runs. Kept here too because
+    // this harness is where a prompt change gets graded before it can ship.
+    const known = contacts.map((c) => c.name.toLowerCase()).filter(Boolean);
+    const greeting = body.slice(0, 60).match(/^(?:Hi|Hey|Hello|Hej|Hola|Bonjour)\s+([A-Z][a-z]{1,20})|^([A-Z][a-z]{1,20}),\s/);
+    const addressed = greeting?.[1] ?? greeting?.[2];
+    if (addressed && !known.some((n) => n.split(/\s+/).some((p) => p === addressed.toLowerCase()))) {
+      flags.push(`INVENTED RECIPIENT "${addressed}" (${contacts.length} contacts given)`);
+    }
     for (const re of BANNED_CLAIM) if (re.test(body)) flags.push(`banned claim: ${re.source.slice(0, 30)}`);
     if (FILLER.test(body)) flags.push(`filler: ${body.match(FILLER)![0]}`);
     // Only when the workspace HAS examples. Without them there is no template to

@@ -1024,6 +1024,7 @@ export async function runAgent(
         outreach_channel: outreachChannel,
         char_budget: policy.drafter?.char_budget,
         templates: policy.drafter?.templates,
+        contact_names: contacts.map((c) => c.name).filter(Boolean),
       });
       if (flags.length) {
         await callTool(supabase, actor, 'post_to_channel', {
@@ -1825,6 +1826,8 @@ export function draftAuditFlags(args: {
   outreach_channel: 'email' | 'linkedin';
   char_budget?: number;
   templates?: Array<{ id: string; label: string; audience: string; body: string; enabled?: boolean }>;
+  /** Names of the contacts the drafter was actually given, to catch an invented one. */
+  contact_names?: string[];
 }): string[] {
   const flags: string[] = [];
   // Same usability filter as buildDrafterDecision: these are the templates the
@@ -1852,6 +1855,23 @@ export function draftAuditFlags(args: {
   const slot = args.body.match(/\[[^\]]{2,30}\]|\{\{[^}]{2,30}\}\}|<[a-z][a-z_ ]{1,29}>/i);
   if (slot) {
     flags.push(`draft has an unfilled placeholder "${slot[0]}"; it would send with the brackets in it`);
+  }
+
+  // Greeting a person we do not have. Measured across 123 dry-run drafts on
+  // 2026-08-14: idilio TV was addressed as "Esteban" six times and "Gabriela"
+  // three times, Apple TV+ as "Alex" twice, and every one of those accounts has
+  // zero contacts on file and no fact anywhere naming those people. The model
+  // filled the slot rather than leaving it empty. This is the worst thing in the
+  // batch — a real company gets a message addressed to somebody who does not
+  // exist — and it is the one failure the reader spots instantly.
+  //
+  // Checked, not asked for: STEP 6 already says to use their first name only if
+  // you have it and to drop the greeting otherwise.
+  const known = (args.contact_names ?? []).map((n) => n.toLowerCase());
+  const greeting = args.body.slice(0, 60).match(/^(?:hi|hey|hello|hej|hola|bonjour)\s+([A-Z][a-z]{1,20})|^([A-Z][a-z]{1,20}),\s/);
+  const addressed = greeting?.[1] ?? greeting?.[2];
+  if (addressed && !known.some((n) => n.split(/\s+/).some((part) => part === addressed.toLowerCase()))) {
+    flags.push(`draft greets "${addressed}" and no contact by that name was given to it`);
   }
 
   // Our own vocabulary, said out loud to the prospect. A dry-run draft opened
