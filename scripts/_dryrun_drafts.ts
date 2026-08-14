@@ -44,7 +44,7 @@ const FEELINGS = 'worried|concerned|anxious|frustrated|nervous|excited|afraid|sc
 const MIND_READ = [
   new RegExp(`\\byou(?:'re| are|r team is)?\\s+(?:probably\\s+|clearly\\s+|no doubt\\s+)?(?:${FEELINGS})\\b`, 'i'),
   new RegExp(`\\b(?:${FEELINGS})\\s+you\\b`, 'i'),
-  /\byou must be\b/i, /\byou probably (?:think|feel|worry|want|need)\b/i,
+  /\byou must be\b/i, /\bmust have (been|felt|put|seen|kept|made)\b/i, /\byou probably (?:think|feel|worry|want|need)\b/i,
   /\bthat (?:fear|worry|anxiety|frustration)\b/i, /\bkeeping you up at night\b/i,
 ];
 const BANNED_CLAIM = [/60\s*(-|to|–)\s*80/i, /pay only from savings/i, /no savings,? no fee/i, /only get paid/i];

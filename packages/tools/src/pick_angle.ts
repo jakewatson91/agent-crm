@@ -44,7 +44,8 @@ export type AngleSkipReason =
   | 'no_facts'            // account has nothing to read
   | 'llm_error'           // the call itself failed
   | 'unparseable'         // came back as something other than the JSON asked for
-  | 'no_problem_fits';    // ran fine, and said none of the problems reach this account
+  | 'no_problem_fits'     // ran fine, and said none of the problems reach this account
+  | 'no_evidence';        // picked a problem but could not point at a fact showing it
 
 export interface AngleDecision {
   /** null means no angle; `reason` says which kind of no. */
@@ -92,18 +93,24 @@ PICK THE ONE THIS ACCOUNT SINGLES OUT. Several problems on the menu will be defe
 
 2. NAME THE COLLISIONS. Say which of the example arguments make substantially the same argument as the problem you picked. Same argument means a reader would hear the same point, not that they share a word. "Cost per unit does not fall as volume grows" and "the bill tracks traffic one for one" are the same argument. "Cost per unit does not fall as volume grows" and "the team cannot see which customers are expensive" are not.
 
+3. POINT AT THE FACT. Give the number of the ONE fact that shows this problem is real for this account. Not a fact that shows they are big, or busy, or growing: a fact that shows THIS problem. If you cannot point at one, you are assuming the problem rather than finding it, and the answer is 0.
+
 Output strictly valid JSON:
-{"problem": <number, 0 if none fit>, "why": "<under 20 words, naming the specific fact that singles this problem out for this account>", "same_argument": [<numbers of colliding examples>]}`;
+{"problem": <number, 0 if none fit>, "evidence": <the FACTS number that shows it, 0 if none>, "why": "<under 20 words, naming the specific fact that singles this problem out for this account>", "same_argument": [<numbers of colliding examples>]}`;
 
 function factLine(f: { predicate: string; object_text: string | null }): string {
   const v = (f.object_text ?? '').trim().replace(/\s+/g, ' ');
   return `${f.predicate}: ${v.length > MAX_FACT_CHARS ? `${v.slice(0, MAX_FACT_CHARS)}…` : v}`;
 }
 
+/** The one network call this makes, as a parameter so the assertions can count and answer it. */
+export type AngleCall = (text: string) => Promise<string>;
+
 export async function pickDraftAngle(
   supabase: SupabaseClient,
   workspace_id: string,
   args: PickDraftAngleArgs,
+  call?: AngleCall,
 ): Promise<AngleDecision> {
   const problems = (args.pain_points ?? []).map((p) => p.trim()).filter((p) => p.length > 0);
   // One problem is not a choice, and zero is nothing to render. Either way the
@@ -118,7 +125,7 @@ export async function pickDraftAngle(
     `ACCOUNT: ${args.account_name}`,
     '',
     'FACTS:',
-    facts.map((f) => `- ${factLine(f)}`).join('\n'),
+    facts.map((f, i) => `${i + 1}. ${factLine(f)}`).join('\n'),
     '',
     'PROBLEMS THE SELLER SOLVES:',
     problems.map((p, i) => `${i + 1}. ${p}`).join('\n'),
@@ -130,6 +137,8 @@ export async function pickDraftAngle(
 
   let text: string;
   try {
+    if (call) { text = await call(userPrompt); }
+    else {
     const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
       model: args.model,
       behavior: 'connector_extract',
@@ -144,11 +153,12 @@ export async function pickDraftAngle(
       ],
     });
     text = String(llm.text ?? '');
+    }
   } catch {
     return { choice: null, reason: 'llm_error' };
   }
 
-  let parsed: { problem?: unknown; why?: unknown; same_argument?: unknown };
+  let parsed: { problem?: unknown; evidence?: unknown; why?: unknown; same_argument?: unknown };
   try { parsed = JSON.parse(text.replace(/^```json\s*|\s*```$/g, '').trim()); }
   catch { return { choice: null, reason: 'unparseable' }; }
 
@@ -157,6 +167,21 @@ export async function pickDraftAngle(
   // is a real answer, not a failure: fall back to the model choosing from the
   // full menu, which is what it did before this existed.
   if (!Number.isInteger(idx) || idx < 1 || idx > problems.length) return { choice: null, reason: 'no_problem_fits' };
+
+  // The pick has to point at a fact. Without this the model assigned problems
+  // that the account's own facts contradict: a subscription service was handed
+  // "ads pay a fixed amount per view", and the drafter, told to build its
+  // question from that problem and no other, refused rather than write it. The
+  // problem was chosen upstream and everything downstream was correct.
+  //
+  // We cannot check that the cited fact really shows the problem, but requiring
+  // a citation makes the model look for one, which is the same trick cite_quotes
+  // plays on the drafter. An out-of-range or missing number means it could not
+  // find one, and no angle is better than a wrong angle: the drafter then reads
+  // the whole menu itself under STEP 2, which demands evidence and stops when
+  // there is none.
+  const ev = Number(parsed.evidence);
+  if (!Number.isInteger(ev) || ev < 1 || ev > facts.length) return { choice: null, reason: 'no_evidence' };
 
   const collided = Array.isArray(parsed.same_argument) ? parsed.same_argument : [];
   const withheld = collided

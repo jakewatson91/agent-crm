@@ -313,6 +313,7 @@ ${scope.map((s) => `  - ${s}`).join('\n')}
 Check each one against the account's facts. If one clearly applies, stop and output:
 {"action":"request_gate","body":"<the condition, and the fact that shows it>","policy":"account_out_of_scope"}
 Only stop on evidence in the facts, never on an assumption about what a company like this probably does. If the facts don't settle it, carry on and draft.
+THE SAME TEST APPLIES TO YOUR ANCHOR, not just to the company. Most companies do several things and only some of them are ours to serve. A company passes the check above because part of what they do is servable, and then the freshest, loudest news about them turns out to be about the part that is not. Writing on that anchor sells them something that cannot help with the thing you just raised, and they can tell. So when you pick the anchor in STEP 1, read it against the conditions above as if the anchor were the whole company: if the event, launch, deal or theme you were going to lead with is about a part of the business these conditions rule out, it is not an anchor. Find one that is, and if the only fresh news about them is the part you cannot serve, stop and say so.
 `;
 }
 

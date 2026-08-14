@@ -1933,7 +1933,7 @@ export function draftAuditFlags(args: {
   const MIND_READ: RegExp[] = [
     new RegExp(`\\byou(?:'re| are|r team is)?\\s+(?:probably\\s+|clearly\\s+|no doubt\\s+)?(?:${FEELINGS})\\b`, 'i'),
     new RegExp(`\\b(?:${FEELINGS})\\s+you\\b`, 'i'),
-    /\byou must be\b/i,
+    /\byou must be\b/i, /\bmust have (been|felt|put|seen|kept|made)\b/i,
     /\byou probably (?:think|feel|worry|want|need)\b/i,
     /\bthat (?:fear|worry|anxiety|frustration)\b/i,
     /\bkeeping you up at night\b/i,
