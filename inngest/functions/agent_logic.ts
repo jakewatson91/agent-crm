@@ -1815,6 +1815,25 @@ export function draftAuditFlags(args: {
     flags.push(`draft has an unfilled placeholder "${slot[0]}"; it would send with the brackets in it`);
   }
 
+  // Our own vocabulary, said out loud to the prospect. A dry-run draft opened
+  // "your prospect notes from Lisbon mention…", which tells them we keep a file
+  // on them and reads like software talking. The craft rules have banned this in
+  // prose since 07-21 and it happened anyway, so it needs to be checked rather
+  // than asked for.
+  //
+  // These names are ours, not the customer's: every workspace stores facts under
+  // the same predicates, so this is not a per-customer list and does not belong
+  // in config (policy.drafter.forbidden_field_terms stays, for terms specific to
+  // one customer's own vertical). Only names no salesperson would ever type are
+  // listed. "business model" and "recent launch" are also predicates and are NOT
+  // here, because both are ordinary English a good message may well use.
+  const OURS = /\b[a-z]+_[a-z_]+\b|\b(prospect notes|pain observed|outreach stage|signal strength|evidence depth|graph proximity|icp fit|contact score)\b/i;
+  const SOFTWARE_VOICE = /\b(our system shows|according to our data|we have you down as|based on the signal|your profile says)\b/i;
+  const leak = args.body.match(OURS) ?? args.body.match(SOFTWARE_VOICE);
+  if (leak) {
+    flags.push(`draft says "${leak[0]}", which is how we store the data, not how a person would say it`);
+  }
+
   // Craft checks, same shapes for every workspace (see OUTREACH_CRAFT in
   // prompt_builders.ts). These catch the two failure modes the prompt alone
   // didn't stop: a message that asks for calendar time, and a message with no

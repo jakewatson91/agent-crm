@@ -15,7 +15,10 @@ async function main() {
   const { data: w } = await sb.from('workspaces').select('about, constitution, persona, icp, policy').eq('id', WS).single();
   const ws = w as Record<string, any>;
   const policy = (ws.policy ?? {}) as Record<string, any>;
-  const build = (angle?: { problem: string; withheld_template_ids?: string[] }) => buildSystemPrompt('drafter', ws.about, ws.constitution, ws.persona, ws.icp, {}, {
+  const build = (
+    angle?: { problem: string; withheld_template_ids?: string[] },
+    over: { templates?: unknown; char_budget?: number } = {},
+  ) => buildSystemPrompt('drafter', ws.about, ws.constitution, ws.persona, ws.icp, {}, {
     outreach_channel: policy.drafter?.outreach_channel,
     subject_style: policy.drafter?.subject_style,
     paragraph_count: policy.drafter?.paragraph_count,
@@ -26,10 +29,10 @@ async function main() {
     forbidden_phrases: policy.outreach?.banned_phrases ?? [],
     forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
     market_brief: policy.drafter?.market_brief,
-    templates: policy.drafter?.templates,
+    templates: (over.templates ?? policy.drafter?.templates) as any,
     angle,
     message_rules: policy.drafter?.message_rules,
-    char_budget: policy.drafter?.char_budget,
+    char_budget: over.char_budget ?? policy.drafter?.char_budget,
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
     out_of_scope: policy.drafter?.out_of_scope,
@@ -72,6 +75,31 @@ async function main() {
     ];
     for (const [label, ok] of checks) console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`);
     console.log(`system prompt: ${withAngle.length} chars`);
+
+    // Example messages are optional. With none configured this used to fall
+    // through to a 250-character connection request, so a workspace that had
+    // not written any got a shorter, different message instead of the same
+    // message without examples. The LENGTH decides the shape now.
+    console.log('\n=== with no example messages configured ===');
+    const bare = build(undefined, { templates: [] });
+    const bareChecks: Array<[string, boolean]> = [
+      ['still writes a DM, not a connection request', bare.includes('FILL THE MESSAGE SHAPE') && !bare.includes('FILL THE CONNECTION-REQUEST SHAPE')],
+      ['the beat order is spelled out instead of taken from an example', bare.includes('The think question from STEP 3')],
+      ['it still has to say what the product does before asking', bare.includes('Beat 4 is not optional')],
+      ['no dangling TEMPLATES heading with nothing under it', !bare.includes('TEMPLATES —')],
+      ['the reasoning field stops asking which template was chosen', !bare.includes('name the template you chose')],
+      ['the product menu still renders', bare.includes('WHAT IT ACTUALLY DOES')],
+    ];
+    for (const [label, ok] of bareChecks) console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`);
+
+    // A short budget IS a connection request: LinkedIn hard-cuts one at 300.
+    console.log('\n=== at connection-request length (250) ===');
+    const short = build(undefined, { templates: [], char_budget: 250 });
+    const shortChecks: Array<[string, boolean]> = [
+      ['switches to the connection-request shape on length alone', short.includes('FILL THE CONNECTION-REQUEST SHAPE')],
+      ['and drops the product sentence, since there is no room for it', !short.includes('Beat 4 is not optional')],
+    ];
+    for (const [label, ok] of shortChecks) console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`);
   } else {
     console.log('\n(no templates or no pain_points on this workspace — angle path not exercised)');
   }

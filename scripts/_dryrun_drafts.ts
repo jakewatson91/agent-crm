@@ -254,12 +254,23 @@ async function main() {
     // is no reply. A fork ("or") or a yes/no opener is fine; this only catches
     // the shape STEP 3 already rules out.
     const questions = body.split(/(?<=[.?!])\s+/).filter((s) => s.trim().endsWith('?'));
-    const answerable = questions.some((q) => /\bor\b/i.test(q) || /^(is|are|was|were|do|does|did|have|has|had|can|could|would|will|should|who)\b/i.test(q.trim()));
+    // The yes/no word can sit after a leading clause: "When hundreds watch at
+    // once, do you know what you pay?" is answerable and was being flagged
+    // because the sentence opens with "When". Look for it at the start of the
+    // question OR just after a comma.
+    const answerable = questions.some((q) => /\bor\b/i.test(q)
+      || /^(is|are|was|were|do|does|did|have|has|had|can|could|would|will|should|who)\b/i.test(q.trim())
+      || /,\s*(is|are|was|were|do|does|did|have|has|had|can|could|would|will|should|who)\b/i.test(q));
     if (questions.length && !answerable) flags.push(`question needs homework: "${questions[0]!.slice(0, 60)}"`);
     for (const re of BANNED_CTA) if (re.test(body)) flags.push(`banned CTA: ${re.source.slice(0, 30)}`);
     for (const re of BANNED_CLAIM) if (re.test(body)) flags.push(`banned claim: ${re.source.slice(0, 30)}`);
     if (FILLER.test(body)) flags.push(`filler: ${body.match(FILLER)![0]}`);
-    if (!/template|\[[1-4]\]|t[1-4]_/i.test(String(parsed.reasoning ?? ''))) flags.push('reasoning names no template');
+    // Only when the workspace HAS examples. Without them there is no template to
+    // name, and this fired on all 9 drafts of the first run with examples off,
+    // burying the three real flags underneath. draftAuditFlags already guards
+    // the same check with `templated`; this one did not.
+    if ((policy.drafter?.templates ?? []).some((t: any) => t?.enabled !== false && t?.body?.trim())
+      && !/template|\[[1-4]\]|t[1-4]_/i.test(String(parsed.reasoning ?? ''))) flags.push('reasoning names no template');
     log(flags.length ? `   FLAGS: ${flags.join(' | ')}\n` : `   clean\n`);
   }
 

@@ -248,6 +248,7 @@ Asking for a slot on the calendar is the most common way these messages die. Fou
   4. Nothing at all, when the shape says so. The reply is the win.
 THESE ARE FOUR SHAPES, NOT FOUR SENTENCES. Write the ask in your own words, and put this account's own subject inside it: what exactly you would run the numbers on, what exactly might already be handled. An ask that would fit any company in this industry with no edit is the wrong ask. It is also the line most likely to come out identical across every message you write, because it is the last thing written and the least anchored, so give it the same fresh wording STEP 3 demands of the question.
 KEEP IT UNDER TEN WORDS. Naming their subject costs two or three words, not a clause. One short question, and stop: everything after the question mark is you talking past the ask.
+SAY WHAT THE THING IS BEFORE YOU ASK. Asks 1, 2 and 3 all point at something you would do for them, so all three are meaningless until the message has said, in one plain sentence, what you actually do. "Already got that handled?" is a real question when the sentence before it describes the thing; on its own it asks them to guess what you are talking about, and nobody replies to that. If the message has no room for both the plain sentence and the ask, keep the sentence and end on the question from STEP 3 instead. Ask 4, ending on that question with no offer at all, is the only ending that needs no such sentence.
 BANNED with no exceptions: "Open to a quick chat?", "Worth a quick call?", "Do you have 15 minutes?", "Can we sync?", any proposed day, time or meeting length, and any calendar link.
 
 STEP 6 — WELD IT INTO ONE VOICE, THEN LINE EDIT. The steps above are how you THINK; they are not a list of sentences to emit. Your message has fewer sentences than there are steps, because beats share sentences. Weld them: the trigger and the problem it creates belong in one sentence; the credibility number never stands alone, it rides inside a sentence that says what it costs them; the pitch and the ask carry the close. Now read it back as the recipient, out loud. It should sound like one person talking, not parts with the bullets removed.
@@ -273,7 +274,8 @@ STEP 8 — ${o.target} If you are over, cut in this order until you fit:
   1. The verification detail that trails the ask — the clause telling them where they could see the result for themselves.
   2. Adjectives and any clause that restates something already said.
   3. The credibility sentence. It is the most expendable of the four parts; a message with a sharp trigger and a sharp question still works with no cred at all.
-Never cut the question to fit. Never cut the trigger to fit.
+  4. The ask itself, falling back to ending on the question from STEP 3.
+Never cut the question to fit. Never cut the trigger to fit. Never cut the plain sentence saying what you do while an ask is still in the message: without it the ask means nothing, so cut the ask first and keep the sentence.
 
 STEP 9 — CHECK BEFORE YOU OUTPUT. Any "no" means rewrite.
 - Which mode is this, and does it earn it: a trigger with a PUBLISHED date inside the last ${o.freshDays} days, or a theme where two or more facts from different sources point the same way? A trigger needs a date. A theme does not.
@@ -333,9 +335,20 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
 
   if ((opts.outreach_channel ?? 'email') === 'linkedin') {
     const templates = (opts.templates ?? []).filter((t) => t && t.enabled !== false && t.body?.trim() && t.audience?.trim());
-    if (templates.length) {
+    {
       const rules = (opts.message_rules ?? []).filter((s) => s.trim().length > 0);
       const budget = opts.char_budget ?? 400;
+      // The LENGTH decides the shape, not whether example messages exist.
+      // LinkedIn hard-cuts a connection request at 300 characters, so a budget
+      // at or under that IS one: no room for a sentence saying what you do, so
+      // the think question has to carry the whole message.
+      //
+      // This used to key off the examples instead. With none configured the
+      // whole thing fell through to a 250-character connection request, so a
+      // workspace that had not written examples got a different and much
+      // shorter message rather than the same message without examples. That
+      // made examples effectively mandatory, which they were never meant to be.
+      const isConnect = budget <= 300;
       const toneBlock = tones.length ? `\nTONE — ${tones.join(', ')}.\n` : '';
       const rulesBlock = rules.length
         ? rules.map((r) => `- ${r}`).join('\n')
@@ -365,6 +378,15 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
           return `${head}\n    EXEMPLAR: "${t.body}"${t.anatomy ? `\n    ANATOMY: ${t.anatomy}` : ''}`;
         })
         .join('\n\n');
+      // Only rendered when the workspace wrote examples. With none, the beat
+      // order comes from the shape below, which says the same thing in prose.
+      const templatesSection = templates.length
+        ? `\nTEMPLATES — these set the SHAPE and the audience. The content comes from the account and from the menu below, never from the exemplar.
+An exemplar may deliberately be written about a different industry from the one you are selling into. That is not a mistake and it is not a hint to change subject: it is there so you take the rhythm, the sentence count and the order of beats, and nothing else. If a phrase from an exemplar would fit in your message unchanged, you are copying rather than writing.
+
+${templatesBlock}
+`
+        : '';
       // The menu STEP 4 refers to. Both are derived from the workspace's own
       // ABOUT at setup and were being computed, stored, passed in here, and then
       // dropped — this branch used to return without ever rendering them, so the
@@ -386,14 +408,39 @@ export function buildDrafterDecision(opts: DrafterDecisionOpts): string {
         ? `\n${painsBlock}${values.length ? `\nWHAT IT ACTUALLY DOES — true behaviors you may state. Pick the one that answers the problem you chose; the exemplar's wording is one option, not the required one.\n${values.map((v) => `  - ${v}`).join('\n')}\n` : ''}`
         : '';
 
-      const shape = `PICK ONE TEMPLATE AND MATCH ITS SHAPE.
+      // The beats, in order, at DM length. This is what the examples used to be
+      // the only source of: with none configured, nothing told the model what a
+      // message was made of. Beat 4 is the one Jake's rule turns on, and it is
+      // stated as a requirement rather than a preference because the drafts that
+      // ended on "already got that handled?" with no sentence in front of it
+      // were asking the reader to guess what "that" was.
+      const dmShape = `FILL THE MESSAGE SHAPE. These beats in this order, welded per STEP 6, so the message has fewer sentences than it has beats.
+1. The anchor from STEP 1 opens it, naming them and something they did.
+2. The problem from STEP 2. It usually rides inside the same sentence as the anchor rather than getting one of its own.
+3. The think question from STEP 3. It comes before anything about what you sell.
+4. ONE plain sentence saying what the thing you sell actually does, taken from the menu below.
+5. The ask from STEP 5, under ten words.
+Beat 4 is not optional whenever beat 5 is there. An offer to do something, or a question asking whether they have this handled, means nothing to someone who has not been told what the thing is.`;
+
+      const connectShape = `FILL THE CONNECTION-REQUEST SHAPE.
+- Maximum ${budget} characters total. Count carefully — LinkedIn hard-cuts at 300.
+- No greeting and no sign-off. LinkedIn prepends the sender's name automatically.
+- The anchor from STEP 1 opens it. The problem from STEP 2 is implied by the question rather than spelled out; there is no room to state both.
+- At this length the think question IS the ask, which is ending 4 in STEP 5. There is no room for a sentence saying what you do, and without one an offer is meaningless, so write neither.
+- No subject line — set "subject" to null in your output.`;
+
+      const templateGuidance = templates.length
+        ? `\n\nPICK ONE TEMPLATE AND MATCH ITS SHAPE.
 Match the recipient's real role to the AUDIENCE lines and pick exactly one. If the recipient matches none of them, do not force a fit: output request_gate.
 What MUST be built fresh for this account: the anchor (trigger or theme), the problem in STEP 2, and the think question. Never take those from the exemplar.
-What MAY repeat across accounts: approved claim wording and the sentence describing what you do, WHEN the message includes them at all. Whether to include them is STEP 4's call, made per message. A message that skips the cred, or pitches a different true behavior than the exemplar did, is often the better message. What never varies is honesty and shape discipline.
+What MAY repeat across accounts: approved claim wording and the sentence describing what you do. What never varies is honesty and shape discipline.
 GET THIS ASYMMETRY THE RIGHT WAY ROUND. The approved wording is the part that SHOULD stay word for word: it is approved because someone checked it. The anchor and the question are the parts that MUST change. Rewriting an approved term into a loose synonym while keeping the exemplar's question is backwards on both counts — it makes the claim vaguer and the message identical. If you find yourself reaching for a different word for something the workspace already names, stop: use their word, and spend the originality on the question instead.
-Two tests, both must pass. CONTENT: the anchor, the problem and the think question are built from THIS account and read nothing like the exemplar's. SHAPE: your sentence count, your order, and where you fuse beats are your own, not a trace of the exemplar's outline. A draft with a fresh anchor is still a clone if it walks the exemplar's shape sentence for sentence. If either fails, go back to STEP 3.`;
+Two tests, both must pass. CONTENT: the anchor, the problem and the think question are built from THIS account and read nothing like the exemplar's. SHAPE: your sentence count, your order, and where you fuse beats are your own, not a trace of the exemplar's outline. A draft with a fresh anchor is still a clone if it walks the exemplar's shape sentence for sentence. If either fails, go back to STEP 3.`
+        : '';
 
-      return `A new high-fit signal matched your saved filter rule. Write the LinkedIn DM for this account, following the workspace templates below.
+      const shape = `${isConnect ? connectShape : dmShape}${templateGuidance}`;
+
+      return `A new high-fit signal matched your saved filter rule. Write the ${isConnect ? 'LinkedIn connection request' : 'LinkedIn DM'} for this account${templates.length ? ', following the workspace templates below' : ''}.
 ${scopeBlock}
 
 ${outreachCraft({ maxAgeDays, freshDays, language, shape, target: `COUNT THE CHARACTERS. The body comes in under ${budget}.` })}
@@ -402,18 +449,13 @@ THIS WORKSPACE'S RULES — these override anything above if they conflict:
 ${rulesBlock}
 - No greeting-and-sign-off padding. LinkedIn shows the sender's name.
 - No subject line — set "subject" to null in your output.${fieldTermsLine}
-${toneBlock}
-TEMPLATES — these set the SHAPE and the audience. The content comes from the account and from the menu below, never from the exemplar.
-An exemplar may deliberately be written about a different industry from the one you are selling into. That is not a mistake and it is not a hint to change subject: it is there so you take the rhythm, the sentence count and the order of beats, and nothing else. If a phrase from an exemplar would fit in your message unchanged, you are copying rather than writing.
-
-${templatesBlock}
-${menuBlock}
+${toneBlock}${templatesSection}${menuBlock}
 ${LEAD_FACT_BLOCK}
 
 REQUEST_GATE — when any step above tells you to stop, output exactly:
 {"action":"request_gate","body":"<one sentence: the fact you would need>","policy":"facts_insufficient_for_draft"}
 
-REASONING — include a "reasoning" field: name the template you chose, the mode (trigger-led or theme-led), the anchor (the event and its date, or the theme and the facts behind it), and why this recipient fits that template's audience. Shown in the audit channel, never sent to the recipient.
+REASONING — include a "reasoning" field: ${templates.length ? 'name the template you chose, ' : ''}the mode (trigger-led or theme-led), the anchor (the event and its date, or the theme and the facts behind it), and why this recipient fits${templates.length ? " that template's audience" : ' the message you wrote'}. Shown in the audit channel, never sent to the recipient.
 ${chosenProblem
   ? 'Also quote the one fact that shows the problem above is real for this account. If you cannot point at a fact, you are assuming it, and an assumed problem is a gate, not a draft.'
   : 'Also name which problem from the menu you built the question on, and say in a few words why the OTHER problems fit this account less well. If you cannot give a reason the others lose, you did not choose — you took the first one. Go back and read the account\'s facts against all of them before writing.'}
@@ -421,54 +463,8 @@ ${chosenProblem
 CITE_QUOTES — for each id in "cites", also add an entry to "cite_quotes" giving the exact phrase copied verbatim from your "body" that reflects that fact (a few words, not the whole sentence). This is what lets the UI underline the claim in place — the phrase must appear in "body" character-for-character.
 
 Output strictly valid JSON:
-{"action":"post_touch_draft","subject":null,"body":"<linkedin DM, aim under ${budget} chars>","cites":["<fact_id_uuid>",...],"cite_quotes":[{"fact_id":"<fact_id_uuid>","quote":"<exact phrase from body>"},...],"reasoning":"<template chosen + trigger + why this audience>","to_email":null}`;
+{"action":"post_touch_draft","subject":null,"body":"<${isConnect ? `linkedin connection request, max ${budget} chars` : `linkedin DM, aim under ${budget} chars`}>","cites":["<fact_id_uuid>",...],"cite_quotes":[{"fact_id":"<fact_id_uuid>","quote":"<exact phrase from body>"},...],"reasoning":"<${templates.length ? 'template chosen + ' : ''}trigger + why this recipient>","to_email":null}`;
     }
-
-    // No templates configured: a connection request. Same nine steps, a tighter
-    // shape. Before, this branch got none of the craft — no mode test, no age
-    // rules, no think question — which is why a workspace that had not written
-    // templates yet produced noticeably worse messages than one that had.
-    const painBlock = pains.length
-      ? `PROBLEM — the pains this product addresses. Pick the ONE this account's anchor actually points at:\n${pains.map((p) => `   - ${p}`).join('\n')}`
-      : `PROBLEM — anchor on a pain this account plausibly has, grounded in their facts.`;
-    const valueBlock = values.length
-      ? `WHAT IT ACTUALLY DOES — true behaviors you may state. Pick the one that answers the problem you chose:\n${values.map((v) => `   - ${v}`).join('\n')}`
-      : `WHAT IT ACTUALLY DOES — state one concrete behavior of the product, no vague claims.`;
-    const toneBlock = tones.length ? `\nTONE — ${tones.join(', ')}.\n` : '';
-    // Heading only when the workspace actually put something under it.
-    const wsRules = (fieldTermsLine || toneBlock)
-      ? `THIS WORKSPACE'S RULES — these override anything above if they conflict:${fieldTermsLine}\n${toneBlock}`
-      : '';
-
-    const shape = `FILL THE CONNECTION-REQUEST SHAPE.
-- Maximum 250 characters total. Count carefully — LinkedIn hard-cuts at 300.
-- No greeting and no sign-off. LinkedIn prepends the sender's name automatically.
-- The anchor from STEP 1 opens it. The problem from STEP 2 is implied by the question rather than spelled out; there is no room to state both.
-- At this length the think question IS the ask. Write one question that both makes them check an assumption and invites a reply, and take its form from STEP 5's ranked list.
-- No pitch sentence. There is no room, and STEP 4 already says the pitch is optional.
-- No subject line — set "subject" to null in your output.`;
-
-    return `A new high-fit signal matched your saved filter rule. Write a LinkedIn connection request message.
-${scopeBlock}
-
-${outreachCraft({ maxAgeDays, freshDays, language, shape, target: 'COUNT THE CHARACTERS. The body comes in under 250.' })}
-
-${wsRules}
-${painBlock}
-
-${valueBlock}
-
-${LEAD_FACT_BLOCK}
-
-REQUEST_GATE — when any step above tells you to stop, output exactly:
-{"action":"request_gate","body":"<one sentence: the fact you would need>","policy":"facts_insufficient_for_draft"}
-
-REASONING — include a "reasoning" field: the mode (trigger-led or theme-led) and which facts you anchored to. Shown in the audit channel, not sent to the recipient.
-
-CITE_QUOTES — for each id in "cites", also add an entry to "cite_quotes" giving the exact phrase copied verbatim from your "body" that reflects that fact (a few words, not the whole sentence). This is what lets the UI underline the claim in place — the phrase must appear in "body" character-for-character.
-
-Output strictly valid JSON:
-{"action":"post_touch_draft","subject":null,"body":"<linkedin message, max 250 chars>","cites":["<fact_id_uuid>",...],"cite_quotes":[{"fact_id":"<fact_id_uuid>","quote":"<exact phrase from body>"},...],"reasoning":"<mode + which facts you anchored to>","to_email":null}`;
   }
 
   // ---- email, the default channel ----
