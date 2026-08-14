@@ -547,6 +547,63 @@ function ScoreShift({ prev, next }: { prev: number | null; next: number }) {
   );
 }
 
+/** Signed, two-decimal, so a column of effects reads as arithmetic. */
+function signed(n: number) {
+  return `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(2)}`;
+}
+
+/**
+ * Why the score moved, line by line, with the points each change was worth.
+ *
+ * The lines sum to the delta (see explainScoreChange), so the total row is a
+ * real check the reader can do, not a restatement. The old version of this named
+ * a single "driver" chosen by the largest raw sub-score move, which ignored
+ * weight and could not see a dimension entering or leaving the average at all.
+ */
+function MoveBreakdown({ move }: { move: TodayMove }) {
+  const phrase = (l: TodayMove['lines'][number]) => {
+    const label = (SCORE_DIMENSIONS[l.key]?.label ?? humanizeKey(l.key)).toLowerCase();
+    // The veto is not a dimension: it pins the score at 0 regardless of them, so
+    // it is usually the whole move and has to be said outright.
+    if (l.cause === 'veto_lifted') {
+      return <><b style={{ color: 'var(--text)' }}>no longer out of scope</b>{l.note ? <span className="muted"> · was: {l.note}</span> : null}</>;
+    }
+    if (l.cause === 'vetoed') {
+      return <><b style={{ color: 'var(--text)' }}>ruled out of scope</b>{l.note ? <span className="muted"> · {l.note}</span> : null}</>;
+    }
+    if (l.cause === 'started_counting') {
+      return <>started counting <b style={{ color: 'var(--text)' }}>{label}</b>, at <span className="mono">{(l.next_value ?? 0).toFixed(2)}</span></>;
+    }
+    if (l.cause === 'stopped_counting') {
+      return <>stopped counting <b style={{ color: 'var(--text)' }}>{label}</b> (was <span className="mono">{(l.prev_value ?? 0).toFixed(2)}</span>)</>;
+    }
+    return <><b style={{ color: 'var(--text)' }}>{label}</b> <span className="mono">{(l.prev_value ?? 0).toFixed(2)} → {(l.next_value ?? 0).toFixed(2)}</span></>;
+  };
+  return (
+    <div style={{ fontSize: '.78rem', color: 'var(--text-2)', marginTop: '.4rem' }}>
+      {move.lines.map((l) => (
+        <div key={l.key} style={{ display: 'flex', gap: '.5rem', alignItems: 'baseline', padding: '.1rem 0' }}>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {phrase(l)}
+            {l.fact_ids && l.fact_ids.length > 0 && (
+              <span style={{ marginLeft: '.4rem', display: 'inline-flex', gap: '.25rem' }}>
+                {l.fact_ids.map((id) => <CiteChain key={id} fact_id={id} label="trace" />)}
+              </span>
+            )}
+          </span>
+          <span className="mono" style={{ flexShrink: 0, color: l.effect >= 0 ? 'var(--badge-green-fg)' : 'var(--badge-coral-fg)' }}>
+            {signed(l.effect)}
+          </span>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: '.5rem', borderTop: '1px solid var(--border)', paddingTop: '.2rem', marginTop: '.15rem' }}>
+        <span className="subtle" style={{ flex: 1, minWidth: 0 }}>total</span>
+        <span className="mono subtle" style={{ flexShrink: 0 }}>{signed(move.linesTotal)}</span>
+      </div>
+    </div>
+  );
+}
+
 function MoverCard({ move, ws }: { move: TodayMove; ws: string }) {
   return (
     <div className="card" style={{ padding: '.85rem 1rem' }}>
@@ -561,18 +618,7 @@ function MoverCard({ move, ws }: { move: TodayMove; ws: string }) {
         </span>
       </div>
 
-      {move.driver && (
-        <div style={{ fontSize: '.79rem', color: 'var(--text-2)', marginTop: '.35rem' }}>
-          Moved on <b style={{ color: 'var(--text)' }}>{(SCORE_DIMENSIONS[move.driver.key]?.label ?? humanizeKey(move.driver.key)).toLowerCase()}</b>
-          {' '}<span className="mono muted">{move.driver.prev.toFixed(2)} → {move.driver.next.toFixed(2)}</span>
-          {SCORE_DIMENSIONS[move.driver.key] && <span className="muted"> · {SCORE_DIMENSIONS[move.driver.key]!.help}</span>}
-          {move.driver.fact_ids && move.driver.fact_ids.length > 0 && (
-            <span style={{ marginLeft: '.4rem', display: 'inline-flex', gap: '.25rem' }}>
-              {move.driver.fact_ids.map((id) => <CiteChain key={id} fact_id={id} label="trace" />)}
-            </span>
-          )}
-        </div>
-      )}
+      {move.lines.length > 0 && <MoveBreakdown move={move} />}
 
       {move.claim && (
         <div style={{ marginTop: '.45rem' }}>

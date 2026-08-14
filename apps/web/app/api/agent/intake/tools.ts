@@ -15,9 +15,9 @@ import {
   lookupEntity, getPolicy, resolveEnvVar,
   chatCompleteForWorkspace, getSourceMetrics,
   findContacts, linkContactToAccount,
-  getEntityTypes, getEntityTypesBatch, entityIdsOfType,
+  getEntityTypes, getEntityTypesBatch, entityIdsOfType, breakdownFromFacts,
 } from '@agent-crm/tools';
-import { relatedToEntity } from '@agent-crm/primitives';
+import { relatedToEntity, excludeSuperseded } from '@agent-crm/primitives';
 import { type ToolSpec } from '@agent-crm/primitives';
 import { runQualification } from '@agent-crm/agents';
 import { inngest } from '@agent-crm/inngest';
@@ -727,23 +727,26 @@ const proposeActionTool: ToolHandler = {
     },
   },
   run: async (ctx, args: { entity_id: string }) => {
+    // `.is('supersedes', null)` returns the STALE ORIGINAL: supersede_fact
+    // writes the new row pointing at the old one, so the original keeps a null
+    // supersedes forever. This tool was previewing the action selector against
+    // whatever score the entity had on its very first pass.
     const factsRes = await ctx.supabase.from('facts')
-      .select('predicate, object_text')
-      .eq('workspace_id', ctx.workspace_id).eq('subject_entity', args.entity_id).is('supersedes', null);
-    const facts = (factsRes.data ?? []) as Array<{ predicate: string; object_text: string | null }>;
+      .select('id, predicate, object_text')
+      .eq('workspace_id', ctx.workspace_id).eq('subject_entity', args.entity_id);
+    const facts = await excludeSuperseded(ctx.supabase, ctx.workspace_id,
+      (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null }>);
     const readScore = (p: string) => {
       const f = facts.find((x) => x.predicate === p);
       const v = f ? parseFloat(f.object_text ?? '') : NaN;
       return Number.isFinite(v) ? v : 0;
     };
-    const breakdown = {
-      industry_match: readScore('score_industry_match'),
-      stage_match: readScore('score_stage_match'),
-      signal_strength: readScore('score_signal_strength'),
-      evidence_depth: readScore('score_evidence_depth'),
-      recency: readScore('score_recency'),
-      graph_proximity: readScore('score_graph_proximity'),
-      rrf_prefilter: 0,
+    // Via breakdownFromFacts so unknown_dims survives: the score_* rows store a
+    // placeholder 0 for a dimension that could not be measured, and averaging
+    // that in gives the selector a lower total than the one production scored.
+    const breakdown = breakdownFromFacts(facts)?.breakdown ?? {
+      industry_match: 0, stage_match: 0, signal_strength: 0,
+      evidence_depth: 0, recency: 0, graph_proximity: 0, rrf_prefilter: 0,
     };
     const icpTotal = readScore('score_total') || readScore('icp_fit');
 

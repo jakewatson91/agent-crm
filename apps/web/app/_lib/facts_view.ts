@@ -4,6 +4,7 @@
  * always agree on what to show and hide — see labels.ts for the underlying
  * code-detection rules this builds on.
  */
+import { breakdownFromFacts, explainScore, type ScoreWeights } from '@agent-crm/tools';
 import { humanizePredicate, looksLikeCode } from './labels';
 import { SCORE_DIMENSIONS } from './score_labels';
 
@@ -74,34 +75,79 @@ export function groupVisibleFacts<T extends FactLike>(
 
 export interface ScoreComponent {
   key: string;
-  id: string;
+  /** The score_* fact behind this row, for the provenance trace. */
+  id: string | null;
   label: string;
   help: string | null;
   value: number;
+  /** False when the dimension was dropped from the average, not scored low. */
+  measured: boolean;
+  /** Why it could not be measured, when it wasn't. */
+  unmeasuredReason: string | null;
+  /** The dimension's share of the average after the renormalize. */
+  effectiveWeight: number;
+  /** effectiveWeight × value. The components' contributions sum to the score. */
+  contribution: number;
 }
 
 export interface ScoreCard {
   score: number | null;
   scoreReasoning: string | null;
   scoreComponents: ScoreComponent[];
+  /**
+   * The out_of_scope condition that forced the score to 0, when one matched.
+   * Without this row the table cannot reconcile: the dimensions add to their
+   * own mean and the score is 0 regardless of them.
+   */
+  scoreVeto: string | null;
+  /** The dimensions' weighted mean, before any veto. */
+  dimensionTotal: number | null;
 }
 
 /**
- * The score card: a plain verdict + the agent's own words, instead of the raw
- * score_* rows + JSON blob it writes. Reads across every family's fact list —
- * score facts aren't reliably confined to the "scoring" family in older data.
+ * The score card: a plain verdict, the agent's own words, and the arithmetic
+ * that produced the number, instead of the raw score_* rows + JSON blob it
+ * writes. Reads across every family's fact list — score facts aren't reliably
+ * confined to the "scoring" family in older data.
+ *
+ * The weights matter here, not just the sub-scores. A dimension that could not
+ * be measured is dropped from the average and the rest are renormalized, so its
+ * stored 0 is a placeholder. Reading the score_* rows straight, as this used
+ * to, rendered that placeholder as "low" — the entity page said Wedotv's
+ * network proximity was low when the truth was that it had no scored
+ * connections to average.
  */
-export function buildScoreCard(currentFacts: Record<string, FactLike[]>): ScoreCard {
+export function buildScoreCard(
+  currentFacts: Record<string, FactLike[]>,
+  weights?: ScoreWeights,
+): ScoreCard {
   const allFacts = Object.values(currentFacts).flat();
 
-  const scoreComponents = allFacts
-    .filter((f) => f.predicate.startsWith('score_') && f.predicate !== 'score_total' && f.object_text != null)
-    .map((f) => {
-      const key = f.predicate.replace(/^score_/, '');
-      const meta = SCORE_DIMENSIONS[key];
-      return { key, id: f.id, label: meta?.label ?? humanizePredicate(key), help: meta?.help ?? null, value: parseFloat(f.object_text as string) };
+  const factIdOf = new Map<string, string>();
+  for (const f of allFacts) {
+    if (f.predicate.startsWith('score_') && f.predicate !== 'score_total') {
+      factIdOf.set(f.predicate.replace(/^score_/, ''), f.id);
+    }
+  }
+
+  const parsed = breakdownFromFacts(allFacts);
+  const explained = parsed ? explainScore(parsed.breakdown, weights) : null;
+  const scoreComponents: ScoreComponent[] = explained
+    ? explained.contributions.map((c) => {
+      const meta = SCORE_DIMENSIONS[c.key];
+      return {
+        key: c.key,
+        id: factIdOf.get(c.key) ?? null,
+        label: meta?.label ?? humanizePredicate(c.key),
+        help: meta?.help ?? null,
+        value: c.value,
+        measured: c.measured,
+        unmeasuredReason: c.measured ? null : (meta?.unmeasured ?? 'not measured'),
+        effectiveWeight: c.effective_weight,
+        contribution: c.contribution,
+      };
     })
-    .filter((c) => Number.isFinite(c.value));
+    : [];
 
   const scoreReasoning = (() => {
     const f = allFacts.find((x) => x.predicate === 'icp_fit_breakdown');
@@ -121,5 +167,11 @@ export function buildScoreCard(currentFacts: Record<string, FactLike[]>): ScoreC
   })();
   const score = scoreStr != null && Number.isFinite(parseFloat(scoreStr)) ? parseFloat(scoreStr) : null;
 
-  return { score, scoreReasoning, scoreComponents };
+  return {
+    score,
+    scoreReasoning,
+    scoreComponents,
+    scoreVeto: explained?.out_of_scope ?? null,
+    dimensionTotal: explained?.dimension_total ?? null,
+  };
 }

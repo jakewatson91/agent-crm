@@ -19,6 +19,21 @@ import { excludeSuperseded } from '@agent-crm/primitives';
 export interface GraphProximityResult {
   score: number;        // [0, 1] — mean icp_fit of linked entities, 0 if no edges
   edge_count: number;   // how many neighbors were found
+  /**
+   * How many of those neighbors actually carried an icp_fit, i.e. how many fed
+   * the mean. This is the one the caller must test before treating `score` as a
+   * verdict: `edge_count` counts neighbors we cannot score either.
+   *
+   * A contact is the case that matters. Its only edge is works_at -> account,
+   * and contacts store `contact_score`, never `icp_fit` (see scoring.ts), so an
+   * account whose sole link is a contact has edge_count 1 and nothing to
+   * average. Reading `score` there says "its connections are a terrible fit"
+   * when the truth is "we have no scored connections yet". Live case: Wedotv
+   * gained a contact scoring 0.77 and its icp_fit fell 0.94 -> 0.81, because a
+   * fabricated 0.00 joined the weighted mean at 10% of the weight and diluted
+   * every other dimension.
+   */
+  scored_neighbor_count: number;
   predicates: Record<string, number>; // counts per predicate, for audit
   /** The edge facts + neighbor icp_fit facts that actually fed the mean, for citing the score. */
   evidence_fact_ids: string[];
@@ -34,7 +49,7 @@ export async function graphProximity(
   workspace_id: string,
   entity_id: string,
 ): Promise<GraphProximityResult> {
-  const empty: GraphProximityResult = { score: 0, edge_count: 0, predicates: {}, evidence_fact_ids: [] };
+  const empty: GraphProximityResult = { score: 0, edge_count: 0, scored_neighbor_count: 0, predicates: {}, evidence_fact_ids: [] };
 
   // 1. Edges where this entity is the subject: facts(subject=entity_id, predicate∈EDGES, object_entity!=null)
   const subjRes = await supabase
@@ -94,8 +109,19 @@ export async function graphProximity(
     if (edge) evidenceFactIds.push(edge.edge_fact_id);
   }
 
-  if (fitValues.length === 0) return { score: 0, edge_count: neighbors.size, predicates, evidence_fact_ids: [] };
+  // Neighbors exist but none of them is scored, so there is nothing to average.
+  // scored_neighbor_count 0 is what tells the caller this is a gap in what we
+  // know rather than a mean that came out at zero.
+  if (fitValues.length === 0) {
+    return { score: 0, edge_count: neighbors.size, scored_neighbor_count: 0, predicates, evidence_fact_ids: [] };
+  }
 
   const mean = fitValues.reduce((a, b) => a + b, 0) / fitValues.length;
-  return { score: Math.max(0, Math.min(1, mean)), edge_count: neighbors.size, predicates, evidence_fact_ids: evidenceFactIds };
+  return {
+    score: Math.max(0, Math.min(1, mean)),
+    edge_count: neighbors.size,
+    scored_neighbor_count: fitValues.length,
+    predicates,
+    evidence_fact_ids: evidenceFactIds,
+  };
 }

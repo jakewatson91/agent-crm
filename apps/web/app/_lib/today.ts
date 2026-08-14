@@ -28,8 +28,12 @@ import {
   cronToMinIntervalMinutes,
   isSubstantiveFact,
   DEFAULT_PRICING,
+  coerceBreakdown,
+  explainScoreChange,
+  buildScoreWeights,
   type ResolveStateInput,
   type Pricing,
+  type ScoreMoveCause,
 } from '@agent-crm/tools';
 import { humanizePredicate } from './labels';
 
@@ -89,14 +93,45 @@ export interface TodayRun {
   domains: Array<{ entity_id: string; name: string; domain: string }>;
 }
 
+export interface TodayMoveLine {
+  key: string;
+  cause: ScoreMoveCause;
+  prev_value: number | null;
+  next_value: number | null;
+  /** Points of the total delta this line is responsible for. The lines sum to it. */
+  effect: number;
+  /** The out_of_scope condition text, on a veto line. */
+  note?: string;
+  fact_ids?: string[];
+}
+
 export interface TodayMove {
   entity_id: string;
   name: string;
   scorePrev: number | null; // null = first score in the window
   scoreNew: number;
   delta: number;
-  /** The sub-score that moved most since before the window. */
-  driver: { key: string; prev: number; next: number; fact_ids?: string[] } | null;
+  /**
+   * Every dimension whose change moved the total, with the points it moved it.
+   * These sum to the delta, so the card can show the whole reason rather than
+   * naming one dimension and hoping.
+   *
+   * This replaced a "driver" field that picked the largest RAW sub-score move.
+   * That ignored weight, so a 0.08 move on a 0.10-weight dimension outranked
+   * everything, and it could not see a dimension entering or leaving the mean
+   * at all (the stored number does not change, only whether it counts). Wedotv
+   * dropped 0.94 -> 0.81 on graph_proximity starting to count, and the card
+   * blamed freshness, worth 0.008 of it.
+   */
+  lines: TodayMoveLine[];
+  /**
+   * The lines' own total, so the card's total row is exactly the sum of the
+   * rows above it. Not `delta`: that comes from the stored icp_fit facts, which
+   * are rounded to 2dp, while these are computed at full precision from the
+   * breakdowns. They agree to within a rounding step; printing `delta` here
+   * would leave a column that visibly does not add up.
+   */
+  linesTotal: number;
   reasoning: string | null;
   /** The enricher's own write-up of the best-evidenced new fact. */
   claim: { post_id: string; created_at: string; body: string; cites: string[] } | null;
@@ -305,7 +340,13 @@ const RUN_DOMAINS_CAP = 10;
 /** Facts that identify a record rather than teach us something about it. */
 const IDENTITY_PREDICATES = new Set(['is_a', 'email', 'role', 'works_at', 'outreach_stage', 'domain', 'signal_summary']);
 
-const SUB_SCORE_KEYS = ['industry_match', 'stage_match', 'signal_strength', 'evidence_depth', 'recency', 'graph_proximity'] as const;
+/**
+ * Smallest score move worth a line on the card. Below this the line is true but
+ * not news: at 0.005 a dimension has to shift the total by half a point before
+ * it earns a row, which keeps a rescore that nudged one decimal from printing
+ * six lines that all round to 0.00.
+ */
+const MOVE_LINE_FLOOR = 0.005;
 
 /** Event actions we need the full payload for. Everything else is counted by name. */
 const DETAIL_ACTIONS = [
@@ -688,6 +729,9 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
 
   const policy = (wsRow.data?.policy ?? {}) as Record<string, any>;
   const pl = (policy.pipeline ?? {}) as Record<string, any>;
+  // The workspace's own weights, so the move breakdown below adds up to the
+  // score this workspace actually computed, not to the defaults.
+  const scoreWeights = buildScoreWeights(policy.scoring?.weights);
   const pipeline = {
     paused: pl.state === 'paused',
     scope: (pl.scope as string) ?? null,
@@ -897,33 +941,40 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
   const N = (id: string | null | undefined) => (id && nameOf.get(id)) || (id ?? '?').slice(0, 8);
 
   const movers: TodayMove[] = moverSlice.map((c) => {
-    const cur = curBreakdownOf.get(c.id);
-    const prev = prevBreakdownOf.get(c.id);
-    let driver: TodayMove['driver'] = null;
+    const curRaw = curBreakdownOf.get(c.id);
+    const cur = coerceBreakdown(curRaw);
+    const prev = coerceBreakdown(prevBreakdownOf.get(c.id));
+    // The whole reason the score moved, in points that add up to the delta.
+    // Reads unknown_dims, so it catches a dimension that started or stopped
+    // counting — the change that moves the total without moving any number.
+    let lines: TodayMoveLine[] = [];
+    let linesTotal = 0;
     if (cur && prev) {
-      for (const k of SUB_SCORE_KEYS) {
-        const a = num(prev[k]);
-        const b = num(cur[k]);
-        if (a === null || b === null || Math.abs(b - a) < 0.01) continue;
-        if (!driver || Math.abs(b - a) > Math.abs(driver.next - driver.prev)) driver = { key: k, prev: a, next: b };
-      }
+      const move = explainScoreChange(prev, cur, scoreWeights);
+      linesTotal = move.delta;
       // graph_proximity is a plain mean over neighbor icp_fit facts, so the
       // scorer records exactly which facts drove it (see graph.ts
-      // graphProximity/evidence_fact_ids) - surface those so the "moved on
-      // network proximity" line can cite them instead of just showing the delta.
-      if (driver && driver.key === 'graph_proximity') {
-        const ids = (cur as { evidence_fact_ids?: { graph_proximity?: unknown } } | undefined)?.evidence_fact_ids?.graph_proximity;
-        if (Array.isArray(ids) && ids.length) driver = { ...driver, fact_ids: ids.filter((x): x is string => typeof x === 'string') };
-      }
+      // graphProximity/evidence_fact_ids) - surface those so the network
+      // proximity line can cite them instead of just showing the delta.
+      const graphIds = cur.evidence_fact_ids?.graph_proximity;
+      lines = move.lines
+        .filter((l) => Math.abs(l.effect) >= MOVE_LINE_FLOOR)
+        .sort((a, b) => Math.abs(b.effect) - Math.abs(a.effect))
+        .map((l) => (l.key === 'graph_proximity' && Array.isArray(graphIds) && graphIds.length
+          ? { ...l, fact_ids: graphIds.filter((x): x is string => typeof x === 'string') }
+          : { ...l }));
     }
-    const reasoningRaw = typeof cur?.reasoning === 'string' ? cur.reasoning.trim() : '';
+    // The scorer's prose sits in the same fact but is not part of the numeric
+    // breakdown, so read it off the raw payload.
+    const reasoningRaw = typeof curRaw?.reasoning === 'string' ? curRaw.reasoning.trim() : '';
     return {
       entity_id: c.id,
       name: N(c.id),
       scorePrev: c.scorePrev,
       scoreNew: c.scoreNew,
       delta: c.delta,
-      driver,
+      lines,
+      linesTotal,
       reasoning: reasoningRaw ? firstSentences(cleanReasoning(reasoningRaw), 260) : null,
       claim: claimsOf.get(c.id) ?? null,
       facts: (learnedByEntity.get(c.id) ?? []).slice(0, 4).map((f) => ({ id: f.id, predicate: f.predicate, object: f.object })),

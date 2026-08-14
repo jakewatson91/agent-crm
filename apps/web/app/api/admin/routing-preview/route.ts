@@ -11,7 +11,7 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import {
-  selectAction, buildThresholds, buildScoreWeights, combineSubScores,
+  selectAction, buildThresholds, buildScoreWeights, combineSubScores, breakdownFromFacts,
   loadActionContext, loadBestContactScore, getPolicy,
   type ActionThresholds, type ScoreWeights,
 } from '@agent-crm/tools';
@@ -91,19 +91,15 @@ export async function POST(req: Request) {
   // instead of one at a time.
   const samplesOrdered = await Promise.all(ranked.map(async (r) => {
     const facts = factsByEnt.get(r.id) ?? [];
-    const readScore = (p: string) => {
-      const f = facts.find((x) => x.predicate === p);
-      const v = f ? parseFloat(f.object_text ?? '') : NaN;
-      return Number.isFinite(v) ? v : 0;
-    };
-    const breakdown = {
-      industry_match: readScore('score_industry_match'),
-      stage_match: readScore('score_stage_match'),
-      signal_strength: readScore('score_signal_strength'),
-      evidence_depth: readScore('score_evidence_depth'),
-      recency: readScore('score_recency'),
-      graph_proximity: readScore('score_graph_proximity'),
-      rrf_prefilter: 0,
+    // Read through breakdownFromFacts, which keeps unknown_dims. Rebuilding the
+    // breakdown from the score_* rows alone drops it, and combineSubScores then
+    // averages in the placeholder 0 those rows store for a dimension nobody
+    // could measure. The preview would price the proposed weights against a
+    // total production never computes: on the Sudden book 811 of 861 accounts
+    // have at least one unmeasured dimension.
+    const breakdown = breakdownFromFacts(facts)?.breakdown ?? {
+      industry_match: 0, stage_match: 0, signal_strength: 0,
+      evidence_depth: 0, recency: 0, graph_proximity: 0, rrf_prefilter: 0,
     };
     // Recompute icp_total under the proposed weights — this is the "if you save"
     // total the customer sees in the preview.

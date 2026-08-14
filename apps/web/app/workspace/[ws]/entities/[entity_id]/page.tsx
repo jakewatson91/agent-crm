@@ -1,5 +1,5 @@
 import { createServerClient } from '@agent-crm/db';
-import { findMergeCandidatesForEntity } from '@agent-crm/tools';
+import { findMergeCandidatesForEntity, buildScoreWeights } from '@agent-crm/tools';
 import { EntityDetail } from './EntityDetail';
 import { MergeProposal } from './MergeProposal';
 
@@ -16,7 +16,7 @@ export default async function EntityPage({
   // The channel lookup doesn't depend on the other two reads, so all three go
   // in one round; its result is only used when the entity turns out to be an
   // account (account channels aggregate posts/touches/gates).
-  const [entityRes, typesRes, chRes] = await Promise.all([
+  const [entityRes, typesRes, chRes, wsRes] = await Promise.all([
     supabase
       .from('entities')
       .select('id, name, attributes')
@@ -36,8 +36,14 @@ export default async function EntityPage({
       .eq('workspace_id', ws)
       .eq('account_entity_id', entity_id)
       .maybeSingle(),
+    // The workspace's scoring weights, so the score card shows the arithmetic
+    // this workspace actually ran rather than the defaults.
+    supabase.from('workspaces').select('policy').eq('id', ws).maybeSingle(),
   ]);
   const entity = entityRes.data;
+  const scoreWeights = buildScoreWeights(
+    ((wsRes.data?.policy ?? {}) as { scoring?: { weights?: Record<string, number> } }).scoring?.weights,
+  );
 
   if (!entity) {
     return (
@@ -75,6 +81,7 @@ export default async function EntityPage({
         entityKind={primaryType}
         entityAttributes={(entity.attributes ?? {}) as Record<string, unknown>}
         channelId={channelId}
+        scoreWeights={scoreWeights}
       />
     </>
   );

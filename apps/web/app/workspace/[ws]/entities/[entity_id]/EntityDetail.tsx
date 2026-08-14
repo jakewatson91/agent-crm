@@ -10,7 +10,7 @@ import { DraftActions } from '../../../../_components/DraftActions';
 import { lowConfLabel } from '../../../../_lib/confidence';
 import { bandOf, bandColor, BAND_HEADLINE, BAND_VERDICT } from '../../../../_lib/bands';
 import { humanizePredicate, stripActionTag } from '../../../../_lib/labels';
-import { scoreWord } from '../../../../_lib/score_labels';
+import type { ScoreWeights } from '@agent-crm/tools';
 import { FAMILY_LABEL, predicateLabel, groupVisibleFacts, buildScoreCard } from '../../../../_lib/facts_view';
 import { ScoreTimeline } from './ScoreTimeline';
 import { AttributeGrid } from './AttributeGrid';
@@ -95,6 +95,7 @@ export function EntityDetail({
   entityKind,
   entityAttributes,
   channelId,
+  scoreWeights,
 }: {
   ws: string;
   entityId: string;
@@ -102,6 +103,8 @@ export function EntityDetail({
   entityKind: string;
   entityAttributes: Record<string, unknown>;
   channelId: string | null;
+  /** This workspace's scoring weights, so the formula shown is the one used. */
+  scoreWeights: ScoreWeights;
 }) {
   const [data, setData] = useState<SummaryResponse | null>(null);
   const [loading, setLoading] = useState(!!channelId);
@@ -212,9 +215,9 @@ export function EntityDetail({
   const { visibleFacts, families } = groupVisibleFacts(currentFacts);
 
   // Score card: a plain verdict + the agent's own words, instead of the 8 raw
-  // score_* rows + JSON blob it writes. The numeric dimensions move into an
-  // audit expander, each explained in plain language.
-  const { score, scoreReasoning, scoreComponents } = buildScoreCard(currentFacts);
+  // score_* rows + JSON blob it writes. The arithmetic moves into an audit
+  // expander: value, weight and contribution per dimension, adding to the score.
+  const { score, scoreReasoning, scoreComponents, scoreVeto, dimensionTotal } = buildScoreCard(currentFacts, scoreWeights);
 
   const countsLine = data
     ? `${data.counts.facts_active} facts · ${data.counts.recent} recent · ${data.counts.history} historical`
@@ -276,21 +279,71 @@ export function EntityDetail({
           {scoreComponents.length > 0 && (
             <details style={{ marginTop: '.6rem' }}>
               <summary className="subtle" style={{ cursor: 'pointer', fontSize: '.72rem' }}>how this score was reached</summary>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '.55rem', marginTop: '.55rem' }}>
-                {scoreComponents.map((c) => (
-                  <div key={c.key}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
-                      <span style={{ fontSize: '.78rem', color: 'var(--text)', minWidth: 130 }}>{c.label}</span>
-                      <span className="mono" style={{ fontSize: '.72rem', fontWeight: 600, color: bandColor(c.value) }}>{scoreWord(c.value)}</span>
-                    </div>
-                    {c.help && (
-                      <div className="subtle" style={{ fontSize: '.7rem', color: 'var(--text-3)', marginTop: '.12rem' }}>{c.help}</div>
+              {/* The full arithmetic, not a verdict per dimension. Weight is the
+                  share of the average this dimension holds AFTER dropping the
+                  ones we could not measure, so the contributions add to the
+                  score above and a reader can check it. */}
+              <div style={{ marginTop: '.55rem', overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.74rem' }}>
+                  <thead>
+                    <tr className="subtle" style={{ textAlign: 'right', fontSize: '.68rem' }}>
+                      <th style={{ textAlign: 'left', fontWeight: 400, paddingBottom: '.25rem' }}>dimension</th>
+                      <th style={{ fontWeight: 400, paddingBottom: '.25rem' }}>value</th>
+                      <th style={{ fontWeight: 400, paddingBottom: '.25rem' }}>weight</th>
+                      <th style={{ fontWeight: 400, paddingBottom: '.25rem' }}>contributes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scoreComponents.map((c) => (
+                      <tr key={c.key} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ padding: '.3rem .5rem .3rem 0' }}>
+                          <div style={{ color: 'var(--text)' }}>{c.label}</div>
+                          {c.help && <div className="subtle" style={{ fontSize: '.68rem', color: 'var(--text-3)' }}>{c.help}</div>}
+                          {c.id && <div style={{ marginTop: '.1rem' }}><CiteChain fact_id={c.id} label="trace" /></div>}
+                        </td>
+                        {c.measured ? (
+                          <>
+                            <td className="mono" style={{ textAlign: 'right', color: bandColor(c.value), fontWeight: 600 }}>
+                              {c.value.toFixed(2)}
+                            </td>
+                            <td className="mono subtle" style={{ textAlign: 'right' }}>{c.effectiveWeight.toFixed(3)}</td>
+                            <td className="mono" style={{ textAlign: 'right', color: 'var(--text)' }}>{c.contribution.toFixed(3)}</td>
+                          </>
+                        ) : (
+                          // Not scored low: dropped from the average entirely,
+                          // with the reason, so a gap in our data never reads
+                          // as a verdict on the account.
+                          <td colSpan={3} className="subtle" style={{ textAlign: 'right', fontSize: '.7rem' }}>
+                            not counted &middot; {c.unmeasuredReason}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                    {/* A matched out_of_scope condition pins the score at 0
+                        whatever the dimensions say. Without this row the table
+                        cannot reconcile: the contributions add to their own
+                        mean and the fit score below is 0 regardless. */}
+                    {scoreVeto && (
+                      <tr style={{ borderTop: '1px solid var(--border)' }}>
+                        <td colSpan={3} style={{ padding: '.3rem .5rem .3rem 0' }}>
+                          <span style={{ color: 'var(--text)' }}>Ruled out of scope</span>
+                          <div className="subtle" style={{ fontSize: '.68rem', color: 'var(--text-3)' }}>{scoreVeto}</div>
+                        </td>
+                        <td className="mono" style={{ textAlign: 'right', color: 'var(--badge-coral-fg)' }}>
+                          {dimensionTotal !== null ? `−${dimensionTotal.toFixed(3)}` : '→ 0'}
+                        </td>
+                      </tr>
                     )}
-                    <div style={{ marginTop: '.15rem' }}>
-                      <CiteChain fact_id={c.id} label="trace" />
-                    </div>
-                  </div>
-                ))}
+                    <tr style={{ borderTop: '1px solid var(--border-strong)' }}>
+                      <td className="subtle" style={{ padding: '.3rem .5rem .3rem 0' }}>fit score</td>
+                      <td />
+                      <td />
+                      <td className="mono" style={{ textAlign: 'right', fontWeight: 600, color: bandColor(score) }}>
+                        {score.toFixed(3)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </details>
           )}
