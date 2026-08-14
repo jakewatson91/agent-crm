@@ -14,7 +14,7 @@ config({ path: '.env.local' });
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 import { chatCompleteForWorkspace, scoreFacts, pickDraftAngle, resolveMaxOutputTokens, type AngleDecision } from '@agent-crm/tools';
-import { buildSystemPrompt, buildUserPrompt } from '../inngest/functions/agent_logic.js';
+import { buildSystemPrompt, buildUserPrompt, refusalAuditFlags } from '../inngest/functions/agent_logic.js';
 
 const WS = 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
 const OUT = process.env.DRYRUN_OUT ?? '/tmp/sudden_dryrun.txt';
@@ -36,7 +36,17 @@ function log(s: string) { appendFileSync(OUT, s + '\n'); console.log(s); }
 
 // CTAs the craft rules ban outright, plus the claims the constitution keeps out
 // of a first message. Grepped mechanically so grading isn't a vibe check.
-const BANNED_CTA = [/open to a (quick |brief )?(chat|call)/i, /worth a (quick )?(chat|call)/i, /\b15 minutes\b/i, /can we sync/i, /https?:\/\//i];
+const BANNED_CTA = [/open to a (quick |brief )?(chat|call)/i, /worth a (quick )?(chat|call)/i, /\b15 minutes\b/i, /can we sync/i, /https?:\/\//i,
+  /\bworth (a look|exploring|connecting|a conversation)\b/i, /\b(one[- ]pager|a deck|brochure|collateral|white ?paper)\b/i];
+// Telling a stranger what they feel. Same shapes draftAuditFlags checks; see the
+// comment there for why this is a check and not a rule in the prompt.
+const FEELINGS = 'worried|concerned|anxious|frustrated|nervous|excited|afraid|scared|stressed|keen|desperate';
+const MIND_READ = [
+  new RegExp(`\\byou(?:'re| are|r team is)?\\s+(?:probably\\s+|clearly\\s+|no doubt\\s+)?(?:${FEELINGS})\\b`, 'i'),
+  new RegExp(`\\b(?:${FEELINGS})\\s+you\\b`, 'i'),
+  /\byou must be\b/i, /\byou probably (?:think|feel|worry|want|need)\b/i,
+  /\bthat (?:fear|worry|anxiety|frustration)\b/i, /\bkeeping you up at night\b/i,
+];
 const BANNED_CLAIM = [/60\s*(-|to|–)\s*80/i, /pay only from savings/i, /no savings,? no fee/i, /only get paid/i];
 const FILLER = /\b(streamline|leverage|optimize|empower|unlock|revolutioni[sz]e|seamless|all-in-one|single source of truth)\b/i;
 
@@ -232,7 +242,12 @@ async function main() {
     if (angle) angleCounts.set(angle.problem, (angleCounts.get(angle.problem) ?? 0) + 1);
     if (parsed.action === 'request_gate') {
       gated++;
-      log(`   GATE: ${parsed.body}\n`);
+      log(`   GATE: ${parsed.body}`);
+      // Same check production now runs on a refusal. A refusal is silent: the
+      // account simply never hears from us, so a made-up reason costs a real
+      // prospect and nobody ever sees it.
+      const why = refusalAuditFlags(String(parsed.body ?? ''));
+      log(why.length ? `   REFUSAL FLAGS: ${why.join(' | ')}\n` : '');
       continue;
     }
     drafted++;
@@ -263,6 +278,7 @@ async function main() {
       || /,\s*(is|are|was|were|do|does|did|have|has|had|can|could|would|will|should|who)\b/i.test(q));
     if (questions.length && !answerable) flags.push(`question needs homework: "${questions[0]!.slice(0, 60)}"`);
     for (const re of BANNED_CTA) if (re.test(body)) flags.push(`banned CTA: ${re.source.slice(0, 30)}`);
+    for (const re of MIND_READ) { const m = body.match(re); if (m) { flags.push(`MIND-READING "${m[0]}"`); break; } }
     for (const re of BANNED_CLAIM) if (re.test(body)) flags.push(`banned claim: ${re.source.slice(0, 30)}`);
     if (FILLER.test(body)) flags.push(`filler: ${body.match(FILLER)![0]}`);
     // Only when the workspace HAS examples. Without them there is no template to

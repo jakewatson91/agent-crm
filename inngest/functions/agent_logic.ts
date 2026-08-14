@@ -1075,6 +1075,19 @@ export async function runAgent(
     const policy = (decision.policy ?? 'low_confidence') as string;
     const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
       `[${policy}] ${sanitize(decision.body ?? '')}`, validCites);
+    // Refusals were the one decision nothing checked. A draft gets read by a
+    // human before it goes anywhere; a refusal is silent and the account just
+    // never hears from us. Apple TV+ was refused with "no fact shows we could
+    // access their CDN infrastructure or that they would buy from an outside
+    // vendor", which is not a missing fact, it is a guess about how they behave,
+    // and nothing in the rules disqualifies a big company. Same treatment as the
+    // draft checks: never blocks, posts one note under the decision.
+    const why = refusalAuditFlags(String(decision.body ?? ''));
+    if (why.length) {
+      await callTool(supabase, actor, 'post_to_channel', {
+        channel_id, kind: 'system', body: `Refusal checks: ${why.join('; ')}`, cites: [], parent_post_id: r.channel_post_id ?? null,
+      }, meta).catch(() => { /* the refusal itself is what matters */ });
+    }
     return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: policy, behavior, ...tokens };
   }
 
@@ -1780,6 +1793,32 @@ function sanitizeText(s: string, extraBanned: string[] = []): string {
  * informed. The shapes live here; the thresholds (char_budget, templates) are
  * workspace config.
  */
+/**
+ * Checks on a refusal, which used to be the only decision nothing looked at.
+ *
+ * A refusal is only legitimate on two grounds: a condition the workspace listed
+ * as can't-serve, or a fact we need and do not have. Everything else the model
+ * might reach for — they are too big, they would build it themselves, they buy
+ * from nobody outside, we cannot see the commercial fit — is a guess about how a
+ * company behaves, and those are objections for a conversation rather than
+ * reasons never to start one. Shapes only, so this holds for any workspace.
+ */
+export function refusalAuditFlags(body: string): string[] {
+  const flags: string[] = [];
+  const GUESSES: Array<[RegExp, string]> = [
+    [/\b(would|might|may|will) (not |never )?(buy|purchase|pay|consider|engage|respond)\b/i, 'guesses whether they would buy'],
+    [/\b(build|built|develop|handle|solve) (it|this|that|their own)\b.{0,20}\b(themselves|in[- ]house|internally)\b/i, 'guesses they would build it themselves'],
+    [/\b(too (big|large|small)|enterprise scale|a company (this|that) (big|large)|major (studio|platform|player))\b/i, 'treats their size as a disqualification'],
+    [/\bno (budget|commercial fit|business case)\b/i, 'guesses at their budget or business case'],
+    [/\bwe (could not|couldn't|cannot|can't) (access|reach|get into)\b/i, 'assumes we could not work with their setup'],
+  ];
+  for (const [re, why] of GUESSES) {
+    const m = body.match(re);
+    if (m) { flags.push(`refused on a guess, not a fact: ${why} ("${m[0]}")`); break; }
+  }
+  return flags;
+}
+
 export function draftAuditFlags(args: {
   body: string;
   reasoning: string;
@@ -1846,6 +1885,14 @@ export function draftAuditFlags(args: {
     [/\b(can|could) we (sync|connect|hop on|jump on)\b/i, 'asks for a meeting'],
     [/\b(calendly|savvycal|cal\.com)\b/i, 'contains a scheduling link'],
     [/\b(does|would) (next |this )?(week|tuesday|wednesday|thursday|monday|friday) work\b/i, 'proposes a specific day'],
+    // The vague-closer family. "Worth a quick chat" was already banned and went
+    // to zero; the model moved to "Worth a look?", which asks for nothing and
+    // names nothing. Same shape, same emptiness, so it belongs on the same list.
+    [/\bworth (a look|exploring|connecting|a conversation)\b/i, 'asks for nothing in particular'],
+    // Sales collateral by category rather than the actual thing. Offering to
+    // send something is a good ask; "a one-pager" or "a deck" is brochure
+    // language and tells them nothing about what would land in their inbox.
+    [/\b(one[- ]pager|a deck|sales deck|brochure|collateral|white ?paper)\b/i, 'offers a category of sales material instead of naming the actual thing'],
   ];
   for (const [re, why] of TIME_ASKS) {
     const m = args.body.match(re);
@@ -1854,6 +1901,26 @@ export function draftAuditFlags(args: {
 
   if (!args.body.includes('?')) {
     flags.push('no question in the draft; the reader has nothing cheap to answer');
+  }
+
+  // Telling the recipient what they feel. STEP 6 has banned this in prose since
+  // 07-21 and a draft still opened "The clip feature worried you on cloud costs.
+  // Did that fear win…", which puts words in a stranger's mouth twice in two
+  // sentences. It also reads as the sharpest line in the message, which is why
+  // the prose rule keeps losing. Shapes only, so it holds for any workspace:
+  // second person next to a feeling, or a feeling handed back as a noun.
+  const FEELINGS = 'worried|concerned|anxious|frustrated|nervous|excited|afraid|scared|stressed|keen|desperate';
+  const MIND_READ: RegExp[] = [
+    new RegExp(`\\byou(?:'re| are|r team is)?\\s+(?:probably\\s+|clearly\\s+|no doubt\\s+)?(?:${FEELINGS})\\b`, 'i'),
+    new RegExp(`\\b(?:${FEELINGS})\\s+you\\b`, 'i'),
+    /\byou must be\b/i,
+    /\byou probably (?:think|feel|worry|want|need)\b/i,
+    /\bthat (?:fear|worry|anxiety|frustration)\b/i,
+    /\bkeeping you up at night\b/i,
+  ];
+  for (const re of MIND_READ) {
+    const m = args.body.match(re);
+    if (m) { flags.push(`draft tells them what they feel ("${m[0]}"); state the fact and let them supply the feeling`); break; }
   }
 
   if (templated) {
