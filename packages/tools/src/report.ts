@@ -27,20 +27,28 @@ import { fetchExaActualCost } from './exa_usage.ts';
 
 export interface Pricing {
   models: Record<string, { input: number; cached: number; output: number }>;
+  peak_multiplier: number;
   exa_per_search: number;
   exa_per_content_page: number;
   exa_avg_pages_per_search: number;
   hunter_per_search: number;
 }
 
-// Per-unit costs in USD, provider list prices as of 2026-07. Override via
+// Per-unit costs in USD, provider list prices as of 2026-08 (DeepSeek's new
+// tiered pricing, effective 2026-08-16T16:00Z). Override via
 // workspaces.policy.report.pricing (same shape). Token rates are per 1M tokens;
-// "input" is the cache-miss rate, "cached" the cache-hit rate.
+// "input" is the off-peak cache-miss rate, "cached" the off-peak cache-hit rate.
+// DeepSeek bills peak UTC hours (01:00-04:00 and 06:00-10:00, see isPeakHour
+// below) at exactly peak_multiplier x every one of these rates — that ratio
+// held across all six numbers on the new pricing page, so one multiplier covers
+// both models rather than a second table. Spend estimates for windows before
+// the effective date will run slightly hot since the old plan was flat-rate.
 export const DEFAULT_PRICING: Pricing = {
   models: {
-    'deepseek-v4-flash': { input: 0.14, cached: 0.0028, output: 0.28 },
-    'deepseek-v4-pro': { input: 0.435, cached: 0.003625, output: 0.87 },
+    'deepseek-v4-flash': { input: 0.22, cached: 0.007, output: 0.66 },
+    'deepseek-v4-pro': { input: 0.66, cached: 0.022, output: 1.98 },
   },
+  peak_multiplier: 2,
   // $7/1k requests covers page content for the first 10 results FOR FREE (Exa's
   // March 2026 pricing update bundled contents into the base search price). Every
   // angle in this codebase requests <=10 results, so content is never billed
@@ -51,6 +59,12 @@ export const DEFAULT_PRICING: Pricing = {
   exa_avg_pages_per_search: 3,
   hunter_per_search: 0, // current plan: monthly credits, no overage: cost is credits, not dollars
 };
+
+// DeepSeek's peak pricing windows, in UTC. Applies to both v4-flash and v4-pro.
+export function isPeakHour(iso: string): boolean {
+  const h = new Date(iso).getUTCHours();
+  return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
 
 // ---------- window resolution ----------
 
@@ -794,24 +808,27 @@ export function renderMarkdown(d: PeriodData): string {
   // ---- Spend estimate ----
   H('Spend estimate');
   const metrics = by('agent_run_metrics');
-  const byModel = new Map<string, { input: number; cached: number; output: number; runs: number }>();
+  const byModel = new Map<string, { model: string; peak: boolean; input: number; cached: number; output: number; runs: number }>();
   for (const e of metrics) {
     const model = String(e.payload?.model ?? 'unknown').split('/').pop()!;
-    const m = byModel.get(model) ?? { input: 0, cached: 0, output: 0, runs: 0 };
+    const peak = isPeakHour(e.created_at);
+    const key = `${model}${peak ? '@peak' : ''}`;
+    const m = byModel.get(key) ?? { model, peak, input: 0, cached: 0, output: 0, runs: 0 };
     m.input += e.payload?.input_tokens ?? 0;
     m.cached += e.payload?.cached_input_tokens ?? 0;
     m.output += e.payload?.output_tokens ?? 0;
     m.runs += 1;
-    byModel.set(model, m);
+    byModel.set(key, m);
   }
   const behaviors = [...new Set(metrics.map((e) => String(e.payload?.behavior ?? '?')))];
   L.push(`Token metrics cover: ${behaviors.join(', ') || 'none'}. The smaller helper calls (connector extraction, role classification, angle picking) still record nothing, so this is a floor — but the scorer, which makes by far the most calls, is now in the count.`);
   let llmTotal = 0;
-  for (const [model, m] of byModel) {
-    const rate = d.pricing.models[model];
-    const cost = rate ? ((m.input - m.cached) / 1e6) * rate.input + (m.cached / 1e6) * rate.cached + (m.output / 1e6) * rate.output : NaN;
+  for (const [, m] of byModel) {
+    const rate = d.pricing.models[m.model];
+    const mult = m.peak ? d.pricing.peak_multiplier : 1;
+    const cost = rate ? (((m.input - m.cached) / 1e6) * rate.input + (m.cached / 1e6) * rate.cached + (m.output / 1e6) * rate.output) * mult : NaN;
     if (!isNaN(cost)) llmTotal += cost;
-    L.push(`- ${model}: ${m.runs} runs, ${fmt(m.input)} in (${fmt(m.cached)} cached) / ${fmt(m.output)} out → ${isNaN(cost) ? 'NO RATE CONFIGURED' : usd(cost)}`);
+    L.push(`- ${m.model}${m.peak ? ' (peak hours)' : ''}: ${m.runs} runs, ${fmt(m.input)} in (${fmt(m.cached)} cached) / ${fmt(m.output)} out → ${isNaN(cost) ? 'NO RATE CONFIGURED' : usd(cost)}`);
   }
   const standaloneDomainSearches = Math.max(0, resolved.length + domFailed.length - research.filter((e) => e.payload?.domain_resolved || /domain/.test(e.payload?.summary ?? '')).length);
   const exaSearches = searches + standaloneDomainSearches;

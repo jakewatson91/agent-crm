@@ -19,31 +19,38 @@ export interface ModelPrice {
 export const BENCHMARK_MODEL = 'deepseek-reasoner';
 
 /**
- * Prices we can cite. Keyed by model id. This is the same rate the benchmark
- * has used since it was first recorded (DeepSeek published pricing, cache-miss
- * input). Add more entries only with a real source string.
+ * Prices we can cite. Keyed by model id. Add more entries only with a real
+ * source string.
+ *
+ * These are DeepSeek's off-peak rates under the new tiered pricing, effective
+ * 2026-08-16T16:00Z. Peak UTC hours (01:00-04:00 and 06:00-10:00) bill at 2x
+ * every rate below — that ratio is exact across all six published numbers.
+ * This table has no time dimension (benchmark costs are computed from fixed
+ * token counts in runs.jsonl, not live call timestamps), so it reports the
+ * off-peak floor; a run that happened to land in a peak window would cost 2x
+ * what audit_cost.ts / enrichment_cost_audit.ts print.
  */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
   'deepseek-reasoner': {
     label: 'DeepSeek-reasoner (v4)',
-    input_per_million: 0.14,
-    cache_hit_input_per_million: 0.0028,
-    output_per_million: 0.28,
-    source: 'api-docs.deepseek.com/quick_start/pricing: deepseek-reasoner (v4 thinking mode), cache-miss input (2026-05)',
+    input_per_million: 0.22,
+    cache_hit_input_per_million: 0.007,
+    output_per_million: 0.66,
+    source: 'deepseek.com pricing page: deepseek-reasoner (v4 thinking mode) = deepseek-v4-flash rate, off-peak, cache-miss (2026-08)',
   },
   'deepseek-v4-flash': {
     label: 'DeepSeek-v4-flash',
-    input_per_million: 0.14,
-    cache_hit_input_per_million: 0.0028,
-    output_per_million: 0.28,
-    source: 'api-docs.deepseek.com/quick_start/pricing: deepseek-v4-flash, cache-miss $0.14 / cache-hit $0.0028 / output $0.28 per 1M (2026-06)',
+    input_per_million: 0.22,
+    cache_hit_input_per_million: 0.007,
+    output_per_million: 0.66,
+    source: 'deepseek.com pricing page: deepseek-v4-flash, off-peak, cache-miss $0.22 / cache-hit $0.007 / output $0.66 per 1M (2026-08, effective 2026-08-16T16:00Z)',
   },
   'deepseek-v4-pro': {
     label: 'DeepSeek-v4-pro',
-    input_per_million: 0.435,
-    cache_hit_input_per_million: 0.003625,
-    output_per_million: 0.87,
-    source: 'api-docs.deepseek.com/quick_start/pricing: deepseek-v4-pro, cache-miss $0.435 / cache-hit $0.003625 / output $0.87 per 1M (2026-06)',
+    input_per_million: 0.66,
+    cache_hit_input_per_million: 0.022,
+    output_per_million: 1.98,
+    source: 'deepseek.com pricing page: deepseek-v4-pro, off-peak, cache-miss $0.66 / cache-hit $0.022 / output $1.98 per 1M (2026-08, effective 2026-08-16T16:00Z)',
   },
 };
 

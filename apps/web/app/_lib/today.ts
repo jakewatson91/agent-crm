@@ -28,6 +28,7 @@ import {
   cronToMinIntervalMinutes,
   isSubstantiveFact,
   DEFAULT_PRICING,
+  isPeakHour,
   coerceBreakdown,
   explainScoreChange,
   buildScoreWeights,
@@ -1175,25 +1176,28 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
     ...(policy.report?.pricing ?? {}),
     models: { ...DEFAULT_PRICING.models, ...(policy.report?.pricing?.models ?? {}) },
   };
-  const modelAgg = new Map<string, { behaviors: Set<string>; runs: number; input: number; cached: number; output: number }>();
+  const modelAgg = new Map<string, { model: string; peak: boolean; behaviors: Set<string>; runs: number; input: number; cached: number; output: number }>();
   for (const e of ev('agent_run_metrics')) {
     const model = String(e.payload?.model ?? 'unknown').split('/').pop()!;
-    const m = modelAgg.get(model) ?? { behaviors: new Set<string>(), runs: 0, input: 0, cached: 0, output: 0 };
+    const peak = isPeakHour(e.created_at);
+    const key = `${model}${peak ? '@peak' : ''}`;
+    const m = modelAgg.get(key) ?? { model, peak, behaviors: new Set<string>(), runs: 0, input: 0, cached: 0, output: 0 };
     m.behaviors.add(String(e.payload?.behavior ?? 'other'));
     m.runs += 1;
     m.input += e.payload?.input_tokens ?? 0;
     m.cached += e.payload?.cached_input_tokens ?? 0;
     m.output += e.payload?.output_tokens ?? 0;
-    modelAgg.set(model, m);
+    modelAgg.set(key, m);
   }
   let llmUsd = 0;
-  const byModel = [...modelAgg].map(([model, m]) => {
-    const rate = pricing.models[model];
+  const byModel = [...modelAgg.values()].map((m) => {
+    const rate = pricing.models[m.model];
+    const mult = m.peak ? pricing.peak_multiplier : 1;
     const usd = rate
-      ? ((m.input - m.cached) / 1e6) * rate.input + (m.cached / 1e6) * rate.cached + (m.output / 1e6) * rate.output
+      ? (((m.input - m.cached) / 1e6) * rate.input + (m.cached / 1e6) * rate.cached + (m.output / 1e6) * rate.output) * mult
       : null;
     if (usd !== null) llmUsd += usd;
-    return { model, behaviors: [...m.behaviors], runs: m.runs, input: m.input, cached: m.cached, output: m.output, usd };
+    return { model: `${m.model}${m.peak ? ' (peak hours)' : ''}`, behaviors: [...m.behaviors], runs: m.runs, input: m.input, cached: m.cached, output: m.output, usd };
   }).sort((a, b) => (b.usd ?? 0) - (a.usd ?? 0));
 
   const searchesTotal = ev('research_completed').reduce((n, e) => n + (e.payload?.searches ?? 0), 0);
