@@ -99,12 +99,15 @@ async function main() {
     ? await pickDraftAngle(sb as any, WS, {
         model: 'deepseek-v4-flash',
         account_name: ent.name,
-        facts: activeFacts.map((f: any) => ({ predicate: f.predicate, object_text: f.object_text })),
+        facts: activeFacts.map((f: any) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text })),
         pain_points: policy.drafter?.pain_points ?? [],
         templates: policy.drafter?.templates ?? [],
+        out_of_scope: policy.drafter?.out_of_scope ?? [],
       })
-    : { choice: null, reason: 'menu_too_small' as const };
+    : { choice: null, reason: 'menu_too_small' as const, out_of_scope_fact_ids: [] as string[] };
   const angle = decision.choice;
+  const outOfScopeIds = decision.out_of_scope_fact_ids ?? [];
+  if (outOfScopeIds.length) console.log(`scope  : ${outOfScopeIds.length} fact(s) about a part we cannot serve, dropped from the shortlist and marked in the fact list`);
   console.log(`angle  : ${angle ? `${angle.problem}\n         withheld: ${angle.withheld_template_ids.join(', ') || 'none'}  |  ${angle.why}` : `(none — ${decision.reason}, full menu rendered)`}`);
 
   const system = buildSystemPrompt('drafter', ws.about, ws.constitution, ws.persona, ws.icp, {}, {
@@ -128,7 +131,8 @@ async function main() {
   });
 
   const user = buildUserPrompt('claims_outbound_drafter', 'dry-run', 'dry-run grading pass',
-    sig ?? {}, { id: entityId, name: ent.name, attributes: ent.attributes }, activeFacts, [], contacts, recommended as any, true);
+    sig ?? {}, { id: entityId, name: ent.name, attributes: ent.attributes }, activeFacts, [], contacts,
+    (outOfScopeIds.length ? recommended.filter((r: any) => !outOfScopeIds.includes(r.id)) : recommended) as any, true, outOfScopeIds);
 
   const res = await chatCompleteForWorkspace(sb as any, WS, {
     model: 'deepseek-v4-pro', behavior: 'drafter', max_tokens: 3000,

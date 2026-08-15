@@ -13,7 +13,7 @@ import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
-import { chatCompleteForWorkspace, scoreFacts, pickDraftAngle, resolveMaxOutputTokens, type AngleDecision } from '@agent-crm/tools';
+import { chatCompleteForWorkspace, fetchAll, scoreFacts, pickDraftAngle, resolveMaxOutputTokens, type AngleDecision } from '@agent-crm/tools';
 import { buildSystemPrompt, buildUserPrompt, refusalAuditFlags } from '../inngest/functions/agent_logic.js';
 
 const WS = 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
@@ -29,6 +29,13 @@ const ANGLE_CACHE = process.env.DRYRUN_ANGLE_CACHE ?? '';
 const angleCache = new Map<string, AngleDecision>(
   ANGLE_CACHE && existsSync(ANGLE_CACHE) ? JSON.parse(readFileSync(ANGLE_CACHE, 'utf8')) : [],
 );
+
+// DRYRUN_ONLY names the accounts to run, comma separated, instead of taking the
+// top N by score. Needed when a change is aimed at particular accounts (the
+// drafts sitting in the approval inbox, say) rather than at the book average:
+// waiting for the ones you care about to float into the top 12 grades the wrong
+// sample. Match is case-insensitive on the entity name.
+const ONLY = (process.env.DRYRUN_ONLY ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 
 // Node buffers stdout to a pipe, so a long run shows nothing until it exits.
 // Append to a file instead so progress is readable while it runs.
@@ -79,24 +86,54 @@ async function main() {
   });
   log(`system prompt: ${buildSystem(null).length} chars before any angle is picked\n`);
 
-  // Scores live as facts (score_total), and the CURRENT fact is the one nothing
+  // Scores live as facts (score_total), and the CURRENT one is the fact nothing
   // else supersedes — `.is('supersedes', null)` would hand back the stale
   // original. Same walk advance_accounts.ts does.
-  const scoreRows: any[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data } = await sb.from('facts').select('id, subject_entity, object_text, supersedes')
-      .eq('workspace_id', WS).eq('predicate', 'score_total').order('id').range(from, from + 999);
-    const page = (data ?? []) as any[];
-    scoreRows.push(...page);
-    if (page.length < 1000) break;
+  const currentScore = (rows: Array<{ id: string; object_text: string | null; supersedes: string | null }>) => {
+    const superseded = new Set(rows.map((r) => r.supersedes).filter(Boolean));
+    const live = rows.filter((r) => !superseded.has(r.id)).map((r) => parseFloat(r.object_text ?? '')).filter(Number.isFinite);
+    return live.length ? live[0]! : null;
+  };
+
+  let ranked: Array<{ entity_id: string; score: number | null }> = [];
+  if (ONLY.length) {
+    // Named accounts do not need the ranking, so they do not need the whole
+    // book: this used to read every score fact in the workspace to print one
+    // number per account, and on 2026-08-14 that read hit a statement timeout
+    // (57014). Two rows instead of twelve thousand.
+    //
+    // A named account with no score is normal and prints as unscored, and the
+    // point of DRYRUN_ONLY is grading accounts the ranking has not floated up
+    // yet. It printed `score=NaN`, which reads like a broken read instead.
+    for (const name of ONLY) {
+      const { data: hit } = await sb.from('entities').select('id, name')
+        .eq('workspace_id', WS).ilike('name', name).limit(1).maybeSingle();
+      if (!hit) { log(`── ${name}: no such account in this workspace, skipping\n`); continue; }
+      const { data: rows, error } = await sb.from('facts').select('id, object_text, supersedes')
+        .eq('workspace_id', WS).eq('subject_entity', (hit as any).id).eq('predicate', 'score_total');
+      if (error) throw new Error(`score read for ${name}: ${error.message}`);
+      ranked.push({ entity_id: (hit as any).id, score: currentScore((rows ?? []) as any[]) });
+    }
+    log(`${ranked.length} account(s) named on the command line\n`);
+  } else {
+    // fetchAll rather than a hand-rolled page loop, because the hand-rolled one
+    // dropped `error` on the floor: the read above timed out, the empty result
+    // read as the end of the table, and the run announced "2 accounts selected
+    // from 0 score facts" and drafted anyway. This path ranks the book by these
+    // scores, so an empty read grades whichever accounts came back rather than
+    // the top N. fetchAll throws, and so does an empty book below.
+    const scoreRows = await fetchAll<any>((from, to) => sb.from('facts')
+      .select('id, subject_entity, object_text, supersedes')
+      .eq('workspace_id', WS).eq('predicate', 'score_total').order('id').range(from, to));
+    const superseded = new Set(scoreRows.map((r) => r.supersedes).filter(Boolean));
+    const scored = scoreRows.filter((r) => !superseded.has(r.id))
+      .map((r) => ({ entity_id: r.subject_entity as string, score: parseFloat(r.object_text ?? '') }))
+      .filter((r) => Number.isFinite(r.score))
+      .sort((a, b) => b.score - a.score);
+    if (!scored.length) throw new Error(`no current score_total facts in workspace ${WS}, so there is nothing to rank`);
+    ranked = scored.slice(0, limit);
+    log(`${ranked.length} accounts selected from ${scoreRows.length} score facts\n`);
   }
-  const superseded = new Set(scoreRows.map((r) => r.supersedes).filter(Boolean));
-  const ranked = scoreRows.filter((r) => !superseded.has(r.id))
-    .map((r) => ({ entity_id: r.subject_entity, score: parseFloat(r.object_text ?? '') }))
-    .filter((r) => Number.isFinite(r.score))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
-  log(`${ranked.length} accounts selected from ${scoreRows.length} score facts\n`);
 
   let drafted = 0, gated = 0, totalOut = 0;
   const bodies: Array<{ name: string; body: string }> = [];
@@ -178,16 +215,17 @@ async function main() {
     // Pick the argument before the prompt renders an exemplar, same order the
     // live drafter uses. A null angle means the picker declined or failed, and
     // the prompt falls back to the full menu.
-    let decision: AngleDecision = { choice: null, reason: 'menu_too_small' };
+    let decision: AngleDecision = { choice: null, reason: 'menu_too_small', out_of_scope_fact_ids: [] };
     if (angleCache.has(acct.id)) {
       decision = angleCache.get(acct.id)!;
     } else if ((policy.drafter?.templates ?? []).length) {
       decision = await pickDraftAngle(sb as any, WS, {
         model: 'deepseek-v4-flash',
         account_name: acct.name,
-        facts: activeFacts.map((f: any) => ({ predicate: f.predicate, object_text: f.object_text })),
+        facts: activeFacts.map((f: any) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text })),
         pain_points: policy.drafter?.pain_points ?? [],
         templates: policy.drafter?.templates ?? [],
+        out_of_scope: policy.drafter?.out_of_scope ?? [],
       });
       angleCache.set(acct.id, decision);
       if (ANGLE_CACHE) writeFileSync(ANGLE_CACHE, JSON.stringify([...angleCache], null, 2));
@@ -195,8 +233,26 @@ async function main() {
     const angle = decision.choice;
     const system = buildSystem(angle);
 
+    // Same two things the live path does with the flagged facts: out of the
+    // shortlist, marked in the fact list. A harness that skipped either would
+    // grade a prompt production never builds.
+    const outOfScopeIds = decision.out_of_scope_fact_ids ?? [];
+    // Printed, not just counted: a leak here is always one of two things, a
+    // fact that should have been flagged and was not, or a flagged fact the
+    // drafter wrote about anyway, and the count alone cannot tell them apart.
+    if (outOfScopeIds.length) {
+      const byId = new Map(activeFacts.map((f: any) => [f.id, f]));
+      log(`   out of scope (${outOfScopeIds.length}): ${outOfScopeIds.map((id) => {
+        const f: any = byId.get(id);
+        return f ? `${f.predicate}=${String(f.object_text ?? '').slice(0, 60)}` : id;
+      }).join(' | ')}`);
+    }
+    const shortlist = outOfScopeIds.length
+      ? (recommended as any[]).filter((r) => !outOfScopeIds.includes(r.id))
+      : recommended;
+
     const user = buildUserPrompt('claims_outbound_drafter', 'dry-run', 'dry-run grading pass',
-      sig ?? {}, { id: acct.id, name: acct.name, attributes: acct.attributes }, activeFacts, [], contacts, recommended as any, true);
+      sig ?? {}, { id: acct.id, name: acct.name, attributes: acct.attributes }, activeFacts, [], contacts, shortlist as any, true, outOfScopeIds);
 
     // Same model, ceiling and response_format the live drafter uses. The ceiling
     // is RESOLVED, not typed in: it was hardcoded 3000 here while bf234ba moved
@@ -237,7 +293,7 @@ async function main() {
     // here rather than on the bill.
     const outTok = Number((res as any).output_tokens ?? 0);
     totalOut += outTok;
-    log(`── ${acct.name}  (score=${Number(acct.score).toFixed(2)}, ${activeFacts.length} facts, ${contacts.length} contacts, ${outTok} out tok)`);
+    log(`── ${acct.name}  (score=${acct.score === null ? 'unscored' : Number(acct.score).toFixed(2)}, ${activeFacts.length} facts${outOfScopeIds.length ? `, ${outOfScopeIds.length} out of scope` : ''}, ${contacts.length} contacts, ${outTok} out tok)`);
     log(`   angle: ${angle ? `${angle.problem.slice(0, 90)}  [withheld: ${angle.withheld_template_ids.join(', ') || 'none'}]  (${angle.why})` : `(none — ${decision.reason}, full menu rendered)`}`);
     if (angle) angleCounts.set(angle.problem, (angleCounts.get(angle.problem) ?? 0) + 1);
     if (parsed.action === 'request_gate') {

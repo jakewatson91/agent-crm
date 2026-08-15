@@ -735,8 +735,13 @@ export async function runAgent(
   const nodeTypes = Array.isArray(enr.node_types) ? enr.node_types : ['account', 'contact', 'product'];
   let edgeVocab: string[] = [];
   if (behavior === 'enricher' && resolveEntities) {
+    // A 1000-row sample of edge names, ranked by frequency, and the sample is
+    // deliberate. What was not deliberate is which 1000: with no order the rows
+    // come back oldest-first, so the vocabulary offered to the enricher was the
+    // one the workspace used when it started rather than the one it uses now.
     const ev = await supabase.from('facts').select('predicate')
-      .eq('workspace_id', payload.workspace_id).not('object_entity', 'is', null).limit(1000);
+      .eq('workspace_id', payload.workspace_id).not('object_entity', 'is', null)
+      .order('created_at', { ascending: false }).limit(1000);
     const counts: Record<string, number> = {};
     for (const row of (ev.data ?? []) as Array<{ predicate: string }>) counts[row.predicate] = (counts[row.predicate] ?? 0) + 1;
     edgeVocab = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([p]) => p);
@@ -768,7 +773,7 @@ export async function runAgent(
   // One cheap-model call per drafted account; a failure returns null and the
   // prompt renders exactly as it did before, so the picker can never block a
   // draft. Only the template-driven channel has exemplars to withhold.
-  let angleDecision: AngleDecision = { choice: null, reason: 'menu_too_small' };
+  let angleDecision: AngleDecision = { choice: null, reason: 'menu_too_small', out_of_scope_fact_ids: [] };
   if (behavior === 'drafter' && (policy.drafter?.templates ?? []).length) {
     angleDecision = await pickDraftAngle(supabase, payload.workspace_id, {
       // The workspace's cheap model, same one classifyRole uses. The drafter
@@ -776,12 +781,21 @@ export async function runAgent(
       // not write anything a customer reads.
       model: DEFAULT_MODEL,
       account_name: (ent.data.name as string) ?? '(unnamed)',
-      facts: activeFacts.map((f) => ({ predicate: f.predicate, object_text: f.object_text })),
+      facts: activeFacts.map((f) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text })),
       pain_points: (policy.drafter?.pain_points ?? []) as string[],
       templates: (policy.drafter?.templates ?? []) as Array<{ id: string; angle?: string; enabled?: boolean }>,
+      out_of_scope: (policy.drafter?.out_of_scope ?? []) as string[],
     });
   }
   const angle = angleDecision.choice;
+
+  // Facts about the part of the account we cannot serve come out of the
+  // shortlist entirely. Leaving them in and asking the model not to lead with
+  // them is what the prompt already does, and it loses: the shortlist is scored
+  // on ICP match and recency, so a fresh, loud, unsellable event outranks the
+  // quiet catalogue fact that is the whole reason the account is in the book.
+  const outOfScopeFacts = new Set(angleDecision.out_of_scope_fact_ids);
+  if (outOfScopeFacts.size) recommended = recommended.filter((r) => !outOfScopeFacts.has(r.id));
 
   // Resolved once: the prompt is built from it, and the assert loop uses it to
   // force every predicate into a slot rather than trusting the model to.
@@ -813,7 +827,7 @@ export async function runAgent(
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
     out_of_scope: policy.drafter?.out_of_scope,
   });
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, recommended, behavior === 'drafter');
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, recommended, behavior === 'drafter', angleDecision.out_of_scope_fact_ids);
 
   // DeepSeek-v4 spends output tokens on reasoning before emitting content, so a
   // fact-heavy account needs headroom or the JSON body comes back cut off. It is
@@ -1664,9 +1678,15 @@ export function buildUserPrompt(
   // field names ("domain", "stack"). The enricher keeps raw JSON keys — it needs
   // them to know what's already extracted and avoid re-asserting.
   proseAttributes = false,
+  // Facts about a part of the business the workspace's out_of_scope conditions
+  // rule out (from pickDraftAngle). Marked on the fact's own line rather than
+  // described in a paragraph somewhere above it: STEP 0 has carried that
+  // paragraph since 2026-08-13 and the model kept anchoring on the fact anyway.
+  outOfScopeFactIds: string[] = [],
 ): string {
   // Strip embedding from signal (massive vector adds nothing for the LLM and burns tokens).
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
+  const outOfScope = new Set(outOfScopeFactIds);
 
   const pastOutcomesBlock = pastOutcomesList.length
     ? `\nPAST OUTCOMES (how the human decided recent drafts for this account or similar ones. Edits are corrections: the "→" side is the wording the human wanted, so write your draft as if it had already been edited that way. A rejection means do not repeat that draft's approach. An approval with no edits is the standard to match):\n${pastOutcomesList.map((o) => {
@@ -1707,7 +1727,7 @@ ATTRIBUTES (already known — do not re-extract these as facts):
 ${proseAttributes ? renderAttributesProse(entity.attributes) : JSON.stringify(entity.attributes, null, 2)}
 
 ACTIVE FACTS (already asserted — do not duplicate):
-${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence}${factDateLabel(f)})`).join('\n') : '  (none yet)'}
+${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence}${factDateLabel(f)})${outOfScope.has(f.id) ? '  [OUT OF SCOPE: this is about a part of them we cannot serve. Context only. It cannot be your anchor, your question or your numbers, however fresh or large it is.]' : ''}`).join('\n') : '  (none yet)'}
 When a new fact is the same kind of thing as one above, REUSE that fact's label (the part before "=") rather than inventing a new label for it. Only coin a new label when the fact is a genuinely new kind. (e.g. if a label already captures this fact, restate or refine it under that label instead of adding a near-synonym label for the same thing.)
 ${pastOutcomesBlock}${contactsBlock}${recommendedBlock}
 Decide.`;
