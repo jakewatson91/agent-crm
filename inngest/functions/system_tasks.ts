@@ -1,6 +1,6 @@
 import { createServerClient } from '@agent-crm/db';
 import {
-  scoreAndAssert, callTool, entityIdsOfType, runRetention,
+  scoreAndAssert, callTool, entityIdsOfType, runRetention, pruneHttpResponses,
   ensureScoringConfigState, fetchAll, latestMarkerByEntity,
   recordActivityMarker, ACTIVITY_MARKERS, isSubstantiveFact,
   getPolicy, resolveEnvVar, resolveDomainViaSearch,
@@ -759,7 +759,19 @@ export const retentionSweep = inngest.createFunction(
           results.push({ workspace_id: w.id, error: e instanceof Error ? e.message : String(e) });
         }
       }
-      return { workspaces: results.length, results };
+      // Global, not per-workspace — deletes pg_net's stale response log rows.
+      // The VACUUM that shrinks the file afterward can't run here (needs a
+      // direct connection); that half lives in the launchd loop only.
+      let httpResponsePrune = null;
+      const markerWorkspace = wss?.[0];
+      if (markerWorkspace) {
+        try {
+          httpResponsePrune = await pruneHttpResponses(supabase, markerWorkspace.id as string);
+        } catch (e) {
+          httpResponsePrune = { error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+      return { workspaces: results.length, results, httpResponsePrune };
     });
   },
 );

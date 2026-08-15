@@ -27,7 +27,7 @@ import { createClient } from '@supabase/supabase-js';
 import { runAgent } from '../inngest/functions/agent_logic.js';
 import { getConnector } from '../inngest/functions/sources/registry.js';
 import { sourceRunStatus } from '../inngest/functions/sources/types.js';
-import { runRetention } from '@agent-crm/tools';
+import { runRetention, pruneHttpResponses } from '@agent-crm/tools';
 import { advanceAccounts } from '../inngest/functions/advance_accounts.js';
 
 const INTERVAL_MIN = parseInt(process.env.INTERVAL_MIN ?? '60', 10);
@@ -207,6 +207,24 @@ async function tick() {
     }
   }
 
+  // 3b. Prune pg_net's stale async-HTTP response log (net._http_response) —
+  //     global, not per-workspace. Deletes only; the VACUUM that shrinks the
+  //     file lives in step 5 below (same "can't run over PostgREST" reason as
+  //     the HNSW reindex).
+  {
+    const wsList = (wss.data ?? []) as Array<{ id: string }>;
+    if (wsList.length) {
+      try {
+        const r = await pruneHttpResponses(sb, wsList[0].id);
+        if (!r.skipped && r.deleted > 0) {
+          console.log(`  [retention http_response] deleted=${r.deleted}`);
+        }
+      } catch (e) {
+        console.error('  [retention http_response] error:', e instanceof Error ? e.message : String(e));
+      }
+    }
+  }
+
   // 4. Weekly HNSW reindex. Nulling old embeddings (step 3) frees the heap via
   //    autovacuum, but the HNSW index file only shrinks on REINDEX. CONCURRENTLY
   //    so it never locks matching; that can't run in a function or over PostgREST,
@@ -238,6 +256,36 @@ async function tick() {
     }
   } catch (e) {
     console.error('  [reindex] error:', e instanceof Error ? e.message : String(e));
+  }
+
+  // 5. Weekly VACUUM FULL on net._http_response. Step 3b's DELETE frees rows
+  //    for reuse but doesn't shrink the file — same VACUUM-can't-run-in-a-
+  //    function/over-PostgREST constraint as the reindex above, so this also
+  //    needs the loop's direct connection. The table stays small day-to-day
+  //    once step 3b is running, so this is a short lock even at weekly cadence.
+  try {
+    const wsList = (wss.data ?? []) as Array<{ id: string }>;
+    if (wsList.length && process.env.SUPABASE_DB_URL) {
+      const lastVacuum = await sb.from('events')
+        .select('created_at').eq('action', 'http_response_vacuum_run')
+        .order('created_at', { ascending: false }).limit(1).maybeSingle();
+      const due = !lastVacuum.data || Date.now() - new Date(lastVacuum.data.created_at).getTime() > 7 * 86400_000;
+      if (due) {
+        const { default: pg } = await import('pg');
+        const client = new pg.Client({ connectionString: process.env.SUPABASE_DB_URL, ssl: { rejectUnauthorized: false } });
+        await client.connect();
+        console.log('  [vacuum] VACUUM FULL net._http_response ...');
+        await client.query('vacuum full net._http_response');
+        await client.end();
+        await sb.from('events').insert({
+          workspace_id: wsList[0].id, actor_kind: 'system', actor_id: 'retention',
+          action: 'http_response_vacuum_run', target_kind: 'workspace', target_id: wsList[0].id, payload: {},
+        });
+        console.log('  [vacuum] done');
+      }
+    }
+  } catch (e) {
+    console.error('  [vacuum] error:', e instanceof Error ? e.message : String(e));
   }
 }
 

@@ -31,6 +31,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const EVENT_PRUNE_BATCH = 2000;
 const EMBEDDING_ARCHIVE_BATCH = 200;
 
+// pg_net's internal async-HTTP response log (net._http_response) — not app
+// data, not workspace-scoped. Found holding ~46MB of dead rows against ~500
+// live ones (2026-08-14): nothing prunes it on its own. A day is generous
+// headroom over how long anything actually needs a row before it's stale.
+const HTTP_RESPONSE_TTL_MS = DAY_MS;
+const HTTP_RESPONSE_PRUNE_BATCH = 2000;
+
 export interface RetentionResult {
   workspace_id: string;
   skipped: boolean;
@@ -128,6 +135,68 @@ export async function runRetention(
     target_kind: 'workspace',
     target_id: workspace_id,
     payload: { embeddings_archived: result.embeddings_archived, events_pruned: result.events_pruned },
+  });
+
+  return result;
+}
+
+export interface HttpResponsePruneResult {
+  skipped: boolean;
+  deleted: number;
+}
+
+/**
+ * Global (not per-workspace) — deletes pg_net's stale async-HTTP response
+ * rows via the prune_http_responses SECURITY DEFINER function (migration
+ * 0054; service_role has no direct grant on net._http_response, it's owned by
+ * supabase_admin). Only deletes; it does not shrink the file on disk — VACUUM
+ * can't run inside a function or over PostgREST, so that part lives in the
+ * launchd loop's direct connection, same constraint as the HNSW reindex.
+ * `marker_workspace_id` just satisfies events.workspace_id's FK for the
+ * throttle marker — this isn't scoped to that workspace.
+ */
+export async function pruneHttpResponses(
+  supabase: SupabaseClient,
+  marker_workspace_id: string,
+  opts: { force?: boolean } = {},
+): Promise<HttpResponsePruneResult> {
+  const result: HttpResponsePruneResult = { skipped: false, deleted: 0 };
+
+  if (!opts.force) {
+    const last = await supabase
+      .from('events')
+      .select('created_at')
+      .eq('action', 'http_response_prune_run')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const lastTs = last.data?.created_at ? new Date(last.data.created_at).getTime() : 0;
+    if (Date.now() - lastTs < THROTTLE_MS) {
+      result.skipped = true;
+      return result;
+    }
+  }
+
+  const cutoff = new Date(Date.now() - HTTP_RESPONSE_TTL_MS).toISOString();
+  for (;;) {
+    const pruned = await supabase.rpc('prune_http_responses', { p_cutoff: cutoff, p_limit: HTTP_RESPONSE_PRUNE_BATCH });
+    if (pruned.error) {
+      console.error(`[retention http_response] prune failed: ${pruned.error.message}`);
+      break;
+    }
+    const n = (pruned.data as number) ?? 0;
+    result.deleted += n;
+    if (n < HTTP_RESPONSE_PRUNE_BATCH) break;
+  }
+
+  await supabase.from('events').insert({
+    workspace_id: marker_workspace_id,
+    actor_kind: 'system',
+    actor_id: 'retention',
+    action: 'http_response_prune_run',
+    target_kind: 'workspace',
+    target_id: marker_workspace_id,
+    payload: { deleted: result.deleted },
   });
 
   return result;
