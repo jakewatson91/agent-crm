@@ -3331,3 +3331,109 @@ DB at 427MB, under the 500MB threshold with margin. Retention pruning (embedding
 events, and now the pg_net log) runs for real going forward instead of silently
 no-op-ing, on both the Inngest cron and the launchd loop, with failures now logged
 instead of swallowed.
+
+---
+
+## 2026-08-14 (evening) — the drafter stopped writing about the part we cannot serve, and eleven truncated reads
+
+Pushed `5e0b6ae`, `4f5aac2`, `af1aa9c`, `ea1c577`.
+
+### Choosing what a message argues is two calls now
+
+The open item from earlier today was that 3 of 4 redrafts still opened on live sport, and
+the read at the time was that Jake's `out_of_scope` condition needed rewording. It did
+not. The bug was that the picker was shown every fact and told in prose not to cite the
+ruled-out ones, and it cited them anyway: ViX was drafted off "added 3 million paid
+subscribers attributed to World Cup 2026 exclusivity" while that exact fact sat in the
+prompt on a line marked as one it could not use.
+
+A model asked to pick a problem AND to rule out its own evidence gives up the ruling-out,
+because that is the cheap half to give up. So the sort is its own call now and runs
+first, and the facts it rules out are deleted from the prompt the pick reads. Forbidding
+became withholding. Measured after: both accounts anchor on servable material, ViX on the
+16-episode season drop of August 7, NHL.TV on its free ad-supported replay catalog.
+
+### Three fixes that each looked like the finished job
+
+**The split alone did not steady the flag list.** After splitting, NHL.TV ruled out 16
+facts on one run and 7 on the next off an identical prompt, and ViX's second run ruled out
+the concurrency facts its first run had just sold on. Cause was sampling temperature, the
+same one `research_strategy.ts` already carries a comment about (10-then-7 on the same 23
+pages). `temperature: 0` on both calls made two runs byte-identical. I had already written
+"the split fixed the swing" into the code comment; the measurement said otherwise and the
+comment was corrected.
+
+**Temperature made it stable, not right.** Stable at 15 facts ruled out on ViX and 12 on
+NHL.TV, of which a third named nothing ruled out: `distribution_region: Canada`,
+`revenue_mexico_q2_2026`, `monetization_strategy: political advertising tied to the
+midterms`. The sort was ruling facts out on the company's reputation.
+
+**So it has to quote.** The sort now copies the words out of the fact that name the
+ruled-out part, and `quoteIsInFact` checks those words are actually in the fact it was
+shown. That alone was not enough either: it kept flagging partner facts by quoting
+`"ESPN (since 2021)"` and `"Amazon Prime Video"`, words that are in the fact and name
+nothing ruled out. The prompt now says a company name, a country, a date or a season is
+not a ruled-out part. NHL.TV went 12 to 5 and gave back `recent_launch: NHL.TV will be
+available exclusively on DAZN in nearly 200 countries`, the freshest fact on the account
+and a message we can send.
+
+Four of five runs now produce an identical five-fact list with identical quotes; one
+over-flags the partner facts again. The live core is flagged in every run.
+
+**What made the last two fixes possible was `ANGLE_DEBUG=1`**, which prints the words each
+fact was ruled out FOR. Every wrong flag was one line of that output. Three prompt
+rewrites were spent guessing from the fact list before adding it.
+
+### A bug the split introduced, caught before it shipped
+
+Once ruled-out facts are dropped, the pick's `evidence` number counts the surviving list
+while the flag numbers count the full one. The leftover `flagged.has(ev)` check compared
+across the two: it threw away good picks whenever anything earlier had been dropped, and
+could never catch a bad one. Removed. `all_facts_out_of_scope` replaces the reason it fed,
+for the genuinely different case of an account whose every fact is ruled out.
+
+The 28 assertions were mutation-tested rather than trusted: re-adding the cross-numbering
+check fails exactly one, showing the picker every fact fails three, making a failed sort
+stop the draft fails two.
+
+### The dry run had been lying, and the cause was a timeout
+
+`_dryrun_drafts.ts` printed "2 accounts selected from 0 score facts" and drafted anyway.
+The hand-rolled page loop dropped its error, so an empty first page read as the end of the
+table. With `fetchAll` in place the real error surfaced on the next run:
+`canceling statement due to statement timeout [57014]`, the same 8s `authenticator` wall
+behind this morning's retention bug. Named accounts no longer read the whole book to print
+one number; ranking still does, and now throws instead of grading a wrong sample.
+
+### Eleven reads asked for the window and got the first 1000 rows
+
+`.limit(5000)` does not do what it reads as. Four were wrong on live data: the source
+signals page checked "matched" against 1000 of 2,715 markers so matched signals displayed
+as unmatched; "facts a draft used" read 1,961 channels as 1,000; the scorecard printed
+1000 research runs for a window holding 1,125; the admin health panel counted about half
+the workspace's channel posts and presented it as the whole, so tokens-per-touch has been
+reading high. Latent but the same shape: the undo endpoint's idempotency check (would
+start undoing things twice past a thousand undos), token totals, the silence scan, and the
+routing preview. The daily source curator read every signal body in the workspace to pull
+out 25 rows; it asks for five per candidate now.
+
+Correcting my own claim: I wrote that the truncated events read dropped the most recent
+runs, where a just-rewritten search spends. Measured it and that was false. Only 248 of
+1,125 runs carry per-search counts and the slice happened to include all of them, so the
+per-question numbers did not move. The fix stands because that is luck, and nothing warns
+when it stops.
+
+### Also
+
+`af1aa9c` is the DeepSeek tiered-pricing work from earlier in the session (not mine,
+committed on Jake's instruction): off-peak rates plus one `peak_multiplier`, and spend now
+aggregated per model AND per peak/off-peak, because the rate depends on the hour a call
+ran.
+
+### Left open
+
+One run in five over-flags NHL.TV's partner facts. `source_curator`'s new read has never
+executed (no workspace has a curator candidate). 52 uses of `.is('supersedes', null)`
+remain across 19 production files, an idiom that returns the original fact rather than the
+current one; one was fixed in `routing-preview`, which had been ranking accounts on the
+score each was given the first time it was ever seen.
