@@ -42,6 +42,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { chatComplete } from '@agent-crm/primitives';
 import { getPolicy } from './policy.ts';
+import { fetchAll } from './paginate.ts';
 import type { BriefQuestion, WorkspacePolicy } from './policy.ts';
 
 // Same model as the strategy planner, for the same reason: it runs about once
@@ -640,28 +641,52 @@ async function scanQuestionSearch(
 ): Promise<{ records: QuestionSearchRecord[]; sigQ: Map<string, string> }> {
   const angles = (policy.research?.strategy ?? []).filter((a) => a.enabled !== false);
 
-  const ev = (await supabase.from('events').select('payload, created_at')
-    .eq('workspace_id', workspace_id).eq('action', 'research_completed')
-    .gte('created_at', since).limit(5000)).data ?? [];
+  // .limit(5000) did not do what it reads as: PostgREST caps a response at 1000
+  // rows whatever the limit says. Sudden ran 1,125 researches in the 30 days to
+  // 2026-08-14, so 125 were already invisible here, and with no ORDER BY there
+  // is no saying which 125, because the planner asked for "the window" and got an
+  // arbitrary slice of it.
+  //
+  // Measured on the day it was found, the numbers this produces did not move:
+  // only 248 of those runs carry per-search fetch counts at all, and the slice
+  // happened to include every one of them. That is luck, not a guarantee. The
+  // number this feeds is the pages a question cost, divided by the answers it
+  // kept, and the day the slice starts cutting into runs that do carry counts,
+  // a question that earns nothing starts reading as though it pays its way.
+  const ev = await fetchAll<{ payload: Record<string, unknown> | null; created_at: string }>((from, to) =>
+    supabase.from('events').select('payload, created_at')
+      .eq('workspace_id', workspace_id).eq('action', 'research_completed')
+      .gte('created_at', since).order('created_at').order('id').range(from, to));
   const fetchedByQuestion = foldFetchedByQuestion(
     ev as RunMarker[],
     angles,
     Date.parse(policy.research?.brief_generated_at ?? '') || 0,
   );
 
+  // fetchAll, because the hand-rolled page loop this replaces threw away the
+  // error and then read the empty result as the end of the table. Both failures
+  // it hid land on the same number: a read that fails on page one counts zero
+  // answers for every question, and a window over 1000 signals paged without a
+  // stable order can skip rows outright. Zero answers against real pages spent
+  // is what rules a question unsearchable, so a blip could retire a question
+  // that is working. Throwing instead reaches a caller that already treats the
+  // failure as no verdict rather than a bad one.
+  //
+  // Ordered by observed_at then id: a total order, and one that appends, so a
+  // signal written while the scan is running lands after the current page
+  // instead of shifting a row across the boundary.
+  const sigs = await fetchAll<{ id: string; structured_tags: Record<string, string> | null }>((from, to) =>
+    supabase.from('signals').select('id, structured_tags')
+      .eq('workspace_id', workspace_id).eq('type', 'research_result')
+      .gte('observed_at', since).order('observed_at').order('id').range(from, to));
+
   const sigQ = new Map<string, string>();
   const keptByQuestion: Record<string, number> = {};
-  for (let from = 0; ; from += 1000) {
-    const { data } = await supabase.from('signals').select('id, structured_tags')
-      .eq('workspace_id', workspace_id).eq('type', 'research_result')
-      .gte('observed_at', since).range(from, from + 999);
-    for (const s of (data ?? []) as Array<{ id: string; structured_tags: Record<string, string> | null }>) {
-      const q = s.structured_tags?.answers_question;
-      if (!q) continue;
-      sigQ.set(s.id, q);
-      keptByQuestion[q] = (keptByQuestion[q] ?? 0) + 1;
-    }
-    if (!data || data.length < 1000) break;
+  for (const s of sigs) {
+    const q = s.structured_tags?.answers_question;
+    if (!q) continue;
+    sigQ.set(s.id, q);
+    keptByQuestion[q] = (keptByQuestion[q] ?? 0) + 1;
   }
 
   const ids = new Set([...resolveBrief(policy).map((q) => q.id), ...Object.keys(keptByQuestion), ...Object.keys(fetchedByQuestion)]);
@@ -702,10 +727,14 @@ export async function loadQuestionRecords(
   const sigIds = [...sigQ.keys()];
   const factsByQuestion: Record<string, number> = {};
   const factIdQ = new Map<string, string>();
+  // Same cap, one chunk at a time: .limit(3000) over 200 signals still stops at
+  // 1000 rows. Nothing has crossed it yet on this book, and nothing warns when
+  // it does. The count just quietly stops climbing.
   for (let i = 0; i < sigIds.length; i += 200) {
-    const { data } = await supabase.from('facts').select('id, signal_id')
-      .in('signal_id', sigIds.slice(i, i + 200)).limit(3000);
-    for (const f of (data ?? []) as Array<{ id: string; signal_id: string }>) {
+    const rows = await fetchAll<{ id: string; signal_id: string }>((from, to) =>
+      supabase.from('facts').select('id, signal_id')
+        .in('signal_id', sigIds.slice(i, i + 200)).order('id').range(from, to));
+    for (const f of rows) {
       const q = sigQ.get(f.signal_id);
       if (!q) continue;
       factsByQuestion[q] = (factsByQuestion[q] ?? 0) + 1;
@@ -713,14 +742,19 @@ export async function loadQuestionRecords(
     }
   }
 
-  const chans = (await supabase.from('channels').select('id').eq('workspace_id', workspace_id).limit(5000)).data ?? [];
-  const chanIds = (chans as Array<{ id: string }>).map((c) => c.id);
+  // This workspace has more than 1000 channels, so the cap was live here: the
+  // channels past the first 1000 contributed no drafts, and "facts a draft
+  // used" read low for every question.
+  const chans = await fetchAll<{ id: string }>((from, to) =>
+    supabase.from('channels').select('id').eq('workspace_id', workspace_id).order('id').range(from, to));
+  const chanIds = chans.map((c) => c.id);
   const cited = new Set<string>();
   for (let i = 0; i < chanIds.length; i += 200) {
-    const { data } = await supabase.from('channel_posts').select('cites')
-      .in('channel_id', chanIds.slice(i, i + 200)).eq('kind', 'touch_draft')
-      .gte('created_at', since).limit(2000);
-    for (const p of (data ?? []) as Array<{ cites: string[] | null }>) for (const c of p.cites ?? []) cited.add(c);
+    const posts = await fetchAll<{ cites: string[] | null }>((from, to) =>
+      supabase.from('channel_posts').select('cites')
+        .in('channel_id', chanIds.slice(i, i + 200)).eq('kind', 'touch_draft')
+        .gte('created_at', since).order('created_at').order('id').range(from, to));
+    for (const p of posts) for (const c of p.cites ?? []) cited.add(c);
   }
   const usedByQuestion: Record<string, number> = {};
   for (const id of cited) {

@@ -30,6 +30,7 @@ import {
   UNREACHABLE_WINDOW_DAYS,
   type QuestionSearchRecord,
 } from './research_brief.ts';
+import { fetchAll } from './paginate.ts';
 import type { ResearchAngle, BriefQuestion, WorkspacePolicy } from './policy.ts';
 
 // Pro, not flash: the planner runs rarely (≈once per workspace per 14 days, or on a
@@ -282,9 +283,14 @@ export interface PlannerContext {
 export async function loadAngleRecords(supabase: SupabaseClient, workspace_id: string, previous: ResearchAngle[]): Promise<AngleRecord[]> {
   try {
     const since = new Date(Date.now() - RECORD_WINDOW_DAYS * 86400 * 1000).toISOString();
-    const { data } = await supabase.from('events').select('payload, created_at')
-      .eq('workspace_id', workspace_id).eq('action', 'research_completed')
-      .gte('created_at', since).limit(5000);
+    // Capped at 1000 by PostgREST whatever the limit said, and this workspace
+    // passed that inside the window. Same read, same fix, same reason as the
+    // one in scanQuestionSearch: it is the pages an angle cost, and it is
+    // divided by what the angle kept.
+    const data = await fetchAll<{ payload: Record<string, unknown> | null; created_at: string }>((from, to) =>
+      supabase.from('events').select('payload, created_at')
+        .eq('workspace_id', workspace_id).eq('action', 'research_completed')
+        .gte('created_at', since).order('created_at').order('id').range(from, to));
     // A run only counts toward an angle if it ran the search that angle carries
     // NOW. Without this a rewritten query inherits the record of the one it
     // replaced, and the planner judges a query that has never run.
@@ -303,21 +309,26 @@ export async function loadAngleRecords(supabase: SupabaseClient, workspace_id: s
     // per_angle counts pages this angle kept for ANY question. See AngleRecord.kept.
     const answersOf = new Map(previous.map((a) => [a.id, a.answers]));
     const kept: Record<string, number> = {};
-    for (let from = 0; ; from += 1000) {
-      const { data: sigs } = await supabase.from('signals').select('structured_tags, observed_at')
+    // fetchAll for the same two reasons as the question scan in research_brief:
+    // the loop this replaces dropped the read error and then treated the empty
+    // page as the end of the table, and it paged without a stable order. Either
+    // one reports zero keeps for an angle that is working, and zero keeps
+    // against real pages fetched is what fails an angle. The throw is caught
+    // below and answers with no records, which is a missing verdict rather than
+    // a wrong one.
+    const sigs = await fetchAll<{ structured_tags: Record<string, string> | null; observed_at: string }>((from, to) =>
+      supabase.from('signals').select('structured_tags, observed_at')
         .eq('workspace_id', workspace_id).eq('type', 'research_result')
-        .gte('observed_at', since).range(from, from + 999);
-      for (const s of (sigs ?? []) as Array<{ structured_tags: Record<string, string> | null; observed_at: string }>) {
-        const angleId = s.structured_tags?.research_angle;
-        if (!angleId || !startedAt.has(angleId)) continue;
-        if (Date.parse(s.observed_at) < (startedAt.get(angleId) ?? 0)) continue;
-        // An angle planned before the brief existed has no question to be judged
-        // against, so any keep counts for it.
-        const wants = answersOf.get(angleId);
-        if (wants && s.structured_tags?.answers_question !== wants) continue;
-        kept[angleId] = (kept[angleId] ?? 0) + 1;
-      }
-      if (!sigs || sigs.length < 1000) break;
+        .gte('observed_at', since).order('observed_at').order('id').range(from, to));
+    for (const s of sigs) {
+      const angleId = s.structured_tags?.research_angle;
+      if (!angleId || !startedAt.has(angleId)) continue;
+      if (Date.parse(s.observed_at) < (startedAt.get(angleId) ?? 0)) continue;
+      // An angle planned before the brief existed has no question to be judged
+      // against, so any keep counts for it.
+      const wants = answersOf.get(angleId);
+      if (wants && s.structured_tags?.answers_question !== wants) continue;
+      kept[angleId] = (kept[angleId] ?? 0) + 1;
     }
 
     return [...new Set([...Object.keys(fetched), ...Object.keys(kept)])]

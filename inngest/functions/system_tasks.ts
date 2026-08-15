@@ -1,7 +1,7 @@
 import { createServerClient } from '@agent-crm/db';
 import {
   scoreAndAssert, callTool, entityIdsOfType, runRetention, pruneHttpResponses,
-  ensureScoringConfigState, fetchAll, latestMarkerByEntity,
+  ensureScoringConfigState, fetchAll, chunk, latestMarkerByEntity,
   recordActivityMarker, ACTIVITY_MARKERS, isSubstantiveFact,
   getPolicy, resolveEnvVar, resolveDomainViaSearch,
   getPipelineStatus, setPipelineStatus,
@@ -282,25 +282,36 @@ export const silenceSweep = inngest.createFunction(
       const out: Array<{ workspace_id: string; entity_id: string; last_outreach_at: string }> = [];
       for (const ws of wsRows) {
         // Entities with last_outreach_at older than the cutoff. Active facts only.
-        const sent = await supabase.from('facts')
-          .select('subject_entity, object_text')
-          .eq('workspace_id', ws.id).eq('predicate', 'last_outreach_at')
-          .is('supersedes', null)
-          .lt('object_text', cutoff)
-          .limit(1000);
-        const sentRows = (sent.data ?? []) as Array<{ subject_entity: string; object_text: string }>;
+        // Paged: the thousandth account that went quiet is as quiet as the
+        // first, and a fixed ceiling here means the ones past it are never
+        // followed up and nothing says so.
+        const sentRows = await fetchAll<{ subject_entity: string; object_text: string }>((from, to) =>
+          supabase.from('facts')
+            .select('subject_entity, object_text')
+            .eq('workspace_id', ws.id).eq('predicate', 'last_outreach_at')
+            .is('supersedes', null)
+            .lt('object_text', cutoff)
+            .order('subject_entity').range(from, to));
         if (!sentRows.length) continue;
 
         // Pull all replied_at and no_reply_marked facts in one round-trip;
-        // filter in memory to avoid N queries.
+        // filter in memory to avoid N queries. Chunked, because an .in() list
+        // longer than the page size hits the same ceiling from the other side:
+        // the answer comes back short and every account missing from it reads
+        // as never having replied.
         const ids = sentRows.map((r) => r.subject_entity);
-        const followups = await supabase.from('facts')
-          .select('subject_entity, predicate')
-          .eq('workspace_id', ws.id)
-          .in('subject_entity', ids)
-          .in('predicate', ['replied_at', 'no_reply_marked'])
-          .is('supersedes', null);
-        const skip = new Set<string>(((followups.data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity));
+        const skip = new Set<string>();
+        for (const batch of chunk(ids)) {
+          const followups = await fetchAll<{ subject_entity: string }>((from, to) =>
+            supabase.from('facts')
+              .select('subject_entity, predicate')
+              .eq('workspace_id', ws.id)
+              .in('subject_entity', batch)
+              .in('predicate', ['replied_at', 'no_reply_marked'])
+              .is('supersedes', null)
+              .order('subject_entity').range(from, to));
+          for (const r of followups) skip.add(r.subject_entity);
+        }
 
         for (const r of sentRows) {
           if (skip.has(r.subject_entity)) continue;

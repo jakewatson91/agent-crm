@@ -22,6 +22,7 @@
  * so subscriptions with no learned centroid behave exactly as before.
  */
 import { createServerClient } from '@agent-crm/db';
+import { fetchAll } from '@agent-crm/tools';
 import { inngest } from '../client.ts';
 
 const WINDOW_MIN = 35;  // 5min overlap with the 30-min cron so we don't drop edges
@@ -70,16 +71,18 @@ export const subscriptionDriftLearner = inngest.createFunction(
       const since = new Date(Date.now() - WINDOW_MIN * 60 * 1000).toISOString();
 
       // Pull positives across all workspaces in one go; group later.
-      const evRes = await sb.from('events')
-        .select('workspace_id, payload')
-        .eq('action', 'agent_dispatch_result')
-        .gte('created_at', since)
-        .limit(5000);
-      if (evRes.error) throw new Error(`events: ${evRes.error.message}`);
+      // Paged, because .limit(5000) stopped at 1000 and this read is not scoped
+      // to one workspace: every workspace's dispatches in the window share that
+      // ceiling, so the busiest one can crowd the others out of their own
+      // learning entirely.
+      const evRows = await fetchAll<{ workspace_id: string; payload: DispatchPayload | null }>((from, to) =>
+        sb.from('events').select('workspace_id, payload')
+          .eq('action', 'agent_dispatch_result')
+          .gte('created_at', since).order('created_at').order('id').range(from, to));
 
       // Group: subscription_id → list of signal_ids
       const positives = new Map<string, { workspace_id: string; signal_ids: string[] }>();
-      for (const e of (evRes.data ?? []) as Array<{ workspace_id: string; payload: DispatchPayload | null }>) {
+      for (const e of evRows) {
         const p = e.payload;
         if (!p || p.behavior !== 'enricher' || !p.ok) continue;
         if ((p.facts_asserted ?? 0) < 1) continue;

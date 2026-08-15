@@ -56,9 +56,14 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
   const since = new Date(Date.now() - DAYS * 86400 * 1000).toISOString();
 
   // --- run markers: fetched + kept per search ---
-  const ev = ((await sb.from('events').select('payload, created_at')
+  // .limit(5000) reads as "everything" and is not: PostgREST stops at 1000 rows.
+  // This screen was printing "1000 research runs, 3931 searches" for a window
+  // that actually held 1,125 runs and 4,277 searches, and the round number is
+  // the only tell. Per-question fetched came out the same either way, because
+  // the runs it dropped carried no per-search counts, today.
+  const ev = await fetchAll<any>((f, t) => sb.from('events').select('payload, created_at')
     .eq('workspace_id', WS).eq('action', 'research_completed')
-    .gte('created_at', since).order('created_at', { ascending: false }).limit(5000)).data ?? []) as any[];
+    .gte('created_at', since).order('created_at').order('id').range(f, t));
   const fetchedByAngle: Record<string, number> = {};
   const keptByAngle: Record<string, number> = {};
   let runs = 0, searches = 0, markersWithFetched = 0;
@@ -71,9 +76,11 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
   }
 
   // --- pages kept, per question ---
+  // The order is not decoration: 1,777 signals in this window is two pages, and
+  // range pagination without a total order can skip or repeat rows at the seam.
   const sigs = await fetchAll<any>((f, t) => sb.from('signals')
     .select('id, structured_tags').eq('workspace_id', WS).eq('type', 'research_result')
-    .gte('observed_at', since).range(f, t));
+    .gte('observed_at', since).order('observed_at').order('id').range(f, t));
   const keptByQuestion: Record<string, number> = {};
   const sigQ = new Map<string, string>();
   for (const s of sigs) {

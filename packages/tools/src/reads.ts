@@ -514,10 +514,14 @@ export async function tokenSummary(
   args: { since_hours: number },
 ): Promise<TokenSummary> {
   const since = new Date(Date.now() - args.since_hours * 3600 * 1000).toISOString();
-  const { data, error } = await supabase.from('events').select('payload')
-    .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
-    .gte('created_at', since).limit(5000);
-  if (error) throw error;
+  // Every LLM call in the window, and the answer is a sum, so a missing row is
+  // an undercount with nothing to show it happened. .limit(5000) stopped at
+  // 1000, which a busy day already clears, and the bill it reports would have
+  // read low for as long as that kept happening.
+  const data = await fetchAll<{ payload: Record<string, number | string> | null }>((from, to) =>
+    supabase.from('events').select('payload')
+      .eq('workspace_id', workspace_id).eq('action', 'agent_run_metrics')
+      .gte('created_at', since).order('created_at').order('id').range(from, to));
 
   let runs = 0; let input = 0; let output = 0; let cached = 0;
   const byModel = new Map<string, { runs: number; input: number; output: number; cached: number }>();

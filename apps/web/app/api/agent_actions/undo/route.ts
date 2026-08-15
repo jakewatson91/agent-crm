@@ -55,18 +55,22 @@ export async function POST(req: Request) {
   // Idempotency check. Compare on stringified event_id because the payload
   // may have been written as a number (from JSON-typed API responses) or a
   // string (from curl bodies). Either form should resolve as "already undone".
+  //
+  // Asked of the database rather than read back and scanned here. Reading every
+  // undo in the workspace stopped at PostgREST's 1000-row ceiling, and past a
+  // thousand undos this check would start missing the very row it was looking
+  // for and undo the same action twice. `->>` renders the stored value as text
+  // either way it was written, which is what makes the number-or-string problem
+  // above go away rather than be worked around.
   const target = String(body.event_id);
   const dupRes = await sb.from('events')
-    .select('id, payload')
+    .select('id')
     .eq('workspace_id', body.workspace_id)
     .eq('action', 'agent_action_undone')
-    .limit(1000);
-  for (const u of (dupRes.data ?? []) as Array<{ id: string; payload: { original_event_id?: string | number } | null }>) {
-    const stored = u.payload?.original_event_id;
-    if (stored != null && String(stored) === target) {
-      return NextResponse.json({ ok: true, already_undone: true, undo_event_id: u.id });
-    }
-  }
+    .eq('payload->>original_event_id', target)
+    .limit(1);
+  const already = (dupRes.data ?? [])[0] as { id: string } | undefined;
+  if (already) return NextResponse.json({ ok: true, already_undone: true, undo_event_id: already.id });
 
   // Apply the inverse.
   let applied: Record<string, unknown> = {};

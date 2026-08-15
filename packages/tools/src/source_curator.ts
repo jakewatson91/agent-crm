@@ -40,6 +40,8 @@ export interface CurateOpts {
 const ACTOR_ID = 'source_curator';
 const CURATOR_MODEL = 'deepseek-v4-flash';
 const SAMPLE_SIGNALS = 5;
+/** How far back a sample may come from. Also what bounds the scan for a dead source. */
+const SAMPLE_WINDOW_DAYS = 30;
 const MIN_SIGNALS_MATURE = 5;
 const MIN_SIGNALS_DEAD = 10;
 const LOW_AGENT_FIRE = 0.10;
@@ -102,25 +104,37 @@ export async function curateWorkspaceSources(
   if (slice.length === 0) return { decisions: [], applied: 0, skipped_cooldown };
 
   // For each candidate, load 5 sample signals + the source row, then call the LLM.
+  //
+  // Five rows per candidate, asked for five rows at a time. This used to read
+  // the workspace's whole signal table and sift 25 rows out of it in memory,
+  // and `.limit(20000)` did not even do that: PostgREST caps a response at 1000
+  // rows, so it was the newest 1000 signals, and a source that had gone quiet
+  // for longer than those 1000 span handed the model no samples at all. It read
+  // every body_for_embedding in the workspace once a day to do it.
+  //
+  // Bounded by SAMPLE_WINDOW_DAYS so a dead source answers fast instead of
+  // scanning the table to prove it has nothing. A dead source having no samples
+  // is correct: what to do about it is decided by its metrics, and the samples
+  // are here to rewrite the query of a source that is still producing.
   const candidateIds = slice.map((c) => c.source_id);
-  const [sourceRowsRes, sampleSignalsRes] = await Promise.all([
+  const sampleSince = new Date(Date.now() - SAMPLE_WINDOW_DAYS * 86400 * 1000).toISOString();
+  const [sourceRowsRes, ...sampleRes] = await Promise.all([
     sb.from('sources').select('id, name, connector_type, config, schedule_cron').in('id', candidateIds),
-    sb.from('signals').select('id, structured_tags, body_for_embedding, created_at, entity_id')
+    ...candidateIds.map((sid) => sb.from('signals').select('body_for_embedding, created_at, entity_id')
       .eq('workspace_id', workspace_id)
+      .eq('structured_tags->>source_id', sid)
+      .gte('created_at', sampleSince)
       .order('created_at', { ascending: false })
-      .limit(20000),
+      .limit(SAMPLE_SIGNALS)),
   ]);
   const sourceRowById = new Map((sourceRowsRes.data ?? []).map((s: any) => [s.id, s]));
   const samplesBySource = new Map<string, Array<{ body: string; created_at: string; entity_id: string | null }>>();
-  for (const s of (sampleSignalsRes.data ?? []) as Array<{ structured_tags: { source_id?: string } | null; body_for_embedding: string | null; created_at: string; entity_id: string | null }>) {
-    const sid = s.structured_tags?.source_id;
-    if (!sid || !candidateIds.includes(sid)) continue;
-    const arr = samplesBySource.get(sid) ?? [];
-    if (arr.length < SAMPLE_SIGNALS) {
-      arr.push({ body: (s.body_for_embedding ?? '').slice(0, 400), created_at: s.created_at, entity_id: s.entity_id });
-      samplesBySource.set(sid, arr);
-    }
-  }
+  candidateIds.forEach((sid, i) => {
+    const rows = (sampleRes[i]?.data ?? []) as Array<{ body_for_embedding: string | null; created_at: string; entity_id: string | null }>;
+    samplesBySource.set(sid, rows.map((s) => ({
+      body: (s.body_for_embedding ?? '').slice(0, 400), created_at: s.created_at, entity_id: s.entity_id,
+    })));
+  });
 
   const decisions: CuratorDecision[] = [];
   for (const m of slice) {

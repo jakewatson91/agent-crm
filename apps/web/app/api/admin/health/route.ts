@@ -2,43 +2,51 @@ import { NextRequest, NextResponse } from 'next/server';
 import { unstable_cache } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
 import { healthCheck, tokenSummary } from '@agent-crm/tools/reads';
+import { fetchAll } from '@agent-crm/tools';
 
-async function attributionMetrics(sb: ReturnType<typeof createServerClient>, ws: string, hours: number, chIds: string[]) {
+/**
+ * Both panels below used to take a list of this workspace's channel ids and
+ * filter on `.in('channel_id', ids)`. That list came back capped at PostgREST's
+ * 1000 rows and this workspace has 1,961 channels, so every count here was a
+ * count of roughly half the workspace, presented as the whole of it. The
+ * embedded channels!inner filter joins to the parent instead, which has no list
+ * to truncate. Same pattern as reads.ts stale_drafts and sweep.ts claims.
+ */
+async function attributionMetrics(sb: ReturnType<typeof createServerClient>, ws: string, hours: number) {
   const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
   const [drafts, fits] = await Promise.all([
-    chIds.length
-      ? sb.from('channel_posts')
-          .select('id', { count: 'exact', head: true })
-          .in('channel_id', chIds)
-          .eq('kind', 'touch_draft')
-          .gte('created_at', since)
-      : Promise.resolve({ count: 0 } as { count: number }),
-    sb.from('facts')
+    sb.from('channel_posts')
+      .select('id, channels!inner(workspace_id)', { count: 'exact', head: true })
+      .eq('channels.workspace_id', ws)
+      .eq('kind', 'touch_draft')
+      .gte('created_at', since),
+    // Distinct accounts scored, so this one needs the rows, not a count.
+    fetchAll<{ subject_entity: string }>((from, to) => sb.from('facts')
       .select('subject_entity')
       .eq('workspace_id', ws)
       .eq('predicate', 'icp_fit')
       .gte('created_at', since)
-      .limit(5000),
+      .order('subject_entity').range(from, to)),
   ]);
 
-  const scored = new Set<string>(((fits.data ?? []) as Array<{ subject_entity: string }>).map((f) => f.subject_entity));
-  return { drafted_touches: (drafts as { count: number }).count ?? 0, scored_accounts: scored.size };
+  const scored = new Set<string>(fits.map((f) => f.subject_entity));
+  return { drafted_touches: drafts.count ?? 0, scored_accounts: scored.size };
 }
 
-async function actionDistribution(sb: ReturnType<typeof createServerClient>, hours: number, chIds: string[]) {
-  if (!chIds.length) return {} as Record<string, number>;
+async function actionDistribution(sb: ReturnType<typeof createServerClient>, ws: string, hours: number) {
   const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-  // Count each action type with a targeted ilike filter — no body data read.
+  // Count each action type with a targeted ilike filter, no body data read.
   const base = (tag: string) =>
     sb.from('channel_posts')
-      .select('id', { count: 'exact', head: true })
-      .in('channel_id', chIds)
+      .select('id, channels!inner(workspace_id)', { count: 'exact', head: true })
+      .eq('channels.workspace_id', ws)
       .eq('kind', 'decision')
       .gte('created_at', since)
       .ilike('body', `[${tag}]%`);
   const [draftCount, watchOnly, deepResearch, drop, cont] = await Promise.all([
-    sb.from('channel_posts').select('id', { count: 'exact', head: true }).in('channel_id', chIds).eq('kind', 'touch_draft').gte('created_at', since),
+    sb.from('channel_posts').select('id, channels!inner(workspace_id)', { count: 'exact', head: true })
+      .eq('channels.workspace_id', ws).eq('kind', 'touch_draft').gte('created_at', since),
     base('watch_only'),
     base('deep_research'),
     base('drop'),
@@ -56,17 +64,15 @@ async function actionDistribution(sb: ReturnType<typeof createServerClient>, hou
 const getHealthData = unstable_cache(
   async (ws: string) => {
     const sb = createServerClient();
-    const wsChannels = await sb.from('channels').select('id').eq('workspace_id', ws);
-    const chIds = ((wsChannels.data ?? []) as Array<{ id: string }>).map((c) => c.id);
 
     const [health, day, week, attr24, attr7d, actions24, actions7d] = await Promise.all([
       healthCheck(sb, ws),
       tokenSummary(sb, ws, { since_hours: 24 }),
       tokenSummary(sb, ws, { since_hours: 168 }),
-      attributionMetrics(sb, ws, 24, chIds),
-      attributionMetrics(sb, ws, 168, chIds),
-      actionDistribution(sb, 24, chIds),
-      actionDistribution(sb, 168, chIds),
+      attributionMetrics(sb, ws, 24),
+      attributionMetrics(sb, ws, 168),
+      actionDistribution(sb, ws, 24),
+      actionDistribution(sb, ws, 168),
     ]);
 
     const tot24 = day.input_tokens + day.output_tokens;
