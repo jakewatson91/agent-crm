@@ -33,7 +33,7 @@ export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
 export { runRetention, type RetentionResult, pruneHttpResponses, type HttpResponsePruneResult } from './retention.ts';
 export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
-export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, DEFAULT_TIER_CADENCE_HOURS, resolveTierCadenceHours, DEFAULT_MAX_OUTPUT_TOKENS, resolveMaxOutputTokens, TIER_ANGLE_COUNT, RESEARCH_DISPATCH_CRON, DEFAULT_QUALIFICATION, resolveQualification } from './policy.ts';
+export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, DEFAULT_TIER_CADENCE_HOURS, resolveTierCadenceHours, DEFAULT_EMPTY_RUN_BACKOFF_MAX, EMPTY_RUN_BACKOFF_TRIGGER, emptyRunBackoff, DEFAULT_MAX_OUTPUT_TOKENS, resolveMaxOutputTokens, TIER_ANGLE_COUNT, RESEARCH_DISPATCH_CRON, DEFAULT_QUALIFICATION, resolveQualification } from './policy.ts';
 export { getPipelineStatus, setPipelineStatus, getPipelineActivity, PIPELINE_ACTIVITY_ACTIONS, ensureScoringConfigState } from './policy.ts';
 export type { PipelineActivity } from './policy.ts';
 export { sendOwnerAlert, resolveOwnerEmail, notifyPipelinePaused, type AlertResult } from './notify.ts';
@@ -68,7 +68,7 @@ export { ingestRows, getPath, normalizeDomain, hashItem, type IngestSpec, type I
 export { setOutreachStage, DEFAULT_STAGE_FACT_NAME } from './lifecycle.ts';
 export type { LifecyclePolicy, OutreachTransition } from './policy.ts';
 export { factFamilyOf, type FactGroup, type DisplayPolicy } from './fact_groups.ts';
-export { ACTIVITY_MARKERS, recordActivityMarker, latestMarkerAt, latestMarkerByEntity, type ActivityMarker } from './activity_markers.ts';
+export { ACTIVITY_MARKERS, recordActivityMarker, latestMarkerAt, latestMarkerByEntity, countTrailingEmptyResearch, type ActivityMarker } from './activity_markers.ts';
 export { fetchAll, chunk } from './paginate.ts';
 export { resolvePeriod, collectPeriod, renderMarkdown, mdToHtml, DEFAULT_PRICING, isPeakHour, type PeriodWindow, type PeriodData, type EntityMove, type Pricing } from './report.ts';
 export { backfillAccountDomainsFromContactEmails, domainFromEmail, resolveDomainViaSearch, type DomainBackfillResult, type DomainResolveOutcome, type DomainResolveRejection } from './domains.ts';

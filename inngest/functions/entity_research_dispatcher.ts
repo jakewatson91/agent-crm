@@ -41,8 +41,8 @@
  */
 import { createServerClient } from '@agent-crm/db';
 import {
-  entityIdsOfType, recordActivityMarker, latestMarkerByEntity, ACTIVITY_MARKERS,
-  getPolicy, resolveTierCadenceHours, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, ensureResearchBrief, currentFactRows, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
+  entityIdsOfType, recordActivityMarker, latestMarkerByEntity, countTrailingEmptyResearch, ACTIVITY_MARKERS,
+  getPolicy, resolveTierCadenceHours, emptyRunBackoff, getPipelineStatus, setPipelineStatus, ensureResearchStrategy, ensureResearchBrief, currentFactRows, DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX,
   RESEARCH_DISPATCH_CRON, runExaSearch, resolveEnvVar, resolveContactStrategy, DEFAULT_THRESHOLDS,
 } from '@agent-crm/tools';
 import { inngest } from '../client.ts';
@@ -241,6 +241,9 @@ export async function runResearchDispatch(
   let skipped_no_domain = 0;
   let skipped_paused = 0;
   let auto_cleared_pauses = 0;
+  // Accounts whose cadence was stretched by the empty-run backoff rather than by
+  // the signal one. Reported so the saving is visible without reading the code.
+  let backed_off_empty = 0;
   let contacts_eligible = 0;
   let contacts_dispatched = 0;
 
@@ -334,6 +337,8 @@ export async function runResearchDispatch(
     const lastResearchByEntity = await latestMarkerByEntity(supabase, ws.id, acctIds, [
       ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ACTIVITY_MARKERS.RESEARCH_COMPLETED,
     ]);
+    // How many passes in a row found nothing, for the second backoff below.
+    const emptyRunsByEntity = await countTrailingEmptyResearch(supabase, ws.id, acctIds);
 
     interface EntityState {
       score_total: number | null;
@@ -449,9 +454,26 @@ export async function runResearchDispatch(
       // Engaged accounts and ones with a live signal never back off, and the multiplier
       // returns to 1 the moment a pass lifts the signal. sig<0.3 -> 3x, sig<0.5 -> 2x.
       const sig = s.signal_strength ?? 0;
-      const backoff = (s.last_research_at > 0 && !engaged.has(a.id) && sig < 0.5) ? (sig < 0.3 ? 3 : 2) : 1;
+      const signalBackoff = (s.last_research_at > 0 && !engaged.has(a.id) && sig < 0.5) ? (sig < 0.3 ? 3 : 2) : 1;
+      // Second backoff, on what the searches actually returned rather than on what
+      // we believe. signal_strength above can sit high on an account whose facts
+      // all came from a CSV import while the web has nothing about it, so that
+      // check alone let 60% of runs keep coming back empty on a full cadence.
+      // Ladder + off-switch live in policy (ResearchPolicy.empty_run_backoff_max).
+      const emptyBackoff = engaged.has(a.id) ? 1 : emptyRunBackoff(emptyRunsByEntity.get(a.id) ?? 0, policy);
+      // Larger of the two, never the product: 3x weak signal times 4x empty runs
+      // on a 30-day cold cadence is 360 days, which is "never" with a number on it.
+      const backoff = Math.max(signalBackoff, emptyBackoff);
       const cadenceMs = tierCadenceHours[tier] * backoff * 3600 * 1000;
-      if (s.last_research_at && now - s.last_research_at < cadenceMs) continue;
+      if (s.last_research_at && now - s.last_research_at < cadenceMs) {
+        // Count only the accounts this rule actually held back — ones that would
+        // have been due under the signal backoff alone. Counting every account
+        // where it merely dominates would report accounts that were not due
+        // either way and overstate the saving.
+        const signalCadenceMs = tierCadenceHours[tier] * signalBackoff * 3600 * 1000;
+        if (emptyBackoff > signalBackoff && now - s.last_research_at >= signalCadenceMs) backed_off_empty++;
+        continue;
+      }
       candidates.push({
         entity_id: a.id, entity_name: a.name, tier,
         last_research_at: s.last_research_at,
@@ -597,6 +619,7 @@ export async function runResearchDispatch(
     skipped_no_domain,
     skipped_paused,
     auto_cleared_pauses,
+    backed_off_empty,
     dispatch_errors,
     contacts_eligible,
     contacts_dispatched,

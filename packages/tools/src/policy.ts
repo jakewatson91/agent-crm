@@ -649,6 +649,27 @@ export interface ResearchPolicy {
    * The existing yield backoff still multiplies whatever is set here.
    */
   tier_cadence_hours?: { hot?: number; default?: number; cold?: number };
+  /**
+   * Ceiling on how far the cadence stretches for an account whose research keeps
+   * coming back with nothing. Set 1 (or 0) to switch the behavior off entirely.
+   *
+   * The older backoff next to it reads signal_strength — what we believe about
+   * an account. This one reads what the last few searches actually returned,
+   * which is a different thing: an account can score well off imported facts and
+   * still have nothing findable about it on the web. On the Sudden book 60% of
+   * research runs created zero facts and those accounts came back around on the
+   * same cadence as the productive ones.
+   *
+   * Two empty runs in a row is the trigger (one is noise), then the multiplier
+   * tracks the run count up to this cap: 2 empties -> 2x, 3 -> 3x, 4 or more ->
+   * capped here. At the 96h hot default that is 8, 12 then 16 days. One pass
+   * that creates a fact resets it. Engaged accounts never back off.
+   *
+   * It does not stack with the signal backoff — the dispatcher takes whichever
+   * of the two is larger. Multiplying them would put a cold, quiet account on a
+   * 360-day cadence, which is "never" wearing a number.
+   */
+  empty_run_backoff_max?: number;
   selection_mix?: { high_value?: number; active_comms?: number; exploration?: number };
   strategy?: ResearchAngle[];
   strategy_generated_at?: string;
@@ -892,6 +913,29 @@ export function resolveTierCadenceHours(
   };
   return { hot: pick('hot'), default: pick('default'), cold: pick('cold') };
 }
+
+/**
+ * Default ceiling on the empty-run backoff multiplier. See
+ * ResearchPolicy.empty_run_backoff_max for the yield data behind it.
+ */
+export const DEFAULT_EMPTY_RUN_BACKOFF_MAX = 4;
+
+/** Consecutive empty research runs before the cadence starts stretching. */
+export const EMPTY_RUN_BACKOFF_TRIGGER = 2;
+
+/**
+ * Cadence multiplier for an account whose last `emptyRuns` research passes all
+ * created nothing. 1 means "no change". Exported so the dispatcher and its
+ * assertions read the same ladder.
+ */
+export function emptyRunBackoff(emptyRuns: number, policy: WorkspacePolicy): number {
+  const raw = policy.research?.empty_run_backoff_max;
+  const max = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_EMPTY_RUN_BACKOFF_MAX;
+  if (max <= 1) return 1; // switched off for this workspace
+  if (!Number.isFinite(emptyRuns) || emptyRuns < EMPTY_RUN_BACKOFF_TRIGGER) return 1;
+  return Math.min(Math.floor(emptyRuns), max);
+}
+
 /**
  * Default output-token ceiling per LLM behavior. See LLMPolicy.max_output_tokens
  * for why this is config, and why a low ceiling costs money rather than saving it.

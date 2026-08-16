@@ -7,7 +7,7 @@
     "dev": "pnpm --filter web dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "check": "tsx scripts/check_score_formula.ts && tsx scripts/check_out_of_scope.ts && tsx scripts/check_domain_guard.ts && tsx scripts/check_published_date.ts && tsx scripts/check_source_age.ts && tsx scripts/check_name_gate.ts && tsx scripts/check_aliases.ts && tsx scripts/check_source_dispatcher.ts && tsx scripts/check_research_angles.ts && tsx scripts/check_research_brief.ts && tsx scripts/check_prompt_portability.ts && tsx scripts/check_derive_defaults.ts && tsx scripts/check_output_budget.ts && tsx scripts/check_llm_retry.ts && tsx scripts/check_thinking_off.ts && tsx scripts/check_gate_failure.ts && tsx scripts/check_pick_angle.ts && tsx scripts/check_ats_retry.ts",
+    "check": "tsx scripts/check_score_formula.ts && tsx scripts/check_out_of_scope.ts && tsx scripts/check_domain_guard.ts && tsx scripts/check_published_date.ts && tsx scripts/check_source_age.ts && tsx scripts/check_name_gate.ts && tsx scripts/check_aliases.ts && tsx scripts/check_source_dispatcher.ts && tsx scripts/check_research_angles.ts && tsx scripts/check_research_brief.ts && tsx scripts/check_prompt_portability.ts && tsx scripts/check_derive_defaults.ts && tsx scripts/check_output_budget.ts && tsx scripts/check_llm_retry.ts && tsx scripts/check_thinking_off.ts && tsx scripts/check_gate_failure.ts && tsx scripts/check_pick_angle.ts && tsx scripts/check_ats_retry.ts && tsx scripts/check_empty_run_backoff.ts",
     "verify": "pnpm typecheck && pnpm check",
     "db:migrate": "supabase db push",
     "db:reset": "supabase db reset",

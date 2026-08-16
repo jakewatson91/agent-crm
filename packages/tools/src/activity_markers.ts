@@ -137,3 +137,66 @@ export async function latestMarkerByEntity(
   }
   return out;
 }
+
+/**
+ * How many research passes in a row have come back with nothing, per entity.
+ *
+ * The dispatcher's other backoff reads signal_strength, which is what we BELIEVE
+ * about an account. That number sits high on an account whose facts all arrived
+ * in a CSV import while the open web has nothing to say about it, so those
+ * accounts were revisited on exactly the same cadence as the ones that pay.
+ *
+ * Measured on the 2,132-account Sudden book over the 14 days to 2026-08-16: 333
+ * of 559 research runs (60%) created zero facts, out of 2,241 searches costing
+ * $15.69. This counts the runs that found nothing so the dispatcher can wait
+ * longer before trying those accounts again.
+ *
+ * Counts backwards from the most recent run and stops at the first one that
+ * created a fact, so one productive pass clears the whole count. Entities with
+ * no completed run inside the window are left out of the map (read as zero) —
+ * never-researched accounts must not inherit a penalty. `research_error` runs
+ * are not counted either: a provider outage is not the web being empty.
+ */
+export async function countTrailingEmptyResearch(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  entity_ids: string[],
+  lookbackDays = 90,
+): Promise<Map<string, number>> {
+  const since = new Date(Date.now() - lookbackDays * 86400_000).toISOString();
+  const runsByEntity = new Map<string, Array<{ at: number; created: number }>>();
+  const CHUNK = 200;
+  for (let i = 0; i < entity_ids.length; i += CHUNK) {
+    const chunk = entity_ids.slice(i, i + CHUNK);
+    const rows = await fetchAll<{ target_id: string; created_at: string; payload: { results_created?: number } | null }>((from, to) =>
+      supabase
+        .from('events')
+        .select('target_id, created_at, payload')
+        .eq('workspace_id', workspace_id)
+        .eq('target_kind', 'entity')
+        .eq('action', ACTIVITY_MARKERS.RESEARCH_COMPLETED)
+        .in('target_id', chunk)
+        .gte('created_at', since)
+        .order('created_at', { ascending: true })
+        .range(from, to),
+    );
+    for (const r of rows) {
+      const at = Date.parse(r.created_at);
+      if (!Number.isFinite(at)) continue;
+      const list = runsByEntity.get(r.target_id) ?? [];
+      list.push({ at, created: Number(r.payload?.results_created ?? 0) || 0 });
+      runsByEntity.set(r.target_id, list);
+    }
+  }
+  const out = new Map<string, number>();
+  for (const [id, runs] of runsByEntity) {
+    runs.sort((a, b) => b.at - a.at); // newest first
+    let n = 0;
+    for (const r of runs) {
+      if (r.created > 0) break;
+      n++;
+    }
+    if (n > 0) out.set(id, n);
+  }
+  return out;
+}
