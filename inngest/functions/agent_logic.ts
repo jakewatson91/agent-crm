@@ -20,7 +20,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
-import { embed } from '@agent-crm/primitives';
+import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.ts';
 
@@ -891,7 +891,7 @@ export async function runAgent(
         action: 'agent_llm_failed',
         target_kind: 'entity',
         target_id: ent.data.id,
-        payload: { reason: 'llm_error', behavior, model, message: message.slice(0, 400) },
+        payload: { reason: 'llm_error', behavior, model, message: message.slice(0, 400), ...apiCallErrorDetail(e) },
         parent_event_id: payload.parent_event_id ?? null,
       });
     } catch { /* swallow */ }

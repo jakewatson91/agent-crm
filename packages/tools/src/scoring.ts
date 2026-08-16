@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed } from '@agent-crm/primitives';
 import { act } from '@agent-crm/primitives';
+import { apiCallErrorDetail } from '@agent-crm/primitives';
 import { graphProximity } from './graph.ts';
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
@@ -860,7 +861,7 @@ Score this account on the three rubric dimensions.`;
         ],
       });
     } catch (e) {
-      await recordScorerCall(supabase, workspace_id, entity_id, { ok: false, reason: 'llm_error', message: (e as Error)?.message ?? String(e) });
+      await recordScorerCall(supabase, workspace_id, entity_id, { ok: false, reason: 'llm_error', message: (e as Error)?.message ?? String(e), detail: apiCallErrorDetail(e) });
       return null;
     }
     try {
@@ -1528,7 +1529,7 @@ async function recordScorerCall(
   entity_id: string | null,
   outcome:
     | { ok: true; llm: { model: string; provider: string; input_tokens: number; output_tokens: number; cached_input_tokens: number } }
-    | { ok: false; reason: 'llm_error' | 'unparseable_json'; message: string; output_tokens?: number | null },
+    | { ok: false; reason: 'llm_error' | 'unparseable_json'; message: string; output_tokens?: number | null; detail?: { status_code?: number; response_body?: string; cause?: string } },
 ): Promise<void> {
   try {
     const base = {
@@ -1559,6 +1560,7 @@ async function recordScorerCall(
               reason: outcome.reason, behavior: 'scoring', model: SCORE_MODEL,
               output_tokens: outcome.output_tokens ?? null,
               message: outcome.message.slice(0, 400),
+              ...outcome.detail,
             },
           },
     );
@@ -1611,7 +1613,7 @@ async function rateContactSignal(
     const n = typeof parsed.score === 'number' ? parsed.score : NaN;
     return Number.isFinite(n) ? clamp01(n) : 0.4;
   } catch (e) {
-    await recordScorerCall(supabase, workspace_id, null, { ok: false, reason: 'llm_error', message: (e as Error)?.message ?? String(e) });
+    await recordScorerCall(supabase, workspace_id, null, { ok: false, reason: 'llm_error', message: (e as Error)?.message ?? String(e), detail: apiCallErrorDetail(e) });
     return 0.4;
   }
 }

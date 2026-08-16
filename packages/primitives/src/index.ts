@@ -10,7 +10,7 @@ export { subscribe } from './subscribe.ts';
 export { gate, decideGate } from './gate.ts';
 export { query } from './query.ts';
 export { cite } from './cite.ts';
-export { chatComplete, chatCompleteStream, type ChatCompleteArgs, type ChatCompleteResult, type ChatMessage, type ChatStreamDelta, type ToolSpec } from './llm.ts';
+export { chatComplete, chatCompleteStream, apiCallErrorDetail, type ChatCompleteArgs, type ChatCompleteResult, type ChatMessage, type ChatStreamDelta, type ToolSpec } from './llm.ts';
 export { resolveModel, parseModelId, providerLabel, type ModelKeys } from './model_registry.ts';
 export {
   relatedToEntity,

@@ -195,6 +195,25 @@ export function isWorthRetrying(e: unknown): boolean {
 }
 
 /**
+ * Pull the diagnostic fields off an APICallError so a caller logging
+ * agent_llm_failed can see what the provider actually sent back, not just the
+ * SDK's generic message. responseBody is what "Failed to process successful
+ * response" always hides: the body came back with statusCode 200, so isWorthRetrying
+ * treats it as worth retrying, but if every attempt fails the same way the cause
+ * is in that body, not in the retry count. Capped well under the 400-char message
+ * field so one bad call can't bloat the events table.
+ */
+export function apiCallErrorDetail(e: unknown): { status_code?: number; response_body?: string; cause?: string } | undefined {
+  if (!APICallError.isInstance(e)) return undefined;
+  const cause = e.cause instanceof Error ? e.cause.message : e.cause != null ? String(e.cause) : undefined;
+  return {
+    status_code: e.statusCode,
+    response_body: e.responseBody?.slice(0, 2000),
+    cause: cause?.slice(0, 400),
+  };
+}
+
+/**
  * callOnce, with the transport retry above. `call` is a parameter so the
  * assertions in scripts/check_llm_retry.ts can count attempts without a network.
  */
