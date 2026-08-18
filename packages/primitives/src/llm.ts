@@ -16,6 +16,7 @@ import {
   jsonSchema,
   stepCountIs,
   APICallError,
+  RetryError,
   type ModelMessage,
   type ToolSet,
 } from 'ai';
@@ -174,6 +175,17 @@ const RETRY_BACKOFF_MS = 400;
 const PERMANENT_STATUS = new Set([400, 401, 402, 403, 404]);
 
 /**
+ * generateText already retries once internally before giving up on a
+ * non-retryable error (see RetryError below), so a second-attempt failure
+ * arrives wrapped in a RetryError instead of as the underlying APICallError
+ * directly. Unwrap it so isWorthRetrying and apiCallErrorDetail see the same
+ * thing regardless of which attempt failed.
+ */
+function unwrapRetryError(e: unknown): unknown {
+  return RetryError.isInstance(e) ? e.lastError : e;
+}
+
+/**
  * Is this failure worth another attempt with the same request?
  *
  * generateText already retries what the SDK marks retryable (429, 5xx). The
@@ -189,8 +201,9 @@ const PERMANENT_STATUS = new Set([400, 401, 402, 403, 404]);
  * in our own code) is left alone — looping on those hides them.
  */
 export function isWorthRetrying(e: unknown): boolean {
-  if (!APICallError.isInstance(e)) return false;
-  if (e.statusCode != null && PERMANENT_STATUS.has(e.statusCode)) return false;
+  const inner = unwrapRetryError(e);
+  if (!APICallError.isInstance(inner)) return false;
+  if (inner.statusCode != null && PERMANENT_STATUS.has(inner.statusCode)) return false;
   return true;
 }
 
@@ -204,11 +217,12 @@ export function isWorthRetrying(e: unknown): boolean {
  * field so one bad call can't bloat the events table.
  */
 export function apiCallErrorDetail(e: unknown): { status_code?: number; response_body?: string; cause?: string } | undefined {
-  if (!APICallError.isInstance(e)) return undefined;
-  const cause = e.cause instanceof Error ? e.cause.message : e.cause != null ? String(e.cause) : undefined;
+  const inner = unwrapRetryError(e);
+  if (!APICallError.isInstance(inner)) return undefined;
+  const cause = inner.cause instanceof Error ? inner.cause.message : inner.cause != null ? String(inner.cause) : undefined;
   return {
-    status_code: e.statusCode,
-    response_body: e.responseBody?.slice(0, 2000),
+    status_code: inner.statusCode,
+    response_body: inner.responseBody?.slice(0, 2000),
     cause: cause?.slice(0, 400),
   };
 }
