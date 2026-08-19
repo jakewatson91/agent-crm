@@ -3437,3 +3437,87 @@ executed (no workspace has a curator candidate). 52 uses of `.is('supersedes', n
 remain across 19 production files, an idiom that returns the original fact rather than the
 current one; one was fixed in `routing-preview`, which had been ranking accounts on the
 score each was given the first time it was ever seen.
+
+---
+
+## 2026-08-16 — Exa spend halved, and a backoff that is correct but small
+
+Jake: Exa is costing roughly $10/week for a test workload, at least halve it without
+stalling the pipeline.
+
+### Where the money was
+
+Billed $20.81 over 14 days via the team-management API — $1.49/day, so his number was
+right. Two spenders, and the modeled estimate landed within 3% of the bill, which is the
+only reason the rest of the analysis can be trusted:
+
+- **Research runner, $15.69 (75%).** 2,241 searches over 559 runs.
+- **Domain backfill, $5.76 (25%).** 823 lookups, 467 of which found a domain.
+
+Every call site already asks Exa for 10 results, which is exactly where the pricing tier
+breaks ($7/1k requests bundles page content for the first 10, then $1/1k per result past
+that), so there was no overflow to reclaim. The waste was volume, not request shape.
+
+### What the research budget was actually buying
+
+2,241 searches produced 890 kept facts, 10 drafts, and **exactly one research fact that a
+draft went on to cite**. 60% of runs (333 of 559) created nothing at all. Pages were
+dropped mostly for answering nothing in the brief (2,184) or being about the wrong company
+(1,418). That is the case for cutting hard: at the margin the money was buying searches
+that returned nothing.
+
+### The cuts
+
+`policy.research.searches_per_run` 30 → 8 on Sudden. The dispatcher fires every 4 hours, so
+the ceiling drops from ~180 searches/day to 48: **$7.84/week → $2.35**. Already a policy
+field with a Settings control, so no code change. `scripts/_cfg_research_search_budget.ts`
+records the number's reason next to it.
+
+`domain_backfill_per_day` 75 → 50, cut gently on purpose. At $0.012 per resolved domain it
+is the better buy — an account with no domain is never a research candidate and never gets
+a contact pull — and with 660 accounts left it finishes in ~13 days and then stops costing
+anything. Flagged to Jake since he owns that rate.
+
+Projected **$4.83/week now, $2.35 after the backlog clears**, from $10.40.
+
+### The empty-run backoff, and why it is smaller than it sounded
+
+The dispatcher stretched cadence on `signal_strength`, which is what we *believe* about an
+account — and that sits high on companies whose facts all came from the CSV import while
+the open web has nothing about them. Added a second backoff reading what the searches
+actually returned.
+
+**The threshold came from the data and the data overruled my first instinct.** I was going
+to back off after one empty run. Over 90 days and 1,354 runs, a run whose predecessor found
+nothing still returned 0.46 facts/search against a 0.58 baseline — near enough to normal
+that throttling there would have slowed accounts that were still paying. After two it falls
+to 0.21. So the trigger is 2, then the multiplier tracks the streak to a cap of 4; one
+productive pass resets it; engaged accounts are exempt. It takes the LARGER of the two
+multipliers, never the product, because 3x weak signal times 4x empty runs on the 30-day
+cold tier is 360 days, which is retiring an account while calling it a backoff.
+
+**Then I simulated it against the live book and it is worth about 5% of the bill**, not the
+structural win I had called it. Only 30 of 1,961 accounts carry a 2+ empty streak; 5 would
+be held back today. The 53%-of-runs-empty statistic does not mean the waste is
+concentrated — most accounts go empty once and recover. Shipped anyway because the rule is
+correct and strengthens as history accumulates, but I had oversold it and said so.
+
+`766006c` / `a1dd4b5`, pushed. `pnpm verify` exits 0 with 20 new assertions in
+`scripts/check_empty_run_backoff.ts`.
+
+### Answered an old open question on the way
+
+The 2026-08-10 cadence note asked whether the 772 never-visited accounts yield like first
+visits, and said to re-run `_cost_09_budget_spread.ts` in a week. Did: first visits return
+**0.26 kept pages per search against 0.47 for repeats** — worse, not equal. By that note's
+own test the 96h cadence is right and the next lever is the `exploration` share of
+`selection_mix`. Left unchanged; it trades breadth for yield.
+
+### Left open
+
+No query-level Exa cache, so an identical query on a later dispatch is billed again while
+the budget is concentrated on repeat visits. Angle pruning (5 → 3) is Jake's call — it
+decides how many companies the smaller budget reaches, but the keep-rate spread is 7% vs
+9%, not decisive. And the real-billed-cost path in the daily digest still never fires:
+`report.ts` resolves `EXA_SERVICE_API_KEY`, the env holds `EXA_SERVICE_KEY`, re-confirmed
+today and still a one-line fix.
