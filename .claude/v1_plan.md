@@ -634,6 +634,14 @@ Ran 100 random never-researched accounts, 4 angles each, $2.80 of Exa. 38% came 
 dated inside 30 days. The 589 accounts the dispatcher picked over the last 30 days rate 17.1% on
 the identical measure. The tail is 2.2x better than the accounts we keep going back to.
 
+Per search spent, which is what actually matters, the gap is far wider. One angle,
+`recent_launches_news`, found 36 of those 38 accounts on its own; the other six angles together
+added two. So an untouched account costs one search and hits 36% of the time, while the revisits
+returned 101 fresh-event accounts across roughly 3,504 searches, which is 2.9 per hundred. That is
+**12.5x more fresh events per dollar**, and it means depth is the wrong thing to buy: going from
+one angle to four drops efficiency from 36 to 9.5 hits per hundred searches while adding two
+accounts.
+
 Every advantage was on the baseline's side: it was chosen best-fit first, and 2,025 research runs
 over 589 accounts is 3.4 visits each against the sample's one. It still lost by more than double.
 
@@ -642,10 +650,21 @@ page the earlier visits did not already take, so the accounts we return to most 
 the least left to find, while half the book has never been read once. We are spending the budget
 re-reading the same 589 companies.
 
-Projected over the 478 never-researched accounts that have a domain, at the measured 38%, that is
-roughly 182 more accounts carrying a fresh dated event, for about $13 of Exa. Against a book
-producing 0.77 drafts a day, that is the largest single lever measured anywhere in this document,
-and it needs no new code, only a change to how the dispatcher splits its budget.
+Covering all 478 never-researched accounts that have a domain, at one search each, costs **$3.35
+once** and should surface roughly 172 accounts carrying a fresh dated event. Against a book
+producing 0.77 drafts a day that is the largest single lever measured anywhere in this document,
+and it needed no new code, only the budget split.
+
+**Done 2026-08-18.** `policy.research.selection_mix` on Sudden was unset, so it sat at the code
+default of 55 / 30 / 15 across high_value, active_comms and exploration. It is now 25 / 15 / 60.
+At the current 48 searches a day that moves exploration from 7.2 searches to 28.8 and takes
+projected fresh-event accounts from 3.8 a day to 10.9, at identical spend of $10 a month. The
+untouched pool drains in about 17 days, after which the dispatcher's existing spill pass hands the
+leftover budget back to high_value on its own, so nothing needs unwinding later.
+
+The same change belongs in `DEFAULT_SELECTION_MIX` for every workspace, since nothing about it is
+specific to streaming, but that constant lives in `packages/tools/src/policy.ts`, which another
+session is holding. It is a one-line follow-up once that lands.
 
 The real ceiling sits underneath it and it is coverage, not news: 487 accounts have no domain at
 all and can never be researched. That is a quarter of the book outside the funnel entirely, and
