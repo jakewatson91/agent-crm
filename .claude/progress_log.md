@@ -3521,3 +3521,92 @@ decides how many companies the smaller budget reaches, but the keep-rate spread 
 9%, not decisive. And the real-billed-cost path in the daily digest still never fires:
 `report.ts` resolves `EXA_SERVICE_API_KEY`, the env holds `EXA_SERVICE_KEY`, re-confirmed
 today and still a one-line fix.
+
+---
+
+## 2026-08-19 — the reason to write becomes a fact you can click
+
+Jake, after the context was cleared: "go ahead and do whatever you're proposing." The
+proposal was `.claude/v1_plan.md`, written 21:38 the night before. Build order at the bottom,
+six steps. Steps 1 through 4 are shipped, plus the config split they depend on and the
+coverage lever another session added to the plan while this one was running.
+
+### What actually changed
+
+The system decided whether to write to a company by reading `signal_strength`, a rubric
+asking how actionable the latest signal is *for what we sell*. That is a fit question wearing
+a timing costume, and nothing in it asks whether anything happened. Wedotv cleared the bar at
+0.70 on seven FAST-channel launches the drafter then correctly refused to use, and having
+qualified with nothing left to open on, opened on the company description. A signed Stingray
+agreement with Titan OS for nine channels across Europe scored 0.4, "passive presence", and
+was never written to.
+
+Now: `facts.happened_at`, nullable, written by the enricher — the only stage that reads the
+page — which answers two things per fact, did this happen at a point in time and did the
+content say when. `resolveHappenedAt` owns the rest: a stated date wins, an undated event
+inherits the page's date, and an event nobody can date stays undated rather than becoming
+now(). That last line closes a bug class that had been fixed separately in three places and
+kept coming back somewhere else.
+
+An anchor is one fact that happened, is inside the freshness window, is not a subject the
+workspace never writes about, and has not already been the reason for a message to this
+account. No anchor, no draft. It is also handed to the drafter as THE opening line, so the
+reason we acted and what the message says cannot drift apart again.
+
+### The measurement that decided the shape
+
+Before pushing, on 2,133 scored Sudden accounts:
+
+| | accounts clearing the draft bars |
+|---|---|
+| before: fit + signal_strength + evidence | 68 |
+| signal_strength simply deleted | **1,782** |
+| now: fit + anchor + evidence | 67 |
+
+The middle row is why the swap is atomic rather than an extra condition — the plan warned
+about it and the number confirms it exactly. 38 newly reachable, 38 dropped out: roughly the
+same count, a different set, and every one of the 67 now has a dated page behind it.
+
+### The rest of it
+
+**The contact requirement follows the channel.** Email cannot send to nobody; on LinkedIn the
+person is inside LinkedIn for free. 35 of the 67 accounts that cleared every bar had nobody
+attached and were queueing nightly for a pull that returned empty. Sudden is on linkedin, so
+it resolved to false with no policy edit. `buildThresholds` takes the channel as a REQUIRED
+positional argument, because an optional key on an all-optional object is the shape that has
+silently dropped a field at the buildSystemPrompt call site twice.
+
+**Exploration 15% → 50% of the research budget.** Never-researched accounts return a fresh
+dated event 2.2x as often as the ones the dispatcher keeps re-reading (38% against 17.1%),
+because a revisit can only keep pages the earlier visits did not already take. Safe because
+self-limiting: the explore pool empties as the book gets covered and the existing spill hands
+the budget back. That property is what `check_selection_mix.ts` exists to pin.
+
+**~1,400 words out of the drafter prompt.** The trigger-mode section, the ranked ask menu,
+tone adjectives, the audience-matching refusal that alone refused ~40 of 56 drafts for want
+of a job title, and the fact-level half of STEP 0 (now a code step, which is the only version
+of that rule that has ever held). 29,814 → 24,009 chars. The plan said about a third; it is
+19%, and the difference is that STEP 2's anchor handling stayed.
+
+### Graded, not assumed
+
+8 anchored accounts, angle pinned so only the prompt varied: 6 drafted / 1 gated before,
+7 drafted / 0 gated after. The gate that became a draft is the win.
+
+One regression: MGM+ closed on "a Deep Water one-pager", a banned CTA, because the offer
+ending invited naming a deliverable while the ban list hands over that exact phrase. Fixed to
+say what you offer is an ANSWER, never a document. **Not verified** — DeepSeek hit a 402 on
+the re-run.
+
+### Left open
+
+DeepSeek is out of credit and the pipeline status still reads `ok`, because the wall was hit
+from a script rather than the runner, so nothing latched a pause. Steps 5 (touches table,
+sequences, the reply click) and 6 (setup) of the build order are not started. Search
+targeting — 40% of discarded pages being about a different company — is untouched on purpose:
+the plan says it needs its own measurement pass before a fix, because "the query is too
+generic" and "the domain resolver handed us the wrong company" are different bugs.
+
+`out_of_scope` was deliberately NOT renamed to `cannot_serve`. It already does exactly the
+account-veto job; renaming churns the scorer, wizard, UI and live policy for no behaviour
+change.
