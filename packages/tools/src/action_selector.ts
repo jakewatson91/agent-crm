@@ -52,6 +52,24 @@ export interface ActionThresholds {
   ENRICH_CONTACTS_ACCOUNT_ICP: number;
   DRAFT_MIN_CONTACT_SCORE: number;
   ENRICH_CONTACTS_COOLDOWN_DAYS: number;
+  /**
+   * Must we know a named person before drafting?
+   *
+   * This is not a preference, it follows from the channel. On email you cannot
+   * send without an address, so it is mandatory. On LinkedIn you find the person
+   * inside LinkedIn, whose search is better than any contact provider and free,
+   * so buying contact data for a LinkedIn workspace pays for something the
+   * founder does by hand thirty seconds later.
+   *
+   * It matters more than it sounds: 35 of the 67 accounts that cleared every bar
+   * on Sudden had nobody attached. They queued for a contact pull every night,
+   * the provider came back empty, and they sat there. One live pass: 400
+   * scanned, 12 pulls attempted, 0 contacts created, 0 drafts.
+   *
+   * Defaults from outreach_channel; `policy.routing.require_contact` overrides
+   * for anyone whose setup differs.
+   */
+  REQUIRE_CONTACT: boolean;
 }
 
 export const DEFAULT_THRESHOLDS: ActionThresholds = {
@@ -72,13 +90,16 @@ export const DEFAULT_THRESHOLDS: ActionThresholds = {
   ENRICH_CONTACTS_ACCOUNT_ICP: 0.6,
   DRAFT_MIN_CONTACT_SCORE: 0.5,
   ENRICH_CONTACTS_COOLDOWN_DAYS: 3,
+  // Email is the default channel, and email cannot send to nobody.
+  REQUIRE_CONTACT: true,
 };
 
 /**
  * Merge workspace routing policy onto defaults. Each field falls back to the
  * default when unset, so a policy with only one tuned field still works.
  */
-export function buildThresholds(policy?: {
+export function buildThresholds(policy: {
+  require_contact?: boolean;
   draft_icp_total?: number;
   draft_signal_strength?: number;
   draft_evidence_depth?: number;
@@ -92,7 +113,24 @@ export function buildThresholds(policy?: {
   enrich_contacts_account_icp?: number;
   draft_min_contact_score?: number;
   enrich_contacts_cooldown_days?: number;
-}): ActionThresholds {
+} | undefined,
+  /**
+   * The channel this workspace sends on (policy.drafter.outreach_channel).
+   *
+   * Not a routing threshold, but it DERIVES one — whether a named recipient is
+   * required before drafting — so it belongs here rather than being decided
+   * separately by each caller.
+   *
+   * Deliberately a REQUIRED positional argument, even though its value may be
+   * undefined. Folding it into the options object above would have made it one
+   * more optional key on an all-optional shape, which is the arrangement that
+   * has silently dropped a field at the buildSystemPrompt call site twice: it
+   * type-checks clean and shows up weeks later as behaviour quietly missing.
+   * Required means the compiler names every call site that has not thought
+   * about it.
+   */
+  outreach_channel: 'email' | 'linkedin' | undefined,
+): ActionThresholds {
   return {
     DRAFT_ICP_TOTAL: policy?.draft_icp_total ?? DEFAULT_THRESHOLDS.DRAFT_ICP_TOTAL,
     DRAFT_SIGNAL_STRENGTH: policy?.draft_signal_strength ?? DEFAULT_THRESHOLDS.DRAFT_SIGNAL_STRENGTH,
@@ -107,6 +145,9 @@ export function buildThresholds(policy?: {
     ENRICH_CONTACTS_ACCOUNT_ICP: policy?.enrich_contacts_account_icp ?? DEFAULT_THRESHOLDS.ENRICH_CONTACTS_ACCOUNT_ICP,
     DRAFT_MIN_CONTACT_SCORE: policy?.draft_min_contact_score ?? DEFAULT_THRESHOLDS.DRAFT_MIN_CONTACT_SCORE,
     ENRICH_CONTACTS_COOLDOWN_DAYS: policy?.enrich_contacts_cooldown_days ?? DEFAULT_THRESHOLDS.ENRICH_CONTACTS_COOLDOWN_DAYS,
+    // Explicit setting wins; otherwise the channel decides. LinkedIn sends are
+    // copy-paste into LinkedIn, where the person is already in front of you.
+    REQUIRE_CONTACT: policy?.require_contact ?? (outreach_channel === 'linkedin' ? false : DEFAULT_THRESHOLDS.REQUIRE_CONTACT),
   };
 }
 
@@ -227,6 +268,7 @@ export function selectAction(args: SelectArgs): ActionDecision {
   // to accounts we had no reason to write to at all.
   const couldDraftWithAContact = reasonToWrite;
   if (
+    THRESH.REQUIRE_CONTACT &&
     everResearched &&
     couldDraftWithAContact &&
     noReachableContact &&
@@ -258,8 +300,8 @@ export function selectAction(args: SelectArgs): ActionDecision {
     reasonToWrite &&
     b.evidence_depth >= THRESH.DRAFT_EVIDENCE_DEPTH &&
     draftAge >= THRESH.DRAFT_SUPPRESSION_DAYS &&
-    args.best_contact_score !== undefined &&
-    args.best_contact_score >= THRESH.DRAFT_MIN_CONTACT_SCORE
+    (!THRESH.REQUIRE_CONTACT ||
+      (args.best_contact_score !== undefined && args.best_contact_score >= THRESH.DRAFT_MIN_CONTACT_SCORE))
   ) {
     return {
       action: 'draft_outreach',
@@ -326,10 +368,12 @@ export function selectAction(args: SelectArgs): ActionDecision {
     if (b.evidence_depth < THRESH.DRAFT_EVIDENCE_DEPTH) {
       blockers.push(`evidence_depth ${b.evidence_depth.toFixed(2)} is below ${THRESH.DRAFT_EVIDENCE_DEPTH}`);
     }
-    if (args.best_contact_score === undefined) {
-      blockers.push('no scored contact to send to');
-    } else if (args.best_contact_score < THRESH.DRAFT_MIN_CONTACT_SCORE) {
-      blockers.push(`best contact score ${args.best_contact_score.toFixed(2)} is below ${THRESH.DRAFT_MIN_CONTACT_SCORE}`);
+    if (THRESH.REQUIRE_CONTACT) {
+      if (args.best_contact_score === undefined) {
+        blockers.push('no scored contact to send to');
+      } else if (args.best_contact_score < THRESH.DRAFT_MIN_CONTACT_SCORE) {
+        blockers.push(`best contact score ${args.best_contact_score.toFixed(2)} is below ${THRESH.DRAFT_MIN_CONTACT_SCORE}`);
+      }
     }
     if (draftAge < THRESH.DRAFT_SUPPRESSION_DAYS) {
       blockers.push(`last draft was ${draftAge.toFixed(1)}d ago (suppression window ${THRESH.DRAFT_SUPPRESSION_DAYS}d)`);

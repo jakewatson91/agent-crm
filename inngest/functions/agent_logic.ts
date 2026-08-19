@@ -494,7 +494,7 @@ export async function runAgent(
     // Two-tier gate input: best contact_score over this account's contacts.
     // Undefined when no scored contacts → selectAction stays account-only.
     const bestContactScore = await loadBestContactScore(supabase, payload.workspace_id, ent.data.id);
-    const thresholds = buildThresholds(policy.routing);
+    const thresholds = buildThresholds(policy.routing, policy.drafter?.outreach_channel);
 
     const decision = selectAction({
       workspace_id: payload.workspace_id,

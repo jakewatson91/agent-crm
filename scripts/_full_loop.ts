@@ -19,7 +19,7 @@ async function main() {
   const ws = ((await sb.from('workspaces').select('id')).data ?? []).find((w) => (w.id as string).startsWith('af602fa1'))!.id as string;
   const actor = { workspace_id: ws, actor_kind: 'agent' as const, actor_id: 'source:exa:loop' };
   const policy = await getPolicy(sb, ws);
-  const thresholds = buildThresholds(policy.routing);
+  const thresholds = buildThresholds(policy.routing, policy.drafter?.outreach_channel);
   const themes = policy.drafter?.value_themes ?? [];
   const ents: any[] = [];
   for (let from = 0; ; from += 1000) { const rows = ((await sb.from('entities').select('id, name, attributes').eq('workspace_id', ws).range(from, from + 999)).data ?? []) as any[]; ents.push(...rows); if (rows.length < 1000) break; }

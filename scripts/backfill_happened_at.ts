@@ -63,7 +63,7 @@ async function fetchAllRows<T>(q: (from: number, to: number) => PromiseLike<{ da
 async function main() {
   const supabase = createServerClient();
   const policy = await getPolicy(supabase, WS);
-  const T = buildThresholds(policy.routing);
+  const T = buildThresholds(policy.routing, policy.drafter?.outreach_channel);
   const sinceISO = new Date(Date.now() - DAYS * 86400_000).toISOString();
 
   // ---- 1. Accounts worth spending on ----

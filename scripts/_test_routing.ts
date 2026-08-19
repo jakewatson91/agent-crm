@@ -15,7 +15,7 @@ async function main() {
   const st = new Map<string, number>(); for (const f of await paged('score_total')) if (acct.has(f.subject_entity)) st.set(f.subject_entity, parseFloat(f.object_text));
   const ents = new Map<string, string>();
   for (let from = 0; ; from += 1000) { const rows = ((await sb.from('entities').select('id, name').eq('workspace_id', wsId).range(from, from + 999)).data ?? []) as any[]; for (const e of rows) ents.set(e.id, e.name); if (rows.length < 1000) break; }
-  const thresholds = buildThresholds((ws.policy as any)?.routing);
+  const thresholds = buildThresholds((ws.policy as any)?.routing, (ws.policy as any)?.drafter?.outreach_channel);
 
   // top scored accounts
   const top = [...st.entries()].sort((a, b) => b[1] - a[1]).slice(0, 14);

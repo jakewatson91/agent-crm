@@ -303,7 +303,7 @@ export async function advanceAccounts(
   if (contactsPaused || pausedScope === 'research') out.paused = status ?? undefined;
 
   const policy = await getPolicy(supabase, workspace_id);
-  const T = buildThresholds(policy.routing);
+  const T = buildThresholds(policy.routing, policy.drafter?.outreach_channel);
 
   // The active drafter subscription — its owner_id is the "agent" runAgent needs,
   // and its id is what pins behavior='drafter'. No drafter configured → we can
@@ -407,6 +407,11 @@ export async function advanceAccounts(
     out.scanned++;
     const name = nameById.get(s.entity_id) ?? s.entity_id.slice(0, 8);
     if (!clearsGates(s)) { tally('below_draft_gates', name); continue; }
+    // On a channel that does not need an address, a missing recipient is not a
+    // reason to withhold a draft — see REQUIRE_CONTACT. Half the accounts that
+    // clear every bar on this book have nobody attached, and they were queueing
+    // for a contact pull every night against a provider that came back empty.
+    if (!T.REQUIRE_CONTACT) { await draftAccount(s, name); continue; }
     const best = await loadBestContactScore(supabase, workspace_id, s.entity_id);
     if (drafterSub && best !== undefined && best >= T.DRAFT_MIN_CONTACT_SCORE) {
       await draftAccount(s, name);

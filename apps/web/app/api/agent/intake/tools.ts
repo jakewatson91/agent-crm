@@ -770,7 +770,7 @@ const proposeActionTool: ToolHandler = {
       recent_contacts_request_at: channelCtx.recent_contacts_request_at,
       dropped_until: channelCtx.dropped_until,
       cooldown_until: channelCtx.cooldown_until,
-      thresholds: buildThresholds(policy.routing),
+      thresholds: buildThresholds(policy.routing, policy.drafter?.outreach_channel),
     });
 
     return {

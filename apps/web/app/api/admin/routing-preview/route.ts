@@ -43,7 +43,7 @@ export async function POST(req: Request) {
   const limit = Math.min(Math.max(body.limit ?? 30, 1), 100);
 
   const policy = await getPolicy(supabase, body.workspace_id);
-  const thresholds: ActionThresholds = buildThresholds(body.routing ?? policy.routing);
+  const thresholds: ActionThresholds = buildThresholds(body.routing ?? policy.routing, policy.drafter?.outreach_channel);
   const weights: ScoreWeights = buildScoreWeights(body.scoring?.weights ?? policy.scoring?.weights);
 
   // Pick top-N entities by current icp_fit (cheap proxy for "what the user

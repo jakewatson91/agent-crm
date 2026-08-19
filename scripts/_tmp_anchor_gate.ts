@@ -18,7 +18,7 @@ async function all<T>(q: (f: number, t: number) => any): Promise<T[]> {
 async function main() {
   const sb = createServerClient();
   const policy = await getPolicy(sb, WS);
-  const T = buildThresholds(policy.routing);
+  const T = buildThresholds(policy.routing, policy.drafter?.outreach_channel);
   const fresh = policy.drafter?.trigger_fresh_days ?? DEFAULT_ANCHOR_FRESH_DAYS;
   console.log(`freshness window: ${fresh}d  (policy.drafter.trigger_fresh_days = ${policy.drafter?.trigger_fresh_days ?? 'unset'})`);
   
