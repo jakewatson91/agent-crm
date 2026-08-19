@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, pickAnchorCandidates, cannotWriteAbout, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, pickAnchorCandidates, cannotWriteAbout, type StepPurpose, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -870,8 +870,16 @@ export async function runAgent(
     paragraph_count: policy.drafter?.paragraph_count,
     pain_points: policy.drafter?.pain_points,
     value_props: policy.drafter?.value_props,
-    tone_keywords: policy.drafter?.tone_keywords,
-    ask_examples: policy.drafter?.ask_examples,
+    // Every message is a first touch until sequences exist, and a first touch
+    // ends on the question. The LinkedIn DM shape overrides this below, because
+    // a 400-character DM after an accepted connection is already a second touch.
+    purpose: 'open',
+    // tone_keywords and ask_examples are deliberately NOT passed any more.
+    // Adjectives do not produce a voice, and the ranked ask menu was the reason
+    // the closing line came out identical across accounts — 17 of 27 live drafts
+    // closed on one of its own two example sentences. The ending now comes from
+    // which step of the sequence the message is. Both fields stay on the policy
+    // type so no stored workspace config is destroyed by this.
     // forbidden_phrases in the PROMPT (post-LLM sanitize is separate, via banned_phrases).
     forbidden_phrases: policy.outreach?.banned_phrases ?? [],
     forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
@@ -1489,8 +1497,8 @@ interface DrafterPromptFields {
   paragraph_count?: number;
   pain_points?: string[];
   value_props?: string[];
-  tone_keywords?: string[];
-  ask_examples?: string[];
+  /** Which step of the sequence this is; decides the ending. Default 'open'. */
+  purpose?: StepPurpose;
   forbidden_phrases?: string[];
   forbidden_field_terms?: string[];
   market_brief?: { enabled?: boolean; items?: Array<{ text: string; url?: string; date?: string }> };

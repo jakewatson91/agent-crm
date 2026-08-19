@@ -13,7 +13,7 @@ import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
-import { chatCompleteForWorkspace, fetchAll, scoreFacts, pickDraftAngle, resolveMaxOutputTokens, type AngleDecision } from '@agent-crm/tools';
+import { chatCompleteForWorkspace, fetchAll, scoreFacts, pickDraftAngle, resolveMaxOutputTokens, pickAnchorCandidates, cannotWriteAbout, type AngleDecision } from '@agent-crm/tools';
 import { buildSystemPrompt, buildUserPrompt, refusalAuditFlags } from '../inngest/functions/agent_logic.js';
 
 const WS = 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
@@ -83,6 +83,7 @@ async function main() {
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
     out_of_scope: policy.drafter?.out_of_scope,
+    cannot_write_about: policy.drafter?.cannot_write_about,
   });
   log(`system prompt: ${buildSystem(null).length} chars before any angle is picked\n`);
 
@@ -135,7 +136,7 @@ async function main() {
     log(`${ranked.length} accounts selected from ${scoreRows.length} score facts\n`);
   }
 
-  let drafted = 0, gated = 0, totalOut = 0;
+  let drafted = 0, gated = 0, totalOut = 0, noAnchor = 0;
   const bodies: Array<{ name: string; body: string }> = [];
   // Diagnostic, NOT a score. Sudden's product does one thing for one situation,
   // so most accounts landing on the same problem is the menu being honest, not
@@ -152,7 +153,7 @@ async function main() {
 
     const { data: allFacts } = await sb
       .from('facts')
-      .select('id, predicate, object_text, confidence, observed_at, signal_id, supersedes')
+      .select('id, predicate, object_text, confidence, observed_at, happened_at, signal_id, supersedes')
       .eq('workspace_id', WS)
       .eq('subject_entity', acct.id);
     const factRows = (allFacts ?? []) as any[];
@@ -225,7 +226,7 @@ async function main() {
         facts: activeFacts.map((f: any) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text })),
         pain_points: policy.drafter?.pain_points ?? [],
         templates: policy.drafter?.templates ?? [],
-        out_of_scope: policy.drafter?.out_of_scope ?? [],
+        out_of_scope: cannotWriteAbout(policy.drafter),
       });
       angleCache.set(acct.id, decision);
       if (ANGLE_CACHE) writeFileSync(ANGLE_CACHE, JSON.stringify([...angleCache], null, 2));
@@ -251,8 +252,28 @@ async function main() {
       ? (recommended as any[]).filter((r) => !outOfScopeIds.includes(r.id))
       : recommended;
 
+    // The anchor: the dated event this message is about, picked in code before
+    // the model sees anything. A harness that skipped it would grade a prompt
+    // production never builds — and since no anchor now means no draft at all,
+    // it would also grade accounts the live pass would never have reached.
+    const anchorPick = pickAnchorCandidates({
+      facts: activeFacts.map((f: any) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text, happened_at: f.happened_at ?? null })),
+      freshDays: policy.drafter?.trigger_fresh_days,
+    });
+    const writable = anchorPick.candidates.filter((c) => !outOfScopeIds.includes(c.id));
+    const leadAnchor = writable[0];
+    if (!leadAnchor) {
+      const why = anchorPick.candidates.length
+        ? `every one of its ${anchorPick.candidates.length} fresh event(s) is a subject we never write about`
+        : `nothing dated has happened (${JSON.stringify(anchorPick.rejected)})`;
+      log(`   NO ANCHOR — live would not draft: ${why}\n`);
+      noAnchor++;
+      continue;
+    }
+    log(`   anchor: ${leadAnchor.predicate}=${String(leadAnchor.object_text ?? '').slice(0, 70)} (${String(leadAnchor.happened_at).slice(0, 10)})`);
+
     const user = buildUserPrompt('claims_outbound_drafter', 'dry-run', 'dry-run grading pass',
-      sig ?? {}, { id: acct.id, name: acct.name, attributes: acct.attributes }, activeFacts, [], contacts, shortlist as any, true, outOfScopeIds);
+      sig ?? {}, { id: acct.id, name: acct.name, attributes: acct.attributes }, activeFacts, [], contacts, shortlist as any, true, outOfScopeIds, leadAnchor);
 
     // Same model, ceiling and response_format the live drafter uses. The ceiling
     // is RESOLVED, not typed in: it was hardcoded 3000 here while bf234ba moved
@@ -367,7 +388,7 @@ async function main() {
   // the last batch had (ten messages, one message with the nouns swapped).
   // v4-pro output rate, off-peak, from DEFAULT_PRICING. Peak UTC hours bill 2x.
   const perDraft = drafted + gated ? totalOut / (drafted + gated) : 0;
-  log(`\n=== ${drafted} drafted, ${gated} gated | ${totalOut} output tokens, ${perDraft.toFixed(0)} avg/account, $${((totalOut / 1e6) * 1.98).toFixed(3)} ===`);
+  log(`\n=== ${drafted} drafted, ${gated} gated, ${noAnchor} no anchor | ${totalOut} output tokens, ${perDraft.toFixed(0)} avg/account, $${((totalOut / 1e6) * 1.98).toFixed(3)} ===`);
   if (angleCounts.size) {
     log('problems chosen (diagnostic, not a score — see the note at angleCounts):');
     for (const [problem, n] of [...angleCounts].sort((a, b) => b[1] - a[1])) log(`  ${n}×  ${problem.slice(0, 100)}`);

@@ -43,7 +43,7 @@ export { compress, estimateTokens, type CompressOptions, type CompressResult, ty
 export { chatCompleteForWorkspace, chatCompleteStreamForWorkspace, resolveDeepseekKey, resolveChatModel, type ChatForWorkspaceArgs } from './chat_workspace.ts';
 export { classifyRole, passesHiringFilter, ROLE_FAMILIES, ROLE_SENIORITIES, type RoleFamily, type RoleSeniority, type RoleClassification, type HiringFilter } from './classify_role.ts';
 export { suggestColumnMapping, type SuggestedMapping, type SuggestedFact } from './suggest_mapping.ts';
-export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts } from './prompt_builders.ts';
+export { buildDrafterDecision, renderAttributesProse, type DrafterDecisionOpts, type StepPurpose } from './prompt_builders.ts';
 export { pickDraftAngle, type AngleChoice, type AngleDecision, type AngleSkipReason, type AngleTemplate, type PickDraftAngleArgs } from './pick_angle.ts';
 export { pickAnchorCandidates, cannotWriteAbout, DEFAULT_ANCHOR_FRESH_DAYS, type AnchorCandidate, type AnchorPick } from './anchor.ts';
 export { diffDraftBody, type ParagraphDiff } from './diff_draft.ts';

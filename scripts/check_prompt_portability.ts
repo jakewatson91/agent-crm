@@ -62,9 +62,15 @@ console.log('\nThe craft reaches every channel, not just the templated DM:');
 const REQUIRED: Array<[string, string]> = [
   ...['STEP 1', 'STEP 2', 'STEP 3', 'STEP 4', 'STEP 5', 'STEP 6', 'STEP 7', 'STEP 8', 'STEP 9']
     .map((s) => [s, s] as [string, string]),
-  ['age rule', 'AGE KILLS EVENTS, NOT STATE'],
-  ['undated fact cannot be a trigger', 'An undated fact can NEVER be the trigger'],
-  ['a theme may be entirely undated', 'A THEME MAY REST ENTIRELY ON UNDATED FACTS'],
+  // The mode section these used to guard is gone. STEP 1 no longer teaches the
+  // model to tell a published date from a recorded one, to test whether a theme
+  // converges, or to judge when an event is too old, because it no longer picks
+  // the anchor: the anchor arrives dated, inside the window and already checked.
+  // What has to survive on every channel is that the model uses the one it was
+  // given rather than shopping for a better fact.
+  ['the anchor is given, not chosen', 'THE EVENT IS ALREADY CHOSEN'],
+  ['and it must not be swapped', 'Do not quietly open on something else'],
+  ['other facts are context, never the opening', 'Never as the opening.'],
   ['think question', 'WRITE THE THINK QUESTION'],
   ['never ask for time', 'NEVER ASK FOR TIME'],
   ['no internal field names', 'NEVER NAME INTERNAL DATA OR FIELD NAMES'],
@@ -76,11 +82,16 @@ for (const { name, opts } of CHANNELS) {
   ok(`${name}`, missing.length === 0, `missing: ${missing.join(', ')}`);
 }
 
-console.log('\nSTEP 9 does not contradict STEP 1 on whether a theme needs dated facts:');
+console.log('\nSTEP 9 checks the anchor was used, and no longer asks about modes:');
 for (const { name, opts } of CHANNELS) {
   const prompt = buildDrafterDecision(opts);
-  ok(`${name} — checklist allows an undated theme`,
-    prompt.includes('A trigger needs a date. A theme does not.') && !prompt.includes('two or more dated facts'));
+  ok(`${name} — checklist asks whether the anchor was used`,
+    prompt.includes('Does the message open on the anchor you were given'));
+  // The mode test contradicting itself across STEP 1 and STEP 9 was a real bug
+  // once. It cannot come back by accident, but a half-finished revert would
+  // leave one of the two behind, and that reads as the model's fault.
+  ok(`${name} — no leftover mode vocabulary`,
+    !prompt.includes('MODE A') && !prompt.includes('MODE B') && !prompt.includes('theme-led'));
 }
 
 console.log('\nThe out-of-scope refusal renders on every channel, and only when configured:');
