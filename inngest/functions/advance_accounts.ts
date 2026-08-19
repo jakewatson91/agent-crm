@@ -6,8 +6,9 @@
  * once and then went quiet never advances — it never requests contacts, never
  * drafts. That is the "we score 94 good accounts and produce nothing" gap.
  *
- * This pass is ACCOUNT-triggered. Every run it walks accounts by current score,
- * best first, and for each one:
+ * This pass is ACCOUNT-triggered. Every run it walks accounts in the order set by
+ * compareWalkOrder — the ones that clear the draft bars first, then the ones with
+ * a live reason to write, then by fit — and for each one:
  *   1. If it's a strong fit with no reachable contact, pull decision-makers now
  *      (synchronous — no Inngest), through the workspace's configured provider,
  *      and score them.
@@ -116,7 +117,64 @@ function providerFromError(msg: string): string | undefined {
   return undefined;
 }
 
-interface Scored { entity_id: string; tot: number; sig: number; ev: number }
+export interface Scored { entity_id: string; tot: number; sig: number; ev: number }
+
+/**
+ * The order the walk visits accounts in.
+ *
+ * This pass exists to find accounts that clear all three draft bars, and it does
+ * nothing at all for an account that misses them — it tallies `below_draft_gates`
+ * and moves on. So the order has to put the accounts that can clear the bars
+ * first, and the cap has to be reached only after them.
+ *
+ * It used to sort on `tot` alone, which is the wrong number for that job on two
+ * counts. Measured on the Sudden book (2,191 scored accounts):
+ *
+ *   1. `tot` barely moves with the bar that actually decides. 67 accounts cleared
+ *      all three bars; sorting by `tot` and cutting at 400 reached 51 of them and
+ *      never looked at the other 16. Ordering by the bars reaches 67 of 67.
+ *   2. `tot` is not even an ordering over most of the book. 1,060 of those 2,191
+ *      accounts hold the identical score of 0.84, because they are CSV rows that
+ *      carry the same five columns and have never been researched, so every
+ *      dimension behind the score reads the same for all of them. Sorting on a
+ *      1,060-way tie leaves the order to whatever the query returned, and since
+ *      that is stable, the same accounts won the tie every single day.
+ *
+ * `sig` is the scarce, time-bound input: it is the one dimension that says
+ * something is happening at this company right now, and only 68 of 2,191 accounts
+ * had it above the bar. Leading with it costs nothing — everything below still
+ * falls back to `tot`, so no account loses its place to anything but a stronger
+ * reason to write.
+ *
+ * The dispatcher already ranks this way (`signal_strength >= 0.7` is an
+ * independent override into its hot tier). This brings the walk in line with it.
+ *
+ * NaN-safe on purpose: `loadCurrentScores` only requires `tot` to parse, so an
+ * account with no `score_signal_strength` row yet carries `sig = NaN`. NaN in a
+ * comparator makes the whole sort undefined, and it must rank last rather than
+ * anywhere, so it is read as 0 here — the same fail-closed reading `clearsGates`
+ * gives it.
+ */
+export function compareWalkOrder(
+  a: Scored,
+  b: Scored,
+  clearsGates: (s: Scored) => boolean,
+  minSignal: number,
+): number {
+  const num = (x: number) => (Number.isFinite(x) ? x : 0);
+  // 1. Can draft right now, given a contact. Phase 1 acts on exactly these.
+  const ga = clearsGates(a) ? 1 : 0, gb = clearsGates(b) ? 1 : 0;
+  if (ga !== gb) return gb - ga;
+  // 2. Has a real reason to write, even if another bar is short.
+  const sa = num(a.sig) >= minSignal ? 1 : 0, sb = num(b.sig) >= minSignal ? 1 : 0;
+  if (sa !== sb) return sb - sa;
+  // 3. Strength of that reason, then fit.
+  if (Math.abs(num(b.sig) - num(a.sig)) > 1e-9) return num(b.sig) - num(a.sig);
+  if (Math.abs(num(b.tot) - num(a.tot)) > 1e-9) return num(b.tot) - num(a.tot);
+  // 4. A stable, arbitrary-but-fixed last resort so the sort is deterministic
+  //    rather than dependent on the order rows came back in.
+  return a.entity_id < b.entity_id ? -1 : a.entity_id > b.entity_id ? 1 : 0;
+}
 
 /** Current (not-superseded) score facts per account. The current row is the one
  *  no other row points at via `supersedes`. Paged so a big workspace doesn't cap. */
@@ -209,9 +267,17 @@ export async function advanceAccounts(
     .limit(1)
     .maybeSingle()).data as { id: string; owner_id: string } | null;
 
+  const clearsGates = (s: Scored) =>
+    s.tot >= T.DRAFT_ICP_TOTAL && s.sig >= T.DRAFT_SIGNAL_STRENGTH && s.ev >= T.DRAFT_EVIDENCE_DEPTH;
+
+  // The `tot` floor stays: an account below it can clear neither the draft bar
+  // (0.65) nor the contact-pull bar (0.6), so nothing here could act on it.
+  // The ORDER, though, leads with the bars this pass decides on — see
+  // compareWalkOrder for why `tot` alone reached only 51 of 67 draftable
+  // accounts on the live book.
   const scores = (await loadCurrentScores(supabase, workspace_id))
     .filter((s) => s.tot >= T.ENRICH_CONTACTS_ACCOUNT_ICP)   // only invest in real fits
-    .sort((a, b) => b.tot - a.tot)
+    .sort((a, b) => compareWalkOrder(a, b, clearsGates, T.DRAFT_SIGNAL_STRENGTH))
     .slice(0, maxAccounts);
 
   // Names, for readable progress logging. Chunked so a big id list can't
@@ -237,9 +303,6 @@ export async function advanceAccounts(
     const ex = out.examples[k] ?? (out.examples[k] = []);
     if (ex.length < DECISION_EXAMPLES) ex.push(name);
   };
-  const clearsGates = (s: Scored) =>
-    s.tot >= T.DRAFT_ICP_TOTAL && s.sig >= T.DRAFT_SIGNAL_STRENGTH && s.ev >= T.DRAFT_EVIDENCE_DEPTH;
-
   // Set when the LLM itself hits a wall — every remaining step would fail the
   // same way, so the whole pass unwinds. A contact-provider wall never sets this;
   // it only ends phase 2 (see below).
