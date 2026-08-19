@@ -28,7 +28,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   pullContactsForAccount, loadBestContactScore, getPolicy, buildThresholds,
   latestMarkerByEntity, ACTIVITY_MARKERS,
-  getPipelineStatus, setPipelineStatus, type PipelineStatus,
+  getPipelineStatus, setPipelineStatus, DEFAULT_ANCHOR_FRESH_DAYS, type PipelineStatus,
 } from '@agent-crm/tools';
 import { createServerClient } from '@agent-crm/db';
 import { runAgent } from './agent_logic.ts';
@@ -117,7 +117,16 @@ function providerFromError(msg: string): string | undefined {
   return undefined;
 }
 
-export interface Scored { entity_id: string; tot: number; sig: number; ev: number }
+export interface Scored {
+  entity_id: string; tot: number; sig: number; ev: number;
+  /**
+   * Does this account hold a dated event inside the freshness window — a reason
+   * to write today. Filled by loadAnchoredAccounts; false when the walk has not
+   * been given the anchored set (nothing in the book qualifies, or an older
+   * caller), which then behaves as it always did.
+   */
+  anchor?: boolean;
+}
 
 /**
  * The order the walk visits accounts in.
@@ -140,14 +149,16 @@ export interface Scored { entity_id: string; tot: number; sig: number; ev: numbe
  *      1,060-way tie leaves the order to whatever the query returned, and since
  *      that is stable, the same accounts won the tie every single day.
  *
- * `sig` is the scarce, time-bound input: it is the one dimension that says
- * something is happening at this company right now, and only 68 of 2,191 accounts
- * had it above the bar. Leading with it costs nothing — everything below still
- * falls back to `tot`, so no account loses its place to anything but a stronger
- * reason to write.
+ * The scarce, time-bound input is the anchor: a dated event inside the freshness
+ * window. It is the one thing that says something is happening at this company
+ * right now, and it is rare — a few dozen accounts on a book of two thousand.
+ * Leading with it costs nothing, because everything below still falls back to
+ * `tot`, so no account loses its place to anything but a stronger reason to write.
  *
- * The dispatcher already ranks this way (`signal_strength >= 0.7` is an
- * independent override into its hot tier). This brings the walk in line with it.
+ * This used to lead with `signal_strength`, which reads as a timing signal and is
+ * not one: the rubric behind it asks how actionable the latest signal is for what
+ * we sell. Wedotv scored 0.70 on launches the drafter then refused to use, while
+ * a signed nine-channel European distribution agreement scored 0.4.
  *
  * NaN-safe on purpose: `loadCurrentScores` only requires `tot` to parse, so an
  * account with no `score_signal_strength` row yet carries `sig = NaN`. NaN in a
@@ -159,14 +170,13 @@ export function compareWalkOrder(
   a: Scored,
   b: Scored,
   clearsGates: (s: Scored) => boolean,
-  minSignal: number,
 ): number {
   const num = (x: number) => (Number.isFinite(x) ? x : 0);
   // 1. Can draft right now, given a contact. Phase 1 acts on exactly these.
   const ga = clearsGates(a) ? 1 : 0, gb = clearsGates(b) ? 1 : 0;
   if (ga !== gb) return gb - ga;
   // 2. Has a real reason to write, even if another bar is short.
-  const sa = num(a.sig) >= minSignal ? 1 : 0, sb = num(b.sig) >= minSignal ? 1 : 0;
+  const sa = a.anchor ? 1 : 0, sb = b.anchor ? 1 : 0;
   if (sa !== sb) return sb - sa;
   // 3. Strength of that reason, then fit.
   if (Math.abs(num(b.sig) - num(a.sig)) > 1e-9) return num(b.sig) - num(a.sig);
@@ -206,6 +216,47 @@ async function loadCurrentScores(supabase: SupabaseClient, workspace_id: string)
     byEnt.set(r.subject_entity, e);
   }
   return [...byEnt.values()].filter((e) => Number.isFinite(e.tot));
+}
+
+/**
+ * The accounts holding at least one dated event inside the freshness window.
+ *
+ * One query for the whole book. The per-account version of this test lives in
+ * agent_logic, which is authoritative — it also knows which anchors have already
+ * been spent on an earlier message. This one exists so the walk can ORDER by it
+ * and stop spending its 400-account budget on companies where nothing happened.
+ * A small disagreement between the two is fine and self-correcting: an account
+ * that reaches the drafter and turns out to have no unspent anchor is skipped
+ * there, at the cost of one cheap read.
+ */
+async function loadAnchoredAccounts(
+  supabase: SupabaseClient, workspace_id: string, freshDays: number,
+): Promise<Set<string>> {
+  const since = new Date(Date.now() - freshDays * 86400_000).toISOString();
+  const PAGE = 1000;
+  const rows: Array<{ subject_entity: string; id: string; supersedes: string | null }> = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('facts')
+      .select('subject_entity, id, supersedes')
+      .eq('workspace_id', workspace_id)
+      .not('happened_at', 'is', null)
+      .gte('happened_at', since)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    const page = (data ?? []) as typeof rows;
+    rows.push(...page);
+    if (page.length < PAGE) break;
+  }
+  // Stale means ANOTHER row points at it. Collected across every page first,
+  // then applied per row — deciding it a page at a time would drop an account
+  // whose superseding row happened to land on the next page, and deciding it per
+  // ACCOUNT would drop an account that still holds a second live anchor.
+  const pointedAt = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const out = new Set<string>();
+  for (const r of rows) if (!pointedAt.has(r.id)) out.add(r.subject_entity);
+  return out;
 }
 
 /** Pick a current substantive fact to use as the drafter's "what changed" trigger.
@@ -267,8 +318,17 @@ export async function advanceAccounts(
     .limit(1)
     .maybeSingle()).data as { id: string; owner_id: string } | null;
 
+  // Which accounts have a dated reason to write. This is the condition that
+  // replaced signal_strength; see compareWalkOrder and action_selector. Gating on
+  // the score instead was blocking 49 of the 79 accounts on this book that had a
+  // genuine recent event, including a signed nine-channel European distribution
+  // agreement scored 0.4 for "passive presence".
+  const anchored = await loadAnchoredAccounts(
+    supabase, workspace_id, policy.drafter?.trigger_fresh_days ?? DEFAULT_ANCHOR_FRESH_DAYS,
+  );
+
   const clearsGates = (s: Scored) =>
-    s.tot >= T.DRAFT_ICP_TOTAL && s.sig >= T.DRAFT_SIGNAL_STRENGTH && s.ev >= T.DRAFT_EVIDENCE_DEPTH;
+    s.tot >= T.DRAFT_ICP_TOTAL && !!s.anchor && s.ev >= T.DRAFT_EVIDENCE_DEPTH;
 
   // The `tot` floor stays: an account below it can clear neither the draft bar
   // (0.65) nor the contact-pull bar (0.6), so nothing here could act on it.
@@ -277,7 +337,8 @@ export async function advanceAccounts(
   // accounts on the live book.
   const scores = (await loadCurrentScores(supabase, workspace_id))
     .filter((s) => s.tot >= T.ENRICH_CONTACTS_ACCOUNT_ICP)   // only invest in real fits
-    .sort((a, b) => compareWalkOrder(a, b, clearsGates, T.DRAFT_SIGNAL_STRENGTH))
+    .map((s) => ({ ...s, anchor: anchored.has(s.entity_id) }))
+    .sort((a, b) => compareWalkOrder(a, b, clearsGates))
     .slice(0, maxAccounts);
 
   // Names, for readable progress logging. Chunked so a big id list can't

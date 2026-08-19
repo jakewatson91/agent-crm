@@ -595,7 +595,14 @@ Each of these is useful on its own and none of them breaks the one before it.
 1 through 4 make the drafts right. 5 makes it a sequence. 6 makes it something someone else can
 turn on without us.
 
-**Added after measuring, and it outranks 2 through 6 on volume.** Search targeting. 40% of every
+**Added after measuring, and it outranks 2 through 6 on volume: cover the book before re-reading
+it.** Never-researched accounts return a fresh dated event 2.2x as often as the accounts the
+dispatcher keeps picking (38% against 17.1%, measured on 100 random accounts for $2.80). The
+exploration bucket already exists in the dispatcher, so this is a change to how the budget splits
+rather than new machinery. Roughly 182 more anchored accounts are sitting in the untouched half of
+the book for about $13.
+
+**And then search targeting.** 40% of every
 page we throw away is thrown away because it is about a different company, and 227 runs a month
 resolve to a single search that returns nothing, several of them against a domain that is plainly
 wrong (a streaming prospect resolved to `nowexpresscourier.com`). Nothing in steps 1 through 6
@@ -620,10 +627,26 @@ Building it as one button and watching whether it gets pressed is the cheap way 
 outside our control. If it cannot, the setup ends on "we are working, come back in ten minutes"
 and loses most of its force. Worth prototyping before committing to the rest of the setup flow.
 
-**The event supply on a 2,000-company media book.** I no longer think supply is the binding
-constraint, and I had it as the main one an hour ago. 88 fresh dated events came from the 589
-companies we researched; 1,372 were never researched at all. Straight-lining that is 15% of
-whatever we look at, so the ceiling moves with how much of the book we cover and how often, not
-with how quiet the market is. What I am unsure of is how far the rate falls on the tail of the
-list, since research has always run best-fit first and the 589 are the good end of it. That is one
-cheap experiment: research 200 random never-touched accounts and compare the rate.
+**The event supply on a 2,000-company media book. Settled by measurement, and supply is not the
+constraint.** I had this as the main ceiling earlier today and it is wrong.
+
+Ran 100 random never-researched accounts, 4 angles each, $2.80 of Exa. 38% came back with a page
+dated inside 30 days. The 589 accounts the dispatcher picked over the last 30 days rate 17.1% on
+the identical measure. The tail is 2.2x better than the accounts we keep going back to.
+
+Every advantage was on the baseline's side: it was chosen best-fit first, and 2,025 research runs
+over 589 accounts is 3.4 visits each against the sample's one. It still lost by more than double.
+
+The cause is the 30-day cross-run dedup meeting the 96-hour hot cadence. A revisit can only keep a
+page the earlier visits did not already take, so the accounts we return to most are the ones with
+the least left to find, while half the book has never been read once. We are spending the budget
+re-reading the same 589 companies.
+
+Projected over the 478 never-researched accounts that have a domain, at the measured 38%, that is
+roughly 182 more accounts carrying a fresh dated event, for about $13 of Exa. Against a book
+producing 0.77 drafts a day, that is the largest single lever measured anywhere in this document,
+and it needs no new code, only a change to how the dispatcher splits its budget.
+
+The real ceiling sits underneath it and it is coverage, not news: 487 accounts have no domain at
+all and can never be researched. That is a quarter of the book outside the funnel entirely, and
+`domain_backfill_per_day` at 75/day is about 6.5 months of backfill to clear.

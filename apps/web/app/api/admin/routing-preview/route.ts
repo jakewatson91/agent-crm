@@ -12,7 +12,7 @@ import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import {
   selectAction, buildThresholds, buildScoreWeights, combineSubScores, breakdownFromFacts,
-  loadActionContext, loadBestContactScore, getPolicy, fetchAll,
+  loadActionContext, loadBestContactScore, getPolicy, fetchAll, pickAnchorCandidates,
   type ActionThresholds, type ScoreWeights,
 } from '@agent-crm/tools';
 
@@ -80,9 +80,9 @@ export async function POST(req: Request) {
   // sub-scores and preview as though they had none.
   const [entsRes, factRows] = await Promise.all([
     supabase.from('entities').select('id, name').in('id', entIds),
-    fetchAll<{ id: string; subject_entity: string; predicate: string; object_text: string | null; observed_at: string; supersedes: string | null }>((from, to) =>
+    fetchAll<{ id: string; subject_entity: string; predicate: string; object_text: string | null; observed_at: string; happened_at: string | null; supersedes: string | null }>((from, to) =>
       supabase.from('facts')
-        .select('id, subject_entity, predicate, object_text, observed_at, supersedes')
+        .select('id, subject_entity, predicate, object_text, observed_at, happened_at, supersedes')
         .in('subject_entity', entIds).order('id').range(from, to)),
   ]);
   const nameById = new Map(((entsRes.data ?? []) as Array<{ id: string; name: string }>).map((e) => [e.id, e.name]));
@@ -90,10 +90,24 @@ export async function POST(req: Request) {
   // Group facts per entity. Same current-fact walk as the ranking above.
   const pointedAt = new Set(factRows.map((f) => f.supersedes).filter(Boolean));
   const factsByEnt = new Map<string, Array<{ predicate: string; object_text: string | null; observed_at: string }>>();
-  for (const f of factRows.filter((r) => !pointedAt.has(r.id))) {
+  // Whether each account has a dated reason to write. The preview has to run the
+  // same test production runs, or it answers a question nobody asked: this is the
+  // condition that decides whether a draft happens, and it is no longer a
+  // threshold anyone can tune on this page.
+  const anchorByEnt = new Map<string, boolean>();
+  const liveFacts = factRows.filter((r) => !pointedAt.has(r.id));
+  for (const f of liveFacts) {
     const arr = factsByEnt.get(f.subject_entity) ?? [];
     arr.push({ predicate: f.predicate, object_text: f.object_text, observed_at: f.observed_at });
     factsByEnt.set(f.subject_entity, arr);
+  }
+  for (const [entId, _] of factsByEnt) {
+    const hits = pickAnchorCandidates({
+      facts: liveFacts.filter((f) => f.subject_entity === entId)
+        .map((f) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text, happened_at: f.happened_at })),
+      freshDays: policy.drafter?.trigger_fresh_days,
+    });
+    anchorByEnt.set(entId, hits.candidates.length > 0);
   }
 
   // Channel lookup batched once for every ranked entity instead of one query
@@ -142,6 +156,7 @@ export async function POST(req: Request) {
       dropped_until: channelCtx.dropped_until,
       cooldown_until: channelCtx.cooldown_until,
       thresholds,
+      has_anchor: anchorByEnt.get(r.id) ?? false,
     });
 
     const sample: PerEntity = {

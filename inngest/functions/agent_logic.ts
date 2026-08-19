@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, pickAnchorCandidates, cannotWriteAbout, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -122,10 +122,10 @@ export async function runAgent(
   // 2. Active facts.
   const allFacts = await supabase
     .from('facts')
-    .select('id, predicate, object_text, confidence, supersedes, created_at, observed_at, source_event_id, signal_id')
+    .select('id, predicate, object_text, confidence, supersedes, created_at, observed_at, happened_at, source_event_id, signal_id')
     .eq('subject_entity', ent.data.id);
   if (allFacts.error) return { ok: false, action: 'skip', reason: `facts query failed: ${allFacts.error.message}` };
-  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string; observed_at: string; source_event_id: number | null; signal_id: string | null; source_date?: string; recorded_date?: string }>;
+  const factRows = (allFacts.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; supersedes: string | null; created_at: string; observed_at: string; happened_at: string | null; source_event_id: number | null; signal_id: string | null; source_date?: string; recorded_date?: string }>;
   const supersededIds = new Set(factRows.map((f) => f.supersedes).filter((x): x is string => !!x));
   const activeFacts = factRows.filter((f) => !supersededIds.has(f.id));
 
@@ -400,6 +400,25 @@ export async function runAgent(
     }
   }
 
+  // Is there a dated reason to write to this company at all?
+  //
+  // This is the condition that decides WHETHER to draft, replacing
+  // signal_strength — a rubric that asks how actionable the latest signal is for
+  // what we sell, which is a fit question in a timing costume and never asks
+  // whether anything happened. It costs nothing: the facts are already loaded,
+  // and the only extra read is the ids this account has already been written to
+  // about.
+  //
+  // Whether the workspace is ALLOWED to write about the best candidate is
+  // settled further down, in the drafter path, where the scope call already
+  // runs. Splitting it that way keeps this test free and adds no LLM call.
+  const usedAnchorIds = behavior === 'drafter' ? await loadUsedAnchorIds(supabase, channel_id) : new Set<string>();
+  const anchor = pickAnchorCandidates({
+    facts: activeFacts.map((f) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text, happened_at: f.happened_at })),
+    usedFactIds: usedAnchorIds,
+    freshDays: policy.drafter?.trigger_fresh_days,
+  });
+
   if (behavior === 'drafter') {
     // Workspace policy: hard suppression-list match. Orthogonal to scoring, so
     // it still lives here, not in action_selector.
@@ -476,6 +495,7 @@ export async function runAgent(
     // Undefined when no scored contacts → selectAction stays account-only.
     const bestContactScore = await loadBestContactScore(supabase, payload.workspace_id, ent.data.id);
     const thresholds = buildThresholds(policy.routing);
+
     const decision = selectAction({
       workspace_id: payload.workspace_id,
       entity_id: ent.data.id,
@@ -488,6 +508,7 @@ export async function runAgent(
       dropped_until: ctx.dropped_until,
       cooldown_until: ctx.cooldown_until,
       thresholds,
+      has_anchor: anchor.candidates.length > 0,
     });
 
     if (decision.action !== 'draft_outreach') {
@@ -784,7 +805,10 @@ export async function runAgent(
       facts: activeFacts.map((f) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text })),
       pain_points: (policy.drafter?.pain_points ?? []) as string[],
       templates: (policy.drafter?.templates ?? []) as Array<{ id: string; angle?: string; enabled?: boolean }>,
-      out_of_scope: (policy.drafter?.out_of_scope ?? []) as string[],
+      // The FACT-level conditions, not the account-level ones. A company can be
+      // perfectly sellable and every fresh thing known about it unwritable; this
+      // call sorts facts, so it reads the field about facts.
+      out_of_scope: cannotWriteAbout(policy.drafter),
     });
   }
   const angle = angleDecision.choice;
@@ -796,6 +820,39 @@ export async function runAgent(
   // quiet catalogue fact that is the whole reason the account is in the book.
   const outOfScopeFacts = new Set(angleDecision.out_of_scope_fact_ids);
   if (outOfScopeFacts.size) recommended = recommended.filter((r) => !outOfScopeFacts.has(r.id));
+
+  // The anchor, now that we know which facts may be the subject of a message.
+  // Freshest writable event first; this becomes the opening line.
+  const writableAnchors = anchor.candidates.filter((c) => !outOfScopeFacts.has(c.id));
+  const leadAnchor = writableAnchors[0];
+
+  // Sellable account, nothing writable. This is its own outcome, and giving it
+  // one is the point of splitting the two settings.
+  //
+  // Wedotv cleared every bar on seven FAST-channel launches, the drafter ruled
+  // all seven out of scope (correctly — the workspace cannot serve the live
+  // side), and with nothing left to open on it opened on the company
+  // description: "you run a free ad-supported streaming service." Zee5 then
+  // produced the same refusal every night for five days, filed under
+  // "facts_insufficient_for_draft" when the honest reason was "everything fresh
+  // I have is a subject we never write about."
+  //
+  // The right answer is not a worse message and not a nightly refusal. It is to
+  // go and find something else about them, so this routes to research.
+  if (behavior === 'drafter' && anchor.candidates.length > 0 && !leadAnchor) {
+    await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+      `[no_writable_anchor] ${anchor.candidates.length} fresh event(s) here, and every one is a subject this workspace never writes about. Researching for something we can lead with instead.`,
+      anchor.candidates.map((c) => c.id));
+    await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_TRIGGERED, ent.data.id,
+      { reason: 'no_writable_anchor' }, payload.parent_event_id);
+    try {
+      await inngest.send({
+        name: 'research.requested',
+        data: { workspace_id: payload.workspace_id, entity_id: ent.data.id, entity_name: ent.data.name, reason: 'no_writable_anchor' },
+      });
+    } catch { /* the marker is written either way; the dispatcher picks it up next tick */ }
+    return { ok: true, action: 'skip', reason: 'no_writable_anchor', behavior };
+  }
 
   // Resolved once: the prompt is built from it, and the assert loop uses it to
   // force every predicate into a slot rather than trusting the model to.
@@ -827,7 +884,7 @@ export async function runAgent(
     trigger_fresh_days: policy.drafter?.trigger_fresh_days,
     out_of_scope: policy.drafter?.out_of_scope,
   });
-  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, recommended, behavior === 'drafter', angleDecision.out_of_scope_fact_ids);
+  const userPrompt = buildUserPrompt(payload.agent, subName, subSemantic, sigData, ent.data, activeFacts, pastOutcomesList, contacts, recommended, behavior === 'drafter', angleDecision.out_of_scope_fact_ids, leadAnchor);
 
   // DeepSeek-v4 spends output tokens on reasoning before emitting content, so a
   // fact-heavy account needs headroom or the JSON body comes back cut off. It is
@@ -1720,6 +1777,9 @@ export function buildUserPrompt(
   // described in a paragraph somewhere above it: STEP 0 has carried that
   // paragraph since 2026-08-13 and the model kept anchoring on the fact anyway.
   outOfScopeFactIds: string[] = [],
+  // The dated event this message is about, decided in code before the model saw
+  // anything. Undefined for non-drafters and for the fallback path.
+  leadAnchor?: { id: string; predicate: string; object_text: string | null; happened_at: string | null },
 ): string {
   // Strip embedding from signal (massive vector adds nothing for the LLM and burns tokens).
   const { embedding: _e, ...signalForPrompt } = signal ?? {};
@@ -1753,6 +1813,22 @@ export function buildUserPrompt(
     ? `\nRECOMMENDED FACTS (deterministic shortlist — prefer one of these as your lead unless the past_touch context demands otherwise):\n${recommended.map((r) => `  ${r.id} (score=${r.score.toFixed(2)}): ${r.why}`).join('\n')}\n`
     : '';
 
+  // The anchor is not a suggestion and not the top of a ranked list. It was
+  // picked in code, it is the reason this run happened at all, and handing it
+  // over as a decision already made is what stops the reason we wrote and what
+  // the message says from drifting apart. Every version of "here are forty facts,
+  // pick a good one" ended with a company description as the opening line,
+  // because a description is the densest possible match to a description of who
+  // we sell to — that is what cosine similarity does, and no amount of prompt
+  // wording beats it.
+  const anchorBlock = leadAnchor
+    ? `\nTHE EVENT THIS MESSAGE IS ABOUT — chosen before you saw the facts, because it is why we are writing today:
+  ${leadAnchor.predicate}: ${leadAnchor.object_text}${leadAnchor.happened_at ? `  (happened ${leadAnchor.happened_at.slice(0, 10)})` : ''}
+  fact id: ${leadAnchor.id}
+Open on this. Not on a fact that looks bigger, not on what the company is, not on a theme across several facts. This one. Cite it.
+If this event genuinely cannot reach any problem you solve in a single step, that is the one case for stopping — request_gate and say so. Do not quietly open on something else instead.\n`
+    : '';
+
   return `AGENT: ${agentId}
 FILTER RULE: "${subName}" — semantic intent: "${subSemantic}"
 
@@ -1766,7 +1842,7 @@ ${proseAttributes ? renderAttributesProse(entity.attributes) : JSON.stringify(en
 ACTIVE FACTS (already asserted — do not duplicate):
 ${activeFacts.length ? activeFacts.map((f) => `  ${f.id} | ${f.predicate}=${f.object_text} (conf=${f.confidence}${factDateLabel(f)})${outOfScope.has(f.id) ? '  [OUT OF SCOPE: this is about a part of them we cannot serve. Context only. It cannot be your anchor, your question or your numbers, however fresh or large it is.]' : ''}`).join('\n') : '  (none yet)'}
 When a new fact is the same kind of thing as one above, REUSE that fact's label (the part before "=") rather than inventing a new label for it. Only coin a new label when the fact is a genuinely new kind. (e.g. if a label already captures this fact, restate or refine it under that label instead of adding a near-synonym label for the same thing.)
-${pastOutcomesBlock}${contactsBlock}${recommendedBlock}
+${pastOutcomesBlock}${contactsBlock}${anchorBlock}${recommendedBlock}
 Decide.`;
 }
 
@@ -2022,6 +2098,31 @@ function icpBand(score: number): 'drop' | 'watch' | 'research' | 'draft-ready' {
   if (score < 0.5) return 'watch';
   if (score < 0.65) return 'research';
   return 'draft-ready';
+}
+
+/**
+ * Facts this account has already been written to about.
+ *
+ * An anchor is spent once it has been the reason for a message: re-opening on
+ * the same launch four days later is the most obvious way a sequence reads as
+ * automated. Reads every cite on the account's own drafts, which is the same
+ * source the over-use penalty in score_facts uses, so the two cannot disagree
+ * about what has been said to this company.
+ *
+ * Fail-open on purpose: a read error returns an empty set, so the worst case is
+ * re-using an anchor rather than an account that can never be written to again.
+ */
+async function loadUsedAnchorIds(supabase: SupabaseClient, channel_id: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    const { data } = await supabase
+      .from('channel_posts').select('cites')
+      .eq('channel_id', channel_id).eq('kind', 'touch_draft');
+    for (const p of (data ?? []) as Array<{ cites: string[] | null }>) {
+      for (const id of p.cites ?? []) out.add(id);
+    }
+  } catch { /* see above */ }
+  return out;
 }
 
 /**

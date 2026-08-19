@@ -249,6 +249,28 @@ export interface DrafterPolicy {
    * empty. Default: no conditions, nothing is vetoed.
    */
   out_of_scope?: string[];
+  /**
+   * Subjects that may never be what a message is ABOUT, even for an account we
+   * are happy to sell to. One plain sentence each, checkable against a fact.
+   *
+   * This is a different question from out_of_scope above and needs its own
+   * field, because a company can be sellable and everything currently known
+   * about it unwritable. Wedotv is the case: it has a catalogue we can serve, so
+   * the account passes, and every fresh fact about it is live-side news the
+   * workspace said never to build a message on. With only one field that state
+   * had nowhere to live, so the drafter fell back to the company description and
+   * opened by telling them they run a free ad-supported streaming service. Zee5
+   * produced the same refusal nightly for five days for the same reason.
+   *
+   * Used in two places, both fact-level: a fact matching one of these can never
+   * be the anchor, and the drafter is told the same at write time. The honest
+   * outcome when everything fresh matches is "no anchor, go research something
+   * else" — not a worse message.
+   *
+   * Starts empty. Falls back to out_of_scope when unset, so a workspace that
+   * configured conditions before the split keeps the behaviour it had.
+   */
+  cannot_write_about?: string[];
   /** Tone keywords baked into the prompt: ["casual", "direct", "concrete"]. */
   tone_keywords?: string[];
   /**

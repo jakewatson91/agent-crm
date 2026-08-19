@@ -131,12 +131,40 @@ interface SelectArgs {
   cooldown_until: string | null;      // outreach_cooldown_until fact value, or null
   /** Per-workspace thresholds. When omitted, DEFAULT_THRESHOLDS apply. */
   thresholds?: ActionThresholds;
+  /**
+   * Whether this account has a dated event fresh enough to be the reason we
+   * write — see anchor.ts. This replaces `signal_strength` as the condition that
+   * decides WHETHER to write; the score stays a dimension of icp_total and keeps
+   * deciding who goes first.
+   *
+   * undefined means the caller did not run the anchor test, and the old
+   * signal_strength condition applies instead. That is what keeps every caller
+   * that has not been updated behaving exactly as it did, rather than every
+   * account in the book suddenly qualifying: measured on Sudden, dropping
+   * signal_strength and leaving the other two bars takes the accounts that clear
+   * them from 67 to 1,782, so the anchor is not an addition to the old test, it
+   * is its replacement and has to arrive at the same time.
+   */
+  has_anchor?: boolean;
 }
 
 export function selectAction(args: SelectArgs): ActionDecision {
   const b = args.breakdown;
   const now = Date.now();
   const THRESH = args.thresholds ?? DEFAULT_THRESHOLDS;
+
+  // Is there a reason to write to this company at all?
+  //
+  // When the caller ran the anchor test, the answer is a dated fact we can point
+  // at, and `signal_strength` has nothing further to say about it. When it did
+  // not, we fall back to the score. See has_anchor above for why the swap has to
+  // be all-or-nothing rather than an extra condition.
+  const reasonToWrite = args.has_anchor === undefined
+    ? b.signal_strength >= THRESH.DRAFT_SIGNAL_STRENGTH
+    : args.has_anchor;
+  const noReasonText = args.has_anchor === undefined
+    ? `signal_strength ${b.signal_strength.toFixed(2)} is below ${THRESH.DRAFT_SIGNAL_STRENGTH}`
+    : 'nothing dated has happened here inside the freshness window';
 
   // 0. Hard suppression: agent previously dropped this entity, and the
   //    suppression window is still in effect.
@@ -189,11 +217,15 @@ export function selectAction(args: SelectArgs): ActionDecision {
   // switched on for the research-triggered marker).
   const everResearched = args.recent_research_at !== null;
   // And don't buy a contact for an account we could not draft to even if the
-  // contact were perfect. enrich_contacts exists to unblock drafting, so if the
-  // draft bar is already failing on signal_strength, the contact is premature and
-  // the credit is better spent on an account that would actually send. Not a
-  // deadlock: signal_strength rises through research, which is now reachable.
-  const couldDraftWithAContact = b.signal_strength >= THRESH.DRAFT_SIGNAL_STRENGTH;
+  // contact were perfect. enrich_contacts exists to unblock drafting, so if there
+  // is no reason to write yet, the contact is premature and the credit is better
+  // spent on an account that would actually send. Not a deadlock: research is what
+  // turns up the dated event, and research is reachable below.
+  //
+  // This is also the fix for buying contacts in the wrong order. 59 of the 79
+  // accounts with a fresh dated event had nobody to write to, while credits went
+  // to accounts we had no reason to write to at all.
+  const couldDraftWithAContact = reasonToWrite;
   if (
     everResearched &&
     couldDraftWithAContact &&
@@ -211,20 +243,19 @@ export function selectAction(args: SelectArgs): ActionDecision {
     };
   }
 
-  // 1. Draft if fit, trigger, and evidence all clear the bar. The "is there a
-  //    real on-pitch reason to reach out" judgment lives in signal_strength (an
-  //    LLM rubric scored against the workspace value prop), so the draft bar
-  //    here IS the trigger gate — no separate keyword/theme check. Drafting now
-  //    requires a real scored contact that clears the bar — never draft to a
-  //    missing recipient. A zero-contact account would have routed to
-  //    enrich_contacts at 0c; it only reaches here during the enrich cooldown
-  //    window, in which case we watch instead of drafting to nobody.
+  // 1. Draft when there is a reason to write, the account fits, and we hold
+  //    enough about them to write something true. The reason is the anchor: one
+  //    dated event, inside the window, that this workspace is allowed to write
+  //    about. It is deterministic, it shows on the approval card with the page it
+  //    came from, and unlike a score it cannot disagree with the message.
+  //    Drafting also requires a recipient unless the channel says otherwise — see
+  //    require_contact.
   const draftAge = args.recent_draft_at
     ? (now - Date.parse(args.recent_draft_at)) / 86400_000
     : Infinity;
   if (
     args.icp_total >= THRESH.DRAFT_ICP_TOTAL &&
-    b.signal_strength >= THRESH.DRAFT_SIGNAL_STRENGTH &&
+    reasonToWrite &&
     b.evidence_depth >= THRESH.DRAFT_EVIDENCE_DEPTH &&
     draftAge >= THRESH.DRAFT_SUPPRESSION_DAYS &&
     args.best_contact_score !== undefined &&
@@ -233,7 +264,9 @@ export function selectAction(args: SelectArgs): ActionDecision {
     return {
       action: 'draft_outreach',
       policy: 'qualified_and_triggered',
-      reason: `Drafting: icp_total ${args.icp_total.toFixed(2)}, signal_strength ${b.signal_strength.toFixed(2)}, evidence_depth ${b.evidence_depth.toFixed(2)} all clear the threshold.`,
+      reason: args.has_anchor === undefined
+        ? `Drafting: icp_total ${args.icp_total.toFixed(2)}, signal_strength ${b.signal_strength.toFixed(2)}, evidence_depth ${b.evidence_depth.toFixed(2)} all clear the threshold.`
+        : `Drafting: something dated happened here recently, icp_total ${args.icp_total.toFixed(2)} and evidence_depth ${b.evidence_depth.toFixed(2)} clear the bar.`,
     };
   }
 
@@ -289,9 +322,7 @@ export function selectAction(args: SelectArgs): ActionDecision {
     if (args.icp_total < THRESH.DRAFT_ICP_TOTAL) {
       blockers.push(`icp_total ${args.icp_total.toFixed(2)} is below the draft bar ${THRESH.DRAFT_ICP_TOTAL}`);
     }
-    if (b.signal_strength < THRESH.DRAFT_SIGNAL_STRENGTH) {
-      blockers.push(`signal_strength ${b.signal_strength.toFixed(2)} is below ${THRESH.DRAFT_SIGNAL_STRENGTH}`);
-    }
+    if (!reasonToWrite) blockers.push(noReasonText);
     if (b.evidence_depth < THRESH.DRAFT_EVIDENCE_DEPTH) {
       blockers.push(`evidence_depth ${b.evidence_depth.toFixed(2)} is below ${THRESH.DRAFT_EVIDENCE_DEPTH}`);
     }
