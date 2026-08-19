@@ -136,9 +136,20 @@ No meeting booking. Nothing sends without you.
 
 ## The honest problem
 
-Sudden's list may not support twenty messages a day at any budget. In the last thirty days, 79
-companies on it did something worth writing about. That is about two and a half new reasons a day.
-Twenty of those seventy-nine had someone we could actually reach.
+Sudden's list may not support twenty messages a day at any budget, but the number I used to say
+that was measuring the wrong thing and it needs restating.
+
+In the last thirty days we looked at 589 of the 1,961 companies on the list. 88 of those 589 came
+back with something dated and recent, which is 15% of what we looked at, not 4% of the book. The
+other 1,372 companies were never looked at once in the window. So "79 companies did something" was
+never a fact about the market. It was a fact about how far down the list we got.
+
+The gate underneath that is our hit rate on the way in. Of 12,164 pages the searches turned up,
+we kept 1,682, which is 12%. The single biggest reason for throwing one away is that it was about
+a different company: 2,419 never named the company at all, 2,080 failed the identity check, 426
+were a name collision. That is 4,925 pages, 40% of everything discarded, and it is a targeting
+problem rather than a quiet market. Another 1,608 were the right company and simply older than the
+freshness window.
 
 Today we produce 0.77 drafts a day. The changes above roughly double that on their own, and
 dropping the contact requirement for LinkedIn roughly quadruples the pool. Getting to twenty a day
@@ -541,12 +552,12 @@ way rather than the easy way.
 
 It does not cost volume. It roughly doubles it, and then hits a different ceiling.
 
-79 accounts have a dated event in the last 30 days. 49 of those are blocked by `signal_strength`
-alone, including a Stingray agreement with Titan OS for nine channels across Europe and a BT Sports
-multi-year boxing deal, both scored 0.4 for "passive presence". Requiring an anchor instead of a
-score unblocks them.
+88 accounts have a dated event in the last 30 days, out of the 589 we actually researched. 49 are
+blocked by `signal_strength` alone, including a Stingray agreement with Titan OS for nine channels
+across Europe and a BT Sports multi-year boxing deal, both scored 0.4 for "passive presence".
+Requiring an anchor instead of a score unblocks them.
 
-The ceiling behind it is real and worth stating before a prospect finds it. 20 of those 79 have
+The ceiling behind it is real and worth stating before a prospect finds it. 20 of those have
 someone to write to. Against a 14-day gap between messages to the same account that is about 1.4
 drafts a day, and we are producing 0.77. Turning off the contact requirement for LinkedIn roughly
 quadruples the pool. Getting to 10 a day on this book needs the event supply itself to be higher,
@@ -584,6 +595,14 @@ Each of these is useful on its own and none of them breaks the one before it.
 1 through 4 make the drafts right. 5 makes it a sequence. 6 makes it something someone else can
 turn on without us.
 
+**Added after measuring, and it outranks 2 through 6 on volume.** Search targeting. 40% of every
+page we throw away is thrown away because it is about a different company, and 227 runs a month
+resolve to a single search that returns nothing, several of them against a domain that is plainly
+wrong (a streaming prospect resolved to `nowexpresscourier.com`). Nothing in steps 1 through 6
+touches that, and it is the largest single loss in the funnel. It needs its own measurement pass
+before it gets a fix, because "the query is too generic" and "the domain resolver handed us the
+wrong company" are different bugs with different repairs, and I have not yet split them.
+
 ---
 
 ## Where I am least sure
@@ -601,7 +620,10 @@ Building it as one button and watching whether it gets pressed is the cheap way 
 outside our control. If it cannot, the setup ends on "we are working, come back in ten minutes"
 and loses most of its force. Worth prototyping before committing to the rest of the setup flow.
 
-**The event supply on a 2,000-company media book.** 79 fresh dated events in 30 days is about 2.6 a
-day of new reasons to write. Ten a day may not be reachable on this book at any budget. If that
-holds, the honest product for Sudden is five a day, and the founder's number should default from
-what the book can actually support rather than from what LinkedIn allows.
+**The event supply on a 2,000-company media book.** I no longer think supply is the binding
+constraint, and I had it as the main one an hour ago. 88 fresh dated events came from the 589
+companies we researched; 1,372 were never researched at all. Straight-lining that is 15% of
+whatever we look at, so the ceiling moves with how much of the book we cover and how often, not
+with how quiet the market is. What I am unsure of is how far the rate falls on the tail of the
+list, since research has always run best-fit first and the 589 are the good end of it. That is one
+cheap experiment: research 200 random never-touched accounts and compare the rate.

@@ -24,7 +24,7 @@ export { TOOL_SCHEMAS, type ToolName };
 export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
 export { runExaSearch, fetchPageText, type ExaResult, type ExaSearchParams, type ExaSearchResult, type ExaContentsResult } from './exa_search.ts';
-export { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate, unreadableContentDate, type ResolvedPublishedDate } from './published_date.ts';
+export { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate, unreadableContentDate, resolveHappenedAt, type ResolvedPublishedDate } from './published_date.ts';
 export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, stampRecordSince, carryOffSwitch, failedAngles, orphanedAngles, questionsWorthSearching, loadAngleRecords, clampQuery, angleRecordBlock, resolveStrategy, resolveContactStrategy, filterResultsByEntity, gateFailureReason, fetchEntityGrounding, pageMentionsEntity, readEntityAliases, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type AngleRecord, type RelevanceResult, type RelevanceTarget, type GateRejectReason } from './research_strategy.ts';
 export { generateResearchBrief, planResearchBrief, ensureResearchBrief, persistResearchBrief, carryQuestionOffSwitch, briefInputHashFor, loadQuestionRecords, loadQuestionSearchRecords, unreachableQuestions, earnsItsSearches, foldFetchedByQuestion, recordReading, resolveBrief, renderBrief, BASELINE_BRIEF, PAIN_QUESTION, FAIR_TRIAL_PAGES, MIN_ANSWER_RATE, UNREACHABLE_PAGES, UNREACHABLE_TRIALS, UNREACHABLE_WINDOW_DAYS, type BriefContext, type QuestionRecord, type QuestionSearchRecord, type RunMarker } from './research_brief.ts';
 export { resolveAliasesViaSearch, backfillAliases, validateAliases, usedAsProperNoun, ALIAS_MIN_CHARS, MAX_ALIASES, type AliasResolveOutcome, type AliasResolveStatus, type AliasRejection, type AliasRejectReason, type AliasValidation, type AliasBackfillResult } from './aliases.ts';
@@ -143,10 +143,18 @@ export async function callTool(
         // a no-op on content-hash-deduped rows that already carry a signal
         // binding from their original assertion — preserves the cite-chain
         // truth that a fact's source is the FIRST signal that produced it.
-        const { signal_id, ...actArgs } = args as { signal_id?: string } & Record<string, unknown>;
+        //
+        // happened_at rides the same path for the same reason, and takes the
+        // same `.is(null)` guard: a claim re-asserted from a second page keeps
+        // the date it first carried, because the event happened once whatever
+        // number of articles later mention it.
+        const { signal_id, happened_at, ...actArgs } = args as { signal_id?: string; happened_at?: string } & Record<string, unknown>;
         const r = await act(supabase, actor, { tool, args: actArgs, ...meta });
         if (signal_id) {
           await supabase.from('facts').update({ signal_id }).eq('id', r.target_id).is('signal_id', null);
+        }
+        if (happened_at) {
+          await supabase.from('facts').update({ happened_at }).eq('id', r.target_id).is('happened_at', null);
         }
         // record_event sets facts.source_event_id to the new event only on
         // INSERT; a content-hash dedup hit returns the pre-existing fact, whose
@@ -170,16 +178,26 @@ export async function callTool(
         // the caller's signal_id if provided, else the prior fact's signal_id
         // (inheritance), else null. The new row always gets *some* binding
         // when one exists upstream.
-        const { signal_id, supersedes } = args as { signal_id?: string; supersedes: string };
-        const { signal_id: _sid, ...actArgs } = args as { signal_id?: string } & Record<string, unknown>;
+        //
+        // happened_at inherits the same way. A supersede is a correction to what
+        // a fact SAYS — a revised number, a fixed name — not a claim that the
+        // underlying event happened again. Dropping the date on every correction
+        // would quietly retire an anchor each time the enricher tidied a fact.
+        const { signal_id, happened_at, supersedes } = args as { signal_id?: string; happened_at?: string; supersedes: string };
+        const { signal_id: _sid, happened_at: _hat, ...actArgs } = args as { signal_id?: string; happened_at?: string } & Record<string, unknown>;
         const r = await act(supabase, actor, { tool, args: actArgs, ...meta });
         let bindSignalId: string | null = signal_id ?? null;
-        if (!bindSignalId) {
-          const prior = await supabase.from('facts').select('signal_id').eq('id', supersedes).maybeSingle();
-          bindSignalId = (prior.data?.signal_id as string | null) ?? null;
+        let bindHappenedAt: string | null = happened_at ?? null;
+        if (!bindSignalId || !bindHappenedAt) {
+          const prior = await supabase.from('facts').select('signal_id, happened_at').eq('id', supersedes).maybeSingle();
+          bindSignalId = bindSignalId ?? (prior.data?.signal_id as string | null) ?? null;
+          bindHappenedAt = bindHappenedAt ?? (prior.data?.happened_at as string | null) ?? null;
         }
         if (bindSignalId) {
           await supabase.from('facts').update({ signal_id: bindSignalId }).eq('id', r.target_id);
+        }
+        if (bindHappenedAt) {
+          await supabase.from('facts').update({ happened_at: bindHappenedAt }).eq('id', r.target_id);
         }
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
       }

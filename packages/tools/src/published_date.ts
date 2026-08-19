@@ -180,6 +180,60 @@ export function unreadableContentDate(raw: string | null | undefined): string | 
 }
 
 /**
+ * When the thing in one extracted fact actually happened, or null.
+ *
+ * This is the single answer to a question three parts of the system used to work
+ * out for themselves: the recency term in score_facts, the drafter's mode
+ * section, and the research freshness check. Each had its own version and each
+ * had the same failure — an unknown date quietly becoming today, which put
+ * four-year-old news in front of real prospects.
+ *
+ * Two inputs, and they are not interchangeable:
+ *   isEvent      the enricher's per-fact call: did this fact record something
+ *                that HAPPENED, or something the company IS. Only the enricher
+ *                sees the page, so only the enricher can answer it.
+ *   eventDate    a date the page stated for this specific event, when it did.
+ *   sourceDate   the page's own publication date, already corrected upstream.
+ *
+ * The rules, in order:
+ *   1. Not an event → null, whatever dates are lying around. A company profile
+ *      page has a publication date and the description on it is still not
+ *      something that happened. Copying the source date onto every fact is
+ *      exactly the failure that opened a message by telling a company it runs a
+ *      free ad-supported streaming service.
+ *   2. An event the page dated → that date.
+ *   3. An event the page did not date, on a page we can date → the page's date.
+ *      A news story reporting a signed deal is evidence the deal happened around
+ *      when the story ran. Off by days, not years, and never in the direction
+ *      that matters.
+ *   4. An event nobody can date → null. Undated, not fresh, not today. This is
+ *      the line that closes the bug class, so it must never grow a fallback.
+ */
+export function resolveHappenedAt(args: {
+  isEvent: boolean | undefined;
+  eventDate?: string | null;
+  sourceDate?: string | null;
+}): string | null {
+  if (!args.isEvent) return null;
+  return isoDay(args.eventDate) ?? isoDay(args.sourceDate);
+}
+
+/**
+ * A date from either shape we hold them in, on parseContentDate's checks.
+ *
+ * The model reports a bare `2026-04-23`; everything already stored upstream is a
+ * full ISO timestamp, because parseContentDate itself returns one. Passing the
+ * second through the bare-day regex silently returns null, which would have made
+ * rule 3 above dead code on every fact whose date came from the page rather than
+ * from the model.
+ */
+function isoDay(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const t = raw.trim();
+  return parseContentDate(t.length > 10 && t[10] === 'T' ? t.slice(0, 10) : t);
+}
+
+/**
  * Fold a date printed on the page into what we already believe.
  *
  * The page's own dateline is the best evidence there is, but it reaches us

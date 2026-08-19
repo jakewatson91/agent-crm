@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -1157,7 +1157,15 @@ export async function runAgent(
       }
     }
 
-    const facts = (decision.facts ?? []) as Array<{ predicate: string; object_text: string; object_type?: string; domain?: string; confidence: number }>;
+    const facts = (decision.facts ?? []) as Array<{ predicate: string; object_text: string; object_type?: string; domain?: string; confidence: number; is_event?: boolean; event_date?: string }>;
+    // The page's publication date as it stands AFTER the correction above, since
+    // that is the one an undated event inherits. Reading tags.published_at here
+    // instead would hand back the provider's guess we just overruled.
+    const sourceDateForFacts = (() => {
+      const tags = (sigData?.structured_tags ?? {}) as Record<string, unknown>;
+      const corrected = applyContentDate(tags.published_at as string | null, decision.source_published_date as string | undefined);
+      return corrected ?? (tags.published_at as string | null) ?? null;
+    })();
     let asserted = 0;
     let assertedSubstantive = false;
     const assertedIds: string[] = [];
@@ -1228,6 +1236,15 @@ export async function runAgent(
         } catch { /* fall through to text */ }
       }
 
+      // When this fact's event happened, or null. resolveHappenedAt owns the
+      // rules; the only judgment made here is the model's is_event call, which
+      // nothing later in the pipeline could reconstruct.
+      const happenedAt = resolveHappenedAt({
+        isEvent: f.is_event,
+        eventDate: f.event_date,
+        sourceDate: sourceDateForFacts,
+      });
+
       const r = await callTool(supabase, actor, 'assert_fact', {
         subject_entity: ent.data.id,
         predicate,
@@ -1237,6 +1254,7 @@ export async function runAgent(
         // chain walker uses this directly; falls back to the parent-event walk
         // only for legacy facts where signal_id is null.
         ...(sigData?.id ? { signal_id: sigData.id } : {}),
+        ...(happenedAt ? { happened_at: happenedAt } : {}),
       }, meta);
       // Count + cite only facts this run actually created. A content-hash dedup
       // hit returns ok:true with created:false (the fact was already known); the
@@ -1613,8 +1631,25 @@ One predicate, one object — never collapse multiple details into a single fact
 Pain is usually expressed indirectly. Look for: complaints ("we hate / can't / wish"), descriptions of manual work ("we still do X by hand"), references to gaps ("we don't have X yet"), or descriptions of friction ("X takes us Y hours / weeks"). Statements about challenges, constraints, manual workarounds, or what doesn't work today ARE pain — extract them even when stated calmly and factually, not just when emotionally vented. Do not split the same pain across this slot and a separate one like has_challenge or seeks_solution. Skip if the source is purely positive / promotional / announcement-only with no friction language. Confidence 0.95 if directly stated, 0.7 if strongly implied. Do not invent pains that aren't on the page.`;
 
   const objSchema = opts.resolveEntities
-    ? `{"predicate":"<verb_or_attribute>","object_text":"<value or entity name>","object_type":"<${nodeTypeList.join('|')}|literal>","domain":"<website if object_type is an org; else omit>","confidence":0.0-1.0}`
-    : `{"predicate":"<verb_or_attribute>","object_text":"<value>","confidence":0.0-1.0}`;
+    ? `{"predicate":"<verb_or_attribute>","object_text":"<value or entity name>","object_type":"<${nodeTypeList.join('|')}|literal>","domain":"<website if object_type is an org; else omit>","confidence":0.0-1.0,"is_event":true|false,"event_date":"<YYYY-MM-DD, or empty string>"}`
+    : `{"predicate":"<verb_or_attribute>","object_text":"<value>","confidence":0.0-1.0,"is_event":true|false,"event_date":"<YYYY-MM-DD, or empty string>"}`;
+
+  // The one classification only this stage can make. Everything downstream that
+  // asks "is there a reason to write to this company today" reads the answer;
+  // nothing downstream can recover it, because by then the page is gone and all
+  // that is left is the row and the date we filed it.
+  //
+  // Two fields rather than one, because "an event we cannot date" and "not an
+  // event" are different states that must not collapse. The first is real and
+  // stays undated; the second is a description and has no date to have.
+  const eventBlock = `DID IT HAPPEN, OR IS IT HOW THEY STAND? Every fact gets two more fields.
+
+"is_event": true when the fact records something that HAPPENED at a point in time — they launched, shipped, signed, raised, hired, opened, published a number, announced a plan, changed something. Test it by finishing this sentence: "On <some date>, they <did this>." If that sentence works, it is an event.
+"is_event": false for everything a company simply IS or HAS: what it sells, who it serves, what it runs on, where it operates, its size, its category, a problem it has. These do not happen on a date. Most facts are these, and marking them false is the normal outcome, not a failure to find something.
+The distinction is not about how interesting the fact is. "They serve 4 million subscribers" is how they stand. "They added 4 million subscribers during the tournament" is something that happened.
+
+"event_date": only when is_event is true AND the content states when the thing happened, in YYYY-MM-DD. Use "" whenever the content does not say — including when you can tell it was recent but not exactly when. Never estimate, never infer a year, never use today's date. An event with no stated date is normal and is handled: an undated event is far cheaper than a wrong date, which is how years-old news reaches a prospect as if it were this week's.
+Set "event_date" to "" when is_event is false. A page has a publication date and the description of the company printed on it still did not happen on that date.`;
 
   return `A new signal arrived about the account in the user message. Extract atomic factual claims about THIS entity that are supported by the signal AND that the system doesn't already know.
 
@@ -1634,6 +1669,8 @@ Use object_text for the value. Confidence: 0.95 explicit, 0.7 implied. Skip lowe
 ${painBlock}
 
 ${depthBlock}
+
+${eventBlock}
 
 SOURCE DATE — include a "source_published_date" field: the date this SOURCE was published, in YYYY-MM-DD form, but ONLY if the content itself states it. Read it off a byline, a dateline, a "Posted on", a press-release header, or an explicit sentence about when the piece was written. Use "" when the content does not say. This matters because search engines routinely report the date they crawled a page instead of the date it was written, which has put years-old articles in front of prospects as if they were this week's news; the date printed on the page is the reliable one.
 Rules: report the date the SOURCE was published, never a date it merely mentions. "Launched in November 2022", "the 2024 season", or a conference happening next March are events being described, NOT the publication date. If the page only carries an event date and no publication date, return "". Do not estimate, infer from context, or guess a year. If the page shows only a day and month with no year, return "".

@@ -49,6 +49,12 @@ export const AssertFactSchema = z.object({
   // Idempotent — on content-hash dedup, the existing fact's signal_id is
   // preserved (callTool only sets when currently null).
   signal_id: UuidSchema.optional(),
+  // When the thing this fact records actually happened (ISO). Omitted for the
+  // majority of facts, which describe how a company stands rather than
+  // something it did. Set only by the enricher, which is the only stage that
+  // reads the page. Same idempotency as signal_id: on a content-hash dedup the
+  // date the fact first carried is kept.
+  happened_at: z.string().optional(),
 });
 
 export const SupersedeFactSchema = AssertFactSchema.extend({
