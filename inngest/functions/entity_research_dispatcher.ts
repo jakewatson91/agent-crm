@@ -35,6 +35,14 @@
  * A signal found in exploration raises that account's score → it graduates into
  * high_value next cycle. Budget + mix live on workspaces.policy.research.
  *
+ * Exploration takes HALF the budget by default, which reads as a lot and is not.
+ * Never-researched accounts return a fresh dated event 2.2x as often as the
+ * accounts this dispatcher keeps picking (38% against 17.1%, measured
+ * 2026-08-18), because a revisit can only keep pages the earlier visits did not
+ * already take. The share is self-limiting: the explore pool empties as the book
+ * gets covered and the spill pass hands the unspent budget straight back to
+ * high_value. See DEFAULT_SELECTION_MIX for the measurement.
+ *
  * Emits `research.requested` (consumed by researchRunner) with `tier` + `angle_count`.
  * Writes `research_triggered` as the dispatch marker so subsequent ticks see the
  * cooldown even before researchRunner finishes.
@@ -108,7 +116,7 @@ const MAX_HOT_ANGLES = 6;
 
 type Tier = 'hot' | 'default' | 'cold';
 
-interface Candidate {
+export interface Candidate {
   entity_id: string;
   entity_name: string;
   tier: Tier;
@@ -118,7 +126,7 @@ interface Candidate {
   under_covered: boolean;   // never researched -> exploration pool
 }
 
-interface Chosen { cand: Candidate; angle_count: number }
+export interface Chosen { cand: Candidate; angle_count: number }
 
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -144,7 +152,7 @@ function normalizeMix(mix?: { high_value?: number; active_comms?: number; explor
  * default = 1; exploration forces 1 even on a cold account). Buckets fill to their
  * share, then a spill pass uses any leftover budget on the highest-value remainder.
  */
-function selectByBuckets(
+export function selectByBuckets(
   candidates: Candidate[],
   opts: { budget: number; mix: { high_value: number; active_comms: number; exploration: number }; hotAngleCount: number },
 ): Chosen[] {
@@ -182,6 +190,12 @@ function selectByBuckets(
   fill(engagedPool, Math.round(mix.active_comms * budget), false);
   fill(explorePool, Math.round(mix.exploration * budget), true);
   // Spill: don't leave budget on the table — fill remaining from highest value down.
+  //
+  // This is also what makes a large exploration share safe to set. The explore
+  // pool is "never researched", so it shrinks to nothing as the book gets
+  // covered, and whatever that bucket cannot spend lands here and goes to
+  // high_value in the same pass. A fully covered workspace runs exactly as it
+  // did before, with no setting to remember to turn back down.
   fill(byScore, budget, false);
   fill(explorePool, budget, true);
 

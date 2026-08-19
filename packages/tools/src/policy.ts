@@ -995,7 +995,36 @@ export function resolveMaxOutputTokens(
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_OUTPUT_TOKENS[behavior];
 }
 
-export const DEFAULT_SELECTION_MIX = { high_value: 0.55, active_comms: 0.30, exploration: 0.15 } as const;
+/**
+ * How the research budget splits across the three selection buckets.
+ *
+ * Exploration — accounts never researched even once — used to get 15%, on the
+ * assumption that the accounts we already like are the ones worth re-reading.
+ * Measured 2026-08-18, that is backwards. 100 random never-researched accounts
+ * returned a page dated inside 30 days 38% of the time. The 589 accounts the
+ * dispatcher actually picked over the same 30 days rate 17.1% on the identical
+ * measure. The tail is 2.2x better, and every advantage was on the baseline's
+ * side: it was chosen best-fit first and got 3.4 visits each against the
+ * sample's one.
+ *
+ * The cause is the 30-day cross-run dedup meeting the 96-hour hot cadence. A
+ * revisit can only keep a page the earlier visits did not already take, so the
+ * accounts we return to most are the ones with the least left to find, while
+ * half the book has never been read once.
+ *
+ * This is safe to set high because it is self-limiting. The explore pool is
+ * "never researched", so it empties as the book gets covered, and selectByBuckets
+ * spills any budget its bucket cannot spend back to high_value in the same pass.
+ * A fully covered book therefore runs exactly as it did before, with no config
+ * change and nothing to remember to turn off.
+ *
+ * One honest caveat on the 38%: it was measured at 4 angles per account, and
+ * exploration spends 1. The realized per-account rate will be lower. Cost per
+ * account is also a quarter, and the single angle is the best-keeping one
+ * (recent_launches_news keeps 19% against 7-9% for the rest), so the rate per
+ * SEARCH is the number that carries over, not the rate per account.
+ */
+export const DEFAULT_SELECTION_MIX = { high_value: 0.30, active_comms: 0.20, exploration: 0.50 } as const;
 /** Exa searches each tier spends per entity researched. Exploration grants a cold account 1. */
 export const TIER_ANGLE_COUNT = { hot: 3, default: 1, cold: 0 } as const;
 
