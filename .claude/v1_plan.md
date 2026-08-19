@@ -655,16 +655,17 @@ once** and should surface roughly 172 accounts carrying a fresh dated event. Aga
 producing 0.77 drafts a day that is the largest single lever measured anywhere in this document,
 and it needed no new code, only the budget split.
 
-**Done 2026-08-18.** `policy.research.selection_mix` on Sudden was unset, so it sat at the code
-default of 55 / 30 / 15 across high_value, active_comms and exploration. It is now 25 / 15 / 60.
-At the current 48 searches a day that moves exploration from 7.2 searches to 28.8 and takes
-projected fresh-event accounts from 3.8 a day to 10.9, at identical spend of $10 a month. The
-untouched pool drains in about 17 days, after which the dispatcher's existing spill pass hands the
-leftover budget back to high_value on its own, so nothing needs unwinding later.
+**Done 2026-08-18.** `DEFAULT_SELECTION_MIX` went from 55 / 30 / 15 across high_value,
+active_comms and exploration to 30 / 20 / 50, for every workspace, with assertions in
+`scripts/check_selection_mix.ts` wired into `pnpm check`. Sudden carries no override and follows
+the default.
 
-The same change belongs in `DEFAULT_SELECTION_MIX` for every workspace, since nothing about it is
-specific to streaming, but that constant lives in `packages/tools/src/policy.ts`, which another
-session is holding. It is a one-line follow-up once that lands.
+At the current 48 searches a day that moves exploration from 7.2 searches to 24 and takes
+projected fresh-event accounts from 3.8 a day to about 9, at identical spend of $10 a month. The
+untouched pool drains in roughly 20 days, after which the dispatcher's existing spill pass hands
+the unspent exploration budget back to high_value on its own. That self-limiting property is what
+makes a half-the-budget exploration share safe to ship as a default: a fully covered book spends
+nothing on it and behaves exactly as before, with no setting anyone has to remember to turn down.
 
 The real ceiling sits underneath it and it is coverage, not news: 487 accounts have no domain at
 all and can never be researched. That is a quarter of the book outside the funnel entirely, and
