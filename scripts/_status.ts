@@ -249,11 +249,25 @@ async function overview() {
     console.log(`  ${k.padEnd(14)} 24h: ${String(e.d1).padStart(4)}   7d: ${e.d7}`);
   }
 
-  // 5. Enrichment loop markers
+  // 5. Enrichment loop markers.
+  //
+  // These are activity markers and they live in the EVENT LOG, not in facts —
+  // they describe what the pipeline did, not what is true about an account, and
+  // as facts they inflated evidence_depth and recency in scoring (see
+  // packages/tools/src/activity_markers.ts, moved 2026-06). This block still
+  // counted facts afterwards, so it printed a flat 0 for all three no matter how
+  // much research ran, which reads as "the research loop is dead" on a day it
+  // fired 28 times. Counted over a window now, like every other section here,
+  // because an all-time total cannot show a loop stopping.
   console.log('\n── ENRICHMENT (research loop) ──');
-  for (const pred of ['research_triggered', 'research_completed', 'research_error']) {
-    const { count } = await db.from('facts').select('id', { count: 'exact', head: true }).eq('workspace_id', ws).eq('predicate', pred);
-    console.log(`  ${pred.padEnd(20)} ${count ?? 0}`);
+  for (const action of ['research_triggered', 'research_completed', 'research_error']) {
+    const [d1, d7] = await Promise.all([
+      db.from('events').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', ws).eq('action', action).gte('created_at', new Date(dayAgo).toISOString()),
+      db.from('events').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', ws).eq('action', action).gte('created_at', new Date(wkAgo).toISOString()),
+    ]);
+    console.log(`  ${action.padEnd(20)} 24h: ${String(d1.count ?? 0).padStart(4)}   7d: ${d7.count ?? 0}`);
   }
   const { count: rr } = await db.from('signals').select('id', { count: 'exact', head: true }).eq('workspace_id', ws).eq('type', 'research_result');
   console.log(`  research_result sigs  ${rr ?? 0}`);
