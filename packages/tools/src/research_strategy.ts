@@ -424,9 +424,22 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
 // runner will bin. DEFAULT is only the fallback when the workspace has not set
 // one.
 const DEFAULT_PROMPT_FLOOR_DAYS = 30;
+
+/**
+ * Most angles a plan may contain, and the number the prompt asks for.
+ *
+ * It is a spend decision, not a formatting one: a hot account costs one search
+ * per angle, so this multiplies straight into the per-tick budget. The cap sat
+ * at 6 while the prompt asked for "3 to 5", and the first plan after the planner
+ * was repaired took the code's number rather than the prompt's — which pushed a
+ * hot account from 5 searches to 6 and cut the high-value bucket from 1.8
+ * accounts a tick to 1. Interpolated into the prompt below so the two can never
+ * disagree again.
+ */
+const MAX_PLANNED_ANGLES = 5;
 const sysPrompt = (floorDays = DEFAULT_PROMPT_FLOOR_DAYS, briefBlock = '') => `You design a small set of WEB SEARCH ANGLES an AI sales agent runs, per prospect company. Each angle becomes one Exa web search per company.
 ${briefBlock}
-Return 3 to 5 angles. Fewer, sharper angles beat many overlapping ones.
+Return 3 to ${MAX_PLANNED_ANGLES} angles. Fewer, sharper angles beat many overlapping ones. Anything past the ${MAX_PLANNED_ANGLES}th is discarded, so do not spend one on an angle you would rank last.
 
 PRIORITIES (most valuable first):
 1. What CHANGED or what they're pushing toward — launches, expansions, deals, published numbers, stated priorities and plans, executives explaining what the company is working on. These are the anchors a message can open with. Every angle should be able to surface something that HAPPENED or something the company SAYS it is doing next.
@@ -543,7 +556,7 @@ export async function planResearchAngles(
     for (const [i, raw] of (parsed.angles ?? []).entries()) {
       const a = coerceAngle(raw, i, usedIds, validQuestionIds);
       if (a) angles.push(a);
-      if (angles.length >= 6) break;
+      if (angles.length >= MAX_PLANNED_ANGLES) break;
     }
     if (!angles.length) return { angles: BASELINE_ANGLES, source: 'baseline', error: 'planner returned no valid angles' };
     return { angles, source: 'ai' };

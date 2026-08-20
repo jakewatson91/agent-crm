@@ -13,6 +13,7 @@
  *
  * Run: tsx scripts/check_research_angles.ts   (exits non-zero on failure)
  */
+import { readFileSync } from 'node:fs';
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { buildAngleRequest } from '../inngest/functions/research.ts';
@@ -220,6 +221,21 @@ eq('zero is not a cadence', cad({ tier_cadence_hours: { hot: 0 } }).hot, DEFAULT
 eq('negative is not a cadence', cad({ tier_cadence_hours: { hot: -5 } }).hot, DEFAULT_TIER_CADENCE_HOURS.hot);
 eq('a string is not a cadence', cad({ tier_cadence_hours: { hot: '48' } }).hot, DEFAULT_TIER_CADENCE_HOURS.hot);
 eq('NaN is not a cadence', cad({ tier_cadence_hours: { hot: Number.NaN } }).hot, DEFAULT_TIER_CADENCE_HOURS.hot);
+
+// The angle cap is a spend decision: a hot account costs one search per angle,
+// straight out of the per-tick budget. It sat at 6 in code while the prompt said
+// "3 to 5", and the first plan after the planner was repaired took the code's
+// number — 6 angles, a hot account from 5 searches to 6, the high-value bucket
+// from 1.8 accounts a tick to 1. Both numbers now come from MAX_PLANNED_ANGLES,
+// and this is what stops them drifting apart again.
+console.log('\nthe planner cap is one number, and the prompt quotes it:');
+const rsSrc = readFileSync(new URL('../packages/tools/src/research_strategy.ts', import.meta.url), 'utf8');
+eq('MAX_PLANNED_ANGLES is 5', /const MAX_PLANNED_ANGLES = (\d+);/.exec(rsSrc)?.[1], '5');
+eq('the collect loop breaks on it, not on a literal',
+  /if \(angles\.length >= MAX_PLANNED_ANGLES\) break;/.test(rsSrc), true);
+eq('the prompt interpolates it instead of stating its own number',
+  /Return 3 to \$\{MAX_PLANNED_ANGLES\} angles/.test(rsSrc), true);
+eq('no bare "3 to 5" left in the prompt to contradict it', /Return 3 to 5 angles/.test(rsSrc), false);
 
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);
