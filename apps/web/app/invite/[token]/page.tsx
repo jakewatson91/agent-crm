@@ -69,7 +69,7 @@ export default function InviteAcceptPage() {
           </p>
           <a
             href={`/login?next=${encodeURIComponent(`/invite/${token}`)}`}
-            style={{ display: 'inline-block', padding: '.55rem 1rem', background: '#9ece6a', color: '#000', borderRadius: 6, textDecoration: 'none', fontWeight: 500 }}
+            style={{ display: 'inline-block', padding: '.55rem 1rem', background: 'var(--accent-green)', color: '#fff', borderRadius: 6, textDecoration: 'none', fontWeight: 500 }}
           >
             sign in
           </a>
@@ -80,11 +80,11 @@ export default function InviteAcceptPage() {
 
       {state.kind === 'ok' && (
         <div>
-          <p style={{ color: '#9ece6a', marginBottom: '.5rem' }}>
+          <p style={{ color: 'var(--accent-green)', marginBottom: '.5rem' }}>
             ✓ {state.already ? 'already a member' : 'joined the workspace'}
           </p>
           {state.email_mismatch && (
-            <p style={{ color: '#e0af68', fontSize: '.85rem', marginBottom: '1rem' }}>
+            <p style={{ color: 'var(--accent-amber)', fontSize: '.85rem', marginBottom: '1rem' }}>
               Note: this invitation was for a different email than the one you signed in with. You've been added anyway.
             </p>
           )}
@@ -95,7 +95,7 @@ export default function InviteAcceptPage() {
       )}
 
       {state.kind === 'err' && (
-        <p style={{ color: '#f7768e' }}>{state.msg}</p>
+        <p style={{ color: 'var(--accent-coral)' }}>{state.msg}</p>
       )}
     </main>
   );

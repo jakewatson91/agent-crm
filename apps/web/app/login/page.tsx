@@ -70,13 +70,13 @@ function LoginInner() {
             type="submit"
             disabled={busy || !email}
             style={{
-              padding: '.6rem 1rem', background: '#9ece6a', color: '#000', border: 'none',
+              padding: '.6rem 1rem', background: 'var(--accent-green)', color: '#fff', border: 'none',
               borderRadius: 6, cursor: 'pointer', fontWeight: 500, opacity: busy || !email ? 0.4 : 1,
             }}
           >
             {busy ? 'sending…' : 'send magic link'}
           </button>
-          {err && <div style={{ color: '#f7768e', fontSize: '.85rem' }}>{err}</div>}
+          {err && <div style={{ color: 'var(--accent-coral)', fontSize: '.85rem' }}>{err}</div>}
         </form>
       )}
     </main>

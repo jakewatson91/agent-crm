@@ -77,8 +77,8 @@ export function ApiKeysSection({ workspace_id }: { workspace_id: string }) {
       </div>
 
       {justCreated && (
-        <div style={{ padding: '.85rem 1rem', border: '1px solid #9ece6a', borderRadius: 8, background: 'rgba(158, 206, 106, 0.08)' }}>
-          <div style={{ fontSize: '.85rem', marginBottom: '.5rem', color: '#9ece6a' }}>
+        <div style={{ padding: '.85rem 1rem', border: '1px solid var(--accent-green)', borderRadius: 8, background: 'var(--accent-green-soft)' }}>
+          <div style={{ fontSize: '.85rem', marginBottom: '.5rem', color: 'var(--badge-green-fg)' }}>
             ✓ Created "{justCreated.name}". Copy this key — you won't see it again.
           </div>
           <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
@@ -110,7 +110,7 @@ export function ApiKeysSection({ workspace_id }: { workspace_id: string }) {
           <button type="button" onClick={() => { setShowCreate(false); setNewName(''); }} style={smallBtn}>cancel</button>
         </form>
       )}
-      {err && <div style={{ color: '#f7768e', fontSize: '.85rem' }}>{err}</div>}
+      {err && <div style={{ color: 'var(--accent-coral)', fontSize: '.85rem' }}>{err}</div>}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
         {keys.length === 0 && <p style={{ color: 'var(--text-3)', fontSize: '.85rem' }}>No keys yet.</p>}
@@ -121,7 +121,7 @@ export function ApiKeysSection({ workspace_id }: { workspace_id: string }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '.92rem' }}>
                   {k.name}
-                  {revoked && <span style={{ marginLeft: '.5rem', fontSize: '.7rem', color: '#f7768e' }}>revoked</span>}
+                  {revoked && <span style={{ marginLeft: '.5rem', fontSize: '.7rem', color: 'var(--accent-coral)' }}>revoked</span>}
                 </div>
                 <div style={{ fontSize: '.7rem', color: 'var(--text-3)', fontFamily: 'monospace' }}>
                   {k.prefix}… · last used {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : 'never'}
@@ -150,12 +150,12 @@ const smallBtn: React.CSSProperties = {
   border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: '.78rem',
 };
 const dangerBtn: React.CSSProperties = {
-  padding: '.3rem .6rem', background: 'transparent', color: '#f7768e',
+  padding: '.3rem .6rem', background: 'transparent', color: 'var(--accent-coral)',
   border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: '.75rem',
 };
 function primaryBtn(disabled: boolean): React.CSSProperties {
   return {
-    padding: '.4rem .8rem', background: '#9ece6a', color: '#000',
+    padding: '.4rem .8rem', background: 'var(--accent-green)', color: '#fff',
     border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '.85rem',
     opacity: disabled ? 0.4 : 1, fontWeight: 500,
   };

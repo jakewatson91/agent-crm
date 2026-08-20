@@ -569,11 +569,11 @@ export default function SettingsWorkspacePage() {
       )}
 
       <div style={{ marginTop: '1.5rem', display: 'flex', alignItems: 'center', gap: '.75rem' }}>
-        <button onClick={save} disabled={saving} style={{ padding: '.5rem 1rem', background: '#9ece6a', color: '#000', border: 'none', borderRadius: 6, cursor: 'pointer', opacity: saving ? 0.4 : 1 }}>
+        <button onClick={save} disabled={saving} style={{ padding: '.5rem 1rem', background: 'var(--accent-green)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', opacity: saving ? 0.4 : 1 }}>
           {saving ? 'saving…' : 'save'}
         </button>
-        {msg && <span style={{ color: '#9ece6a', fontSize: '.85rem' }}>✓ {msg}</span>}
-        {err && <span style={{ color: '#f7768e', fontSize: '.85rem' }}>✗ {err}</span>}
+        {msg && <span style={{ color: 'var(--accent-green)', fontSize: '.85rem' }}>✓ {msg}</span>}
+        {err && <span style={{ color: 'var(--accent-coral)', fontSize: '.85rem' }}>✗ {err}</span>}
       </div>
     </div>
   );

@@ -122,8 +122,8 @@ export function MembersSection({ workspace_id }: { workspace_id: string }) {
           <button type="submit" disabled={busy || !inviteEmail} style={primaryBtn(busy || !inviteEmail)}>
             {busy ? 'sending…' : 'invite'}
           </button>
-          {msg && <span style={{ color: '#9ece6a', fontSize: '.8rem' }}>✓ {msg}</span>}
-          {err && <span style={{ color: '#f7768e', fontSize: '.8rem' }}>{err}</span>}
+          {msg && <span style={{ color: 'var(--accent-green)', fontSize: '.8rem' }}>✓ {msg}</span>}
+          {err && <span style={{ color: 'var(--accent-coral)', fontSize: '.8rem' }}>{err}</span>}
         </form>
       )}
 
@@ -193,18 +193,18 @@ const memberRow: React.CSSProperties = {
   padding: '.55rem .75rem', border: '1px solid var(--border)', borderRadius: 6,
 };
 const dangerBtn: React.CSSProperties = {
-  padding: '.3rem .6rem', background: 'transparent', color: '#f7768e',
+  padding: '.3rem .6rem', background: 'transparent', color: 'var(--accent-coral)',
   border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: '.75rem',
 };
 function primaryBtn(disabled: boolean): React.CSSProperties {
   return {
-    padding: '.4rem .8rem', background: '#9ece6a', color: '#000',
+    padding: '.4rem .8rem', background: 'var(--accent-green)', color: '#fff',
     border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '.85rem',
     opacity: disabled ? 0.4 : 1, fontWeight: 500,
   };
 }
 function roleBadge(role: Role): React.CSSProperties {
-  const color = role === 'owner' ? '#bb9af7' : role === 'admin' ? '#7aa2f7' : role === 'member' ? 'var(--text-2)' : 'var(--text-3)';
+  const color = role === 'owner' ? 'var(--accent-purple)' : role === 'admin' ? 'var(--accent-blue)' : role === 'member' ? 'var(--text-2)' : 'var(--text-3)';
   return {
     padding: '.2rem .5rem', fontSize: '.7rem', borderRadius: 999,
     border: '1px solid var(--border)', color, minWidth: 70, textAlign: 'center',

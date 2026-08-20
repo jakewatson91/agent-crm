@@ -405,7 +405,7 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
             <button
               onClick={runImport}
               disabled={!canImport}
-              style={{ padding: '.5rem 1.1rem', border: 'none', borderRadius: 6, background: canImport ? 'var(--accent, #2563eb)' : 'var(--panel-2)', color: canImport ? '#fff' : 'var(--text-3)', cursor: canImport ? 'pointer' : 'not-allowed', fontSize: '.9rem' }}
+              style={{ padding: '.5rem 1.1rem', border: 'none', borderRadius: 6, background: canImport ? 'var(--accent)' : 'var(--panel-2)', color: canImport ? 'var(--accent-fg)' : 'var(--text-3)', cursor: canImport ? 'pointer' : 'not-allowed', fontSize: '.9rem' }}
             >
               {importing ? 'Importing…' : `Import ${rows.length} row${rows.length === 1 ? '' : 's'}`}
             </button>
@@ -415,7 +415,7 @@ export function CsvImportPanel({ workspaceId, onImported }: { workspaceId: strin
             <div style={{ marginTop: '.75rem' }}>
               <div style={{ height: 8, borderRadius: 4, background: 'var(--panel-2)', overflow: 'hidden' }}>
                 <div style={{
-                  height: '100%', borderRadius: 4, background: 'var(--accent, #2563eb)',
+                  height: '100%', borderRadius: 4, background: 'var(--accent)',
                   width: `${Math.min(100, (progress.done / Math.max(1, progress.total)) * 100)}%`,
                   transition: 'width .2s ease',
                 }} />

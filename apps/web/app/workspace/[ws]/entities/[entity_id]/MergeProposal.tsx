@@ -62,10 +62,11 @@ export function MergeProposal({ ws, entityId, entityName, candidates }: Props) {
 
   return (
     <section
+      className="card"
       style={{
-        border: '1px solid var(--warn-border, #e0c060)',
-        background: 'var(--warn-bg, rgba(224,192,96,.08))',
-        borderRadius: 8, padding: '.85rem 1rem', marginBottom: '1rem',
+        border: '1px solid var(--accent-amber)',
+        background: 'var(--accent-amber-soft)',
+        marginBottom: '1rem',
       }}
     >
       <div style={{ fontWeight: 600, fontSize: '.9rem', marginBottom: '.5rem' }}>
@@ -87,14 +88,14 @@ export function MergeProposal({ ws, entityId, entityName, candidates }: Props) {
           </span>
           <span style={{ flex: 1 }} />
           <button
-            style={{ ...PILL, background: 'var(--accent, #2563eb)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+            style={{ ...PILL, background: 'var(--accent)', color: 'var(--accent-fg)', opacity: busy ? 0.6 : 1 }}
             disabled={!!busy}
             onClick={() => act(c, 'merge')}
           >
             {busy === c.entity_id ? '…' : `Merge into ${entityName}`}
           </button>
           <button
-            style={{ ...PILL, background: 'transparent', border: '1px solid var(--border, #ccc)', opacity: busy ? 0.6 : 1 }}
+            style={{ ...PILL, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)', opacity: busy ? 0.6 : 1 }}
             disabled={!!busy}
             onClick={() => act(c, 'dismiss')}
           >
@@ -102,7 +103,7 @@ export function MergeProposal({ ws, entityId, entityName, candidates }: Props) {
           </button>
         </div>
       ))}
-      {error ? <div style={{ color: 'crimson', fontSize: '.8rem', marginTop: '.4rem' }}>{error}</div> : null}
+      {error ? <div style={{ color: 'var(--accent-coral)', fontSize: '.8rem', marginTop: '.4rem' }}>{error}</div> : null}
     </section>
   );
 }

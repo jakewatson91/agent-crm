@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import Link from 'next/link';
 import { Timestamp } from '../../../_components/Timestamp';
+import { EntityLink } from '../../../_components/drawer/EntityLink';
 import { WhyThis } from '../../../_components/WhyThis';
 import { DraftActions } from '../../../_components/DraftActions';
 import { CitedText } from '../../../_components/CitedText';
@@ -262,12 +262,13 @@ function FeedRow({
         {tag && (
           <span className="badge badge-mute" style={{ fontSize: '.62rem' }} title={tag}>{humanizePredicate(tag)}</span>
         )}
-        <Link
-          href={`/workspace/${ws}/entities/${item.entity_id}`}
+        <EntityLink
+          id={item.entity_id}
+          label={item.entity_name}
           style={{ fontWeight: 600, color: 'var(--text)', fontSize: '.95rem' }}
         >
           {item.entity_name}
-        </Link>
+        </EntityLink>
         {item.icp_fit !== null && (
           <ScorePill icp={item.icp_fit} title={`fit score ${item.icp_fit.toFixed(2)} — signal, evidence, recency, fit, graph`} />
         )}

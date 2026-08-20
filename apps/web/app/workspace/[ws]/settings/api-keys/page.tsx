@@ -30,18 +30,18 @@ export default function SettingsApiKeysPage() {
       </div>
 
       <h3 style={{ marginTop: '2.5rem' }}>Use from Claude Desktop or Cursor</h3>
-      <p style={{ color: 'var(--muted-fg, #666)', marginTop: '0.5rem' }}>
+      <p style={{ color: 'var(--text-2)', marginTop: '0.5rem' }}>
         Issue a key above, paste it into the snippet, drop the whole block into your client's MCP config.
       </p>
       <pre style={{
-        background: 'var(--code-bg, #f4f4f5)',
+        background: 'var(--panel-2)',
         padding: '0.75rem 1rem',
         borderRadius: 6,
         overflow: 'auto',
         fontSize: 12,
         lineHeight: 1.45,
       }}>{snippet}</pre>
-      <p style={{ color: 'var(--muted-fg, #666)', fontSize: 13 }}>
+      <p style={{ color: 'var(--text-2)', fontSize: 13 }}>
         Claude Desktop config:{' '}
         <code>~/Library/Application Support/Claude/claude_desktop_config.json</code><br />
         Cursor config: <code>~/.cursor/mcp.json</code>

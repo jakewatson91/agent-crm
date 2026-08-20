@@ -12,6 +12,8 @@
   --text-2: #6b6760;
   --text-3: #9a958a;
 
+  --accent: var(--accent-blue);
+  --accent-fg: #ffffff;
   --accent-blue: #8fa8d1;
   --accent-blue-soft: #e6ecf6;
   --accent-green: #8fb893;

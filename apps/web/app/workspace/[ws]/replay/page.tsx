@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 import { CiteChain } from '../../../_components/CiteChain';
 import { WhyThis } from '../../../_components/WhyThis';
 import { CitedText } from '../../../_components/CitedText';
+import { EntityLink } from '../../../_components/drawer/EntityLink';
+import { bandColor } from '../../../_lib/bands';
 
 interface Summary {
   ts: string;
@@ -70,13 +71,6 @@ const SCORE_ORDER = [
   'score_recency',
   'score_graph_proximity',
 ];
-
-function scoreColor(v: number): string {
-  if (v >= 0.7) return 'var(--accent-green)';
-  if (v >= 0.5) return 'var(--accent-amber)';
-  if (v >= 0.3) return 'var(--accent-amber)';
-  return 'var(--accent-coral)';
-}
 
 const POST_KIND_BADGE: Record<string, string> = {
   claim: 'badge-blue',
@@ -170,9 +164,9 @@ export default function ReplayPage() {
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '.55rem', flexWrap: 'wrap', marginBottom: '.3rem' }}>
                       <span className="badge badge-blue">{sig.type}</span>
                       {sig.source && <span className="badge badge-mute mono">{sig.source}</span>}
-                      <Link href={`/workspace/${params.ws}/entities/${sig.entity_id}`} style={{ fontWeight: 600, color: 'var(--text)' }}>
+                      <EntityLink id={sig.entity_id} label={sig.entity_name} style={{ fontWeight: 600, color: 'var(--text)' }}>
                         {sig.entity_name}
-                      </Link>
+                      </EntityLink>
                       <span className="muted mono" style={{ fontSize: '.7rem' }}>mag {sig.magnitude.toFixed(2)}</span>
                       <span className="muted mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
                         <Timestamp value={sig.observed_at} />
@@ -205,7 +199,13 @@ export default function ReplayPage() {
                   <div key={p.id} className="card" style={{ padding: '.6rem .85rem' }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '.5rem', flexWrap: 'wrap', marginBottom: '.2rem' }}>
                       <span className={`badge ${POST_KIND_BADGE[p.kind] ?? 'badge-mute'}`}>{p.kind.replace('_', ' ')}</span>
-                      <strong style={{ fontSize: '.88rem' }}>{p.entity_name}</strong>
+                      {p.entity_id ? (
+                        <EntityLink id={p.entity_id} label={p.entity_name} style={{ fontSize: '.88rem', fontWeight: 600, color: 'var(--text)' }}>
+                          {p.entity_name}
+                        </EntityLink>
+                      ) : (
+                        <strong style={{ fontSize: '.88rem' }}>{p.entity_name}</strong>
+                      )}
                       <span className="muted mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
                         <Timestamp value={p.created_at} />
                       </span>
@@ -253,7 +253,9 @@ export default function ReplayPage() {
                     <div key={e.id} className="card" style={{ padding: '.6rem .85rem' }}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: '.6rem', flexWrap: 'wrap' }}>
                         <span className="badge badge-mute">{e.kind}</span>
-                        <strong style={{ fontSize: '.88rem' }}>{e.name}</strong>
+                        <EntityLink id={e.id} label={e.name} style={{ fontSize: '.88rem', fontWeight: 600, color: 'var(--text)' }}>
+                          {e.name}
+                        </EntityLink>
                         {e.domain && <span className="muted mono" style={{ fontSize: '.72rem' }}>{e.domain}</span>}
                         <span className="muted mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
                           <Timestamp value={e.created_at} />
@@ -264,7 +266,7 @@ export default function ReplayPage() {
                           {scoreEntries.map((s) => (
                             <div key={s.key} style={{ display: 'flex', alignItems: 'baseline', gap: '.5rem', fontSize: '.75rem' }}>
                               <span className="muted" style={{ minWidth: 70, fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>{s.label}</span>
-                              <span className="mono" style={{ fontWeight: 600, color: scoreColor(s.value) }}>{s.value.toFixed(2)}</span>
+                              <span className="mono" style={{ fontWeight: 600, color: bandColor(s.value) }}>{s.value.toFixed(2)}</span>
                               <CiteChain fact_id={s.fact_id} label="trace" />
                             </div>
                           ))}

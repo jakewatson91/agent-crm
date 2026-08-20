@@ -151,7 +151,7 @@ export default function NewWorkspacePage() {
           <button
             onClick={() => router.push(`/workspace/${createdWorkspaceId}`)}
             style={{
-              padding: '.65rem 1.25rem', background: '#9ece6a', color: '#000', border: 'none',
+              padding: '.65rem 1.25rem', background: 'var(--accent-green)', color: '#fff', border: 'none',
               borderRadius: 6, cursor: 'pointer', fontWeight: 500,
             }}
           >
@@ -213,10 +213,10 @@ export default function NewWorkspacePage() {
         </div>
       </details>
 
-      {err && <div style={{ color: '#f7768e', fontSize: '.85rem', marginBottom: '1rem' }}>✗ {err}</div>}
+      {err && <div style={{ color: 'var(--accent-coral)', fontSize: '.85rem', marginBottom: '1rem' }}>✗ {err}</div>}
 
       <button onClick={submit} disabled={submitting} style={{
-        padding: '.65rem 1.25rem', background: '#9ece6a', color: '#000', border: 'none',
+        padding: '.65rem 1.25rem', background: 'var(--accent-green)', color: '#fff', border: 'none',
         borderRadius: 6, cursor: 'pointer', fontWeight: 500, opacity: submitting ? 0.5 : 1,
       }}>
         {submitting ? 'working…' : 'Create workspace'}

@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../../_lib/swr';
 import { Timestamp } from '../../../_components/Timestamp';
 import { useSetPageContext, type PageContext } from '../../../_components/PageContext';
+import { EntityLink } from '../../../_components/drawer/EntityLink';
 
 interface ConnectorMeta {
   type: string;
@@ -89,9 +89,9 @@ function SignalDrawer({ sourceId, ws, signals7d }: { sourceId: string; ws: strin
               <div style={{ flex: 1, minWidth: 0 }}>
                 <span style={{ color: 'var(--text)', fontWeight: 500 }}>
                   {sig.entity_id ? (
-                    <Link href={`/workspace/${ws}/entities/${sig.entity_id}`} style={{ color: 'var(--text)' }}>
+                    <EntityLink id={sig.entity_id} label={sig.entity_name ?? sig.entity_id} style={{ color: 'var(--text)' }}>
                       {sig.entity_name ?? sig.entity_id.slice(0, 8)}
-                    </Link>
+                    </EntityLink>
                   ) : (
                     <span style={{ color: 'var(--text-3)' }}>unlinked</span>
                   )}

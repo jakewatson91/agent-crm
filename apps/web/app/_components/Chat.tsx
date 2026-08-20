@@ -20,6 +20,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import TextareaAutosize from 'react-textarea-autosize';
 import { lowConfLabel } from '../_lib/confidence';
+import { bandColor } from '../_lib/bands';
 import { usePageContextGetter } from './PageContext';
 import { CiteChain } from './CiteChain';
 
@@ -852,7 +853,7 @@ function TriggerDrafterResult({ data }: { data: any }) {
 
 function ScoreChip({ value }: { value: number }) {
   const v = Math.max(0, Math.min(1, value));
-  const color = v >= 0.65 ? '#48a' : v >= 0.5 ? '#79a' : v >= 0.35 ? '#a92' : '#a48';
+  const color = bandColor(v);
   return (
     <span style={{ padding: '.1rem .35rem', background: color, color: '#fff', borderRadius: 3, fontSize: '.7rem', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
       {v.toFixed(2)}
@@ -862,7 +863,7 @@ function ScoreChip({ value }: { value: number }) {
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
   const v = Math.max(0, Math.min(1, value));
-  const color = v >= 0.65 ? '#48a' : v >= 0.5 ? '#79a' : v >= 0.35 ? '#a92' : '#a48';
+  const color = bandColor(v);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.7rem' }}>
       <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', minWidth: 110 }}>{label}</span>
