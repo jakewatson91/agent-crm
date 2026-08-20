@@ -14,6 +14,7 @@ import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
 import { MODEL_PRICES, cost as priceCost, EXA_PRICE, exaSearchCost } from '../benchmark/v1/lib/pricing.js';
+import { fetchAll } from '@agent-crm/tools';
 
 // Mirrors MAX_RESULTS in inngest/functions/research.ts — each research Exa call
 // pulls text contents for this many pages, which is what Exa bills for.
@@ -114,22 +115,27 @@ async function metricRows(sinceHours: number): Promise<MetricRow[]> {
 const sumCost = (m: Map<string, CostAgg>) => [...m.values()].reduce((s, a) => s + a.cost, 0);
 const anyUnpriced = (m: Map<string, CostAgg>) => [...m.values()].some((a) => !a.priced);
 
-async function countFact(predicate: string, sinceHours: number): Promise<number> {
-  const since = new Date(Date.now() - sinceHours * 3600000).toISOString();
-  const { count } = await db.from('facts').select('id', { count: 'exact', head: true })
-    .eq('workspace_id', ws).eq('predicate', predicate).gte('created_at', since);
-  return count ?? 0;
-}
-
-// Exa web-search spend. The research loop is the metered path: one Exa search
-// per completed (or errored) run. Discovery connectors (exa / exa_contacts)
-// bill at the same per-search rate but aren't individually metered here.
+// Exa web-search spend.
+//
+// Two bugs, both of which reported $0.00 forever. First, this counted rows in
+// `facts`, but research_completed is an activity marker and lives in the event
+// log (packages/tools/src/activity_markers.ts, moved 2026-06) — so the count was
+// always zero and Exa never appeared in the bill at all. Second, it assumed one
+// search per run. A run fans out over the workspace's angles: measured on Sudden,
+// 296 completed runs spent 985 searches, so even a fixed count would have been
+// out by 3x. The real number is in the marker's own payload.
+//
+// research_error carries no `searches`, so an errored run's spend cannot be
+// recovered and is not counted. That makes this a floor, not an exact figure.
+// Discovery connectors (exa / exa_contacts) bill at the same rate and are not
+// metered here either.
 async function exaCost(sinceHours: number): Promise<{ calls: number; cost: number }> {
-  const [done, err] = await Promise.all([
-    countFact('research_completed', sinceHours),
-    countFact('research_error', sinceHours),
-  ]);
-  const calls = done + err;
+  const since = new Date(Date.now() - sinceHours * 3600000).toISOString();
+  const rows = await fetchAll<{ payload: { searches?: number } | null }>((from, to) =>
+    db.from('events').select('payload')
+      .eq('workspace_id', ws).eq('action', 'research_completed')
+      .gte('created_at', since).order('created_at').order('id').range(from, to));
+  const calls = rows.reduce((a, e) => a + (e.payload?.searches ?? 0), 0);
   return { calls, cost: calls * exaSearchCost(RESEARCH_NUM_RESULTS) };
 }
 
