@@ -58,6 +58,25 @@ The web build is in there because typecheck alone cannot see it. `next build` ru
 
 `pnpm typecheck` could not complete at all until 2026-07-28 — it died in `packages/composio` on import-extension noise and never reached tools, inngest or web. It exits 0 now; keep it that way.
 
+## Adding a new Inngest function
+
+Deploying the code is not enough. Render does not sync the app with Inngest, so a
+newly added function is never registered and **every event it listens for is
+accepted and then silently dropped** — no error anywhere, the sender's `send()`
+resolves fine, and the work just never happens. Existing functions keep running
+normally, which makes it look like the deploy worked.
+
+After the deploy goes green, run:
+
+`curl -X PUT https://agent-crm-fm1f.onrender.com/api/inngest`
+
+`{"message":"Successfully registered","modified":true}` means the registration
+changed, i.e. it really was out of date. `modified:false` means nothing new.
+
+Proven live 2026-08-20: `rescoreEntity` shipped, the enricher sent
+`entity.rescore_requested` on 13 runs, and zero handler runs happened until this
+PUT. Worth wiring as a Render post-deploy command so it stops being manual.
+
 ## Competition (snapshot, May 2026)
 
 - **Rox** ($1.2B valuation) — Agent Swarm on top of Salesforce/HubSpot. Reactive monitoring, not proactive.
