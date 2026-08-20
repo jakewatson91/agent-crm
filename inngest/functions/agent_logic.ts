@@ -1028,7 +1028,20 @@ export async function runAgent(
     return { ok: false, action: 'skip', reason: `LLM returned non-JSON: ${llm.text.slice(0, 200)}`, behavior };
   }
 
-  const validCites = ((decision.cites ?? []) as string[]).filter((c) => activeFacts.some((f) => f.id === c));
+  const modelCites = ((decision.cites ?? []) as string[]).filter((c) => activeFacts.some((f) => f.id === c));
+  // The anchor goes in the cite list whether or not the model listed it.
+  //
+  // `loadUsedAnchorIds` reads prior `cites` to decide what may anchor the NEXT
+  // message to this account, so an anchor the model forgot to cite is an anchor
+  // that stays available and can open a second message on the same event. It
+  // has not happened yet — all 13 drafts since the anchor shipped cite it,
+  // because it is their opening line — but the guarantee was resting on the
+  // model's choice, and the whole point of the guard is that it does not.
+  // Drafter only: `validCites` also carries the claim_poster's citations, and an
+  // anchor id injected into a claim would cite a fact the claim never mentions.
+  const validCites = behavior === 'drafter' && leadAnchor && !modelCites.includes(leadAnchor.id)
+    ? [leadAnchor.id, ...modelCites]
+    : modelCites;
   const meta = { prompt_hash: promptHash, parent_event_id: signalCreatedEventId ?? payload.parent_event_id };
   const tokens = {
     llm_input_tokens: llm.input_tokens,

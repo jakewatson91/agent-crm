@@ -8,6 +8,7 @@
  * description instead. So the rules below are the product, not plumbing.
  *   tsx scripts/check_anchor.ts   (exits non-zero on failure)
  */
+import { readFileSync } from 'node:fs';
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { pickAnchorCandidates, cannotWriteAbout, DEFAULT_ANCHOR_FRESH_DAYS, type AnchorCandidate } from '../packages/tools/src/anchor.ts';
@@ -81,6 +82,23 @@ ok('blank strings do not count as a condition',
   cannotWriteAbout({ cannot_write_about: ['  '], out_of_scope: ['live only'] }).join('') === 'live only');
 ok('nothing configured is nothing', cannotWriteAbout({}).length === 0);
 ok('undefined is handled', cannotWriteAbout().length === 0);
+
+// The reuse guard reads a previous draft's `cites` to decide what may anchor the
+// next message to the same account. That only holds if the anchor is IN cites,
+// and cites was whatever the model chose to list. Every draft since the anchor
+// shipped did cite it, because it is the opening line, but the guarantee was
+// resting on the model rather than on code.
+console.log('\nthe anchor is in the cite list whether or not the model listed it:');
+const agentLogic = readFileSync(new URL('../inngest/functions/agent_logic.ts', import.meta.url), 'utf8');
+const citeBlock = agentLogic.slice(agentLogic.indexOf('const modelCites ='), agentLogic.indexOf('const meta = {'));
+ok('the model\'s cites are still filtered to facts that exist',
+  /const modelCites = \(\(decision\.cites \?\? \[\]\) as string\[\]\)\.filter/.test(citeBlock));
+ok('and the anchor is prepended when the model left it out',
+  /!modelCites\.includes\(leadAnchor\.id\)[\s\S]*\[leadAnchor\.id, \.\.\.modelCites\]/.test(citeBlock));
+ok('scoped to the drafter, so a claim never cites a fact it does not mention',
+  /behavior === 'drafter' && leadAnchor/.test(citeBlock));
+ok('no duplicate when the model did cite it',
+  !/\[leadAnchor\.id, \.\.\.modelCites\][\s\S]{0,40}:[\s\S]{0,40}\[leadAnchor\.id/.test(citeBlock));
 
 console.log(fail === 0 ? '\nOK: anchor assertions passed' : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);
