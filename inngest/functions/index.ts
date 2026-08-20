@@ -9,6 +9,7 @@ export { qualificationRunner } from './qualification.ts';
 export { contactsRunner } from './contacts.ts';
 export { entityResearchDispatcher, runResearchDispatch } from './entity_research_dispatcher.ts';
 export { advanceAccountsCron } from './advance_accounts.ts';
+export { rescoreEntity, RESCORE_DEBOUNCE } from './rescore_entity.ts';
 export { sourceCurator } from './source_curator.ts';
 export { subscriptionDriftLearner } from './subscription_drift.ts';
 export { healthSweepCron } from './health_sweep.ts';

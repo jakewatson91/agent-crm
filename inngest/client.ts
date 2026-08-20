@@ -101,6 +101,21 @@ export type Events = {
       reason?: string;
     };
   };
+  // Facts landed on this entity and its score is now behind them. Handled by
+  // rescoreEntity, which debounces on entity_id: research reaches the enricher
+  // one article at a time, so scoring inline on every run scored one account 28
+  // times in a week and threw away 27 of those numbers within minutes. The
+  // debounce runs the rubric once, after the account goes quiet, against the
+  // complete fact set. Senders must NOT set an event id — that would dedupe the
+  // requests instead of debouncing them.
+  'entity.rescore_requested': {
+    data: {
+      workspace_id: string;
+      entity_id: string;
+      /** What asked for the rescore. Audit only; does not change behavior. */
+      reason?: string;
+    };
+  };
   // On-demand kick of the daily advance pass (same function the 14:30 UTC cron
   // runs). Sent by verification scripts or a future "run now" control. The pass
   // walks every workspace; data is informational only.

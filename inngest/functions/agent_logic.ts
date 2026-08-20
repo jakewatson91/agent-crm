@@ -24,6 +24,44 @@ import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
 import { inngest } from '../client.ts';
 
+/**
+ * Hand the rescore to the debounced rescoreEntity function instead of running
+ * the rubric here. Returns true when the request was accepted, false when the
+ * caller must score inline itself.
+ *
+ * The fallback is the point. Dispatch is the part that can fail — an Inngest
+ * outage, a missing or rejected event key on the local launchd path — and a
+ * score that silently never happens is far worse than one that costs a burst of
+ * tokens. A failed dispatch degrades to exactly the behavior that shipped before
+ * the debounce existed. (Measured 2026-08-20: the local key does currently work,
+ * so this branch is the safety net rather than the everyday path.)
+ *
+ * If a dispatch instead succeeds and the event goes nowhere, rescoreOnIcpChange
+ * is the backstop: its Case C picks up any account whose substantive facts
+ * postdate its current icp_fit, within 30 minutes, 50 accounts per tick.
+ *
+ * `send` is injected so scripts/check_rescore_debounce.ts can pin both branches
+ * without an Inngest connection.
+ */
+export async function requestRescore(
+  send: (args: { workspace_id: string; entity_id: string; reason: string }) => Promise<unknown>,
+  args: { workspace_id: string; entity_id: string; reason: string },
+): Promise<boolean> {
+  try {
+    await send(args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Bind requestRescore to the real Inngest client. No event id: an id would
+ *  dedupe the requests, and we want them to debounce (each one extends the
+ *  window) so the LAST fact of a burst is the one the rubric sees. */
+function sendRescoreRequest(args: { workspace_id: string; entity_id: string; reason: string }): Promise<unknown> {
+  return inngest.send({ name: 'entity.rescore_requested', data: args });
+}
+
 /** Cosine of two equal-length vectors. Local to keep the fact-dedup guard self-contained. */
 function cosineSim(a: number[], b: number[]): number {
   let d = 0, na = 0, nb = 0;
@@ -1357,14 +1395,28 @@ export async function runAgent(
             .eq('id', ent.data.id);
         } catch { /* non-fatal: scoreAndAssert no-ops this run, next substantive fact retries */ }
       }
-      try {
-        const priorScoreText = activeFacts.find((f) => f.predicate === 'score_total')?.object_text
-          ?? activeFacts.find((f) => f.predicate === 'icp_fit')?.object_text;
-        priorScore = priorScoreText ? parseFloat(priorScoreText) : NaN;
-        score = await scoreAndAssertFn(supabase, actor, ent.data.id);
-        if (score && Number.isFinite(priorScore)) scoreDelta = score.icp_fit - priorScore;
-      } catch {
-        // Non-fatal: the claim still posts without a score/delta.
+      // Ask for a rescore rather than running one. Research reaches this branch
+      // one article at a time, so the inline call scored a busy account 28 times
+      // in a week and superseded 27 of those numbers within minutes of writing
+      // them. rescore_entity.ts debounces on entity_id and runs the rubric once,
+      // after the burst, against the complete fact set. When it takes the
+      // request, `score` stays null here: the claim posts without a delta and
+      // the band-change post is made by the debounced run instead.
+      const rescoreDeferred = await requestRescore(sendRescoreRequest, {
+        workspace_id: payload.workspace_id,
+        entity_id: ent.data.id,
+        reason: 'enricher_asserted_facts',
+      });
+      if (!rescoreDeferred) {
+        try {
+          const priorScoreText = activeFacts.find((f) => f.predicate === 'score_total')?.object_text
+            ?? activeFacts.find((f) => f.predicate === 'icp_fit')?.object_text;
+          priorScore = priorScoreText ? parseFloat(priorScoreText) : NaN;
+          score = await scoreAndAssertFn(supabase, actor, ent.data.id);
+          if (score && Number.isFinite(priorScore)) scoreDelta = score.icp_fit - priorScore;
+        } catch {
+          // Non-fatal: the claim still posts without a score/delta.
+        }
       }
 
       const summary = sanitize((decision.summary as string) ?? `Extracted ${asserted} fact${asserted === 1 ? '' : 's'}.`);
@@ -1410,7 +1462,18 @@ export async function runAgent(
       // substantive fact really is newer than the current score, so this is one
       // cheap facts-read per zero-fact run — and a rescore exactly when one was
       // lost.
-      try { await scoreAndAssertFn(supabase, actor, ent.data.id); } catch { /* non-fatal */ }
+      // Deferred the same way as the fact-asserting branch above, and it has to
+      // be: a zero-fact run lands in the middle of a burst too (124 of 363
+      // same-burst enricher runs asserted nothing last week), so scoring inline
+      // here would fire the rubric mid-burst and undo the debounce.
+      const healDeferred = await requestRescore(sendRescoreRequest, {
+        workspace_id: payload.workspace_id,
+        entity_id: ent.data.id,
+        reason: 'enricher_no_facts',
+      });
+      if (!healDeferred) {
+        try { await scoreAndAssertFn(supabase, actor, ent.data.id); } catch { /* non-fatal */ }
+      }
     }
     // Contact lookups moved from here to the drafter pre-flight — see the
     // `behavior === 'drafter'` block above. The enricher fires on every signal,
@@ -2101,7 +2164,7 @@ export function draftAuditFlags(args: {
  * (0.5–0.65), draft-ready (≥0.65). A band shift is what changes downstream
  * behavior, so we only post score reasoning when the band actually moves.
  */
-function icpBand(score: number): 'drop' | 'watch' | 'research' | 'draft-ready' {
+export function icpBand(score: number): 'drop' | 'watch' | 'research' | 'draft-ready' {
   if (!Number.isFinite(score) || score < 0.35) return 'drop';
   if (score < 0.5) return 'watch';
   if (score < 0.65) return 'research';
