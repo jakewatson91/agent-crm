@@ -3610,3 +3610,99 @@ generic" and "the domain resolver handed us the wrong company" are different bug
 `out_of_scope` was deliberately NOT renamed to `cannot_serve`. It already does exactly the
 account-veto job; renaming churns the scorer, wizard, UI and live policy for no behaviour
 change.
+
+## 2026-08-20 — the planner had been dead for nine days and the clock said otherwise
+
+Started on "what's next" and ended up finding that the thing which decides what research
+searches for had not produced a result since 2026-08-11, while `strategy_generated_at` read
+five hours old.
+
+### The planner
+
+`planResearchAngles` was the one fixed-shape JSON call the 2026-08-14 `thinking: 'disabled'`
+sweep missed. DeepSeek counts reasoning tokens against `max_tokens`, so `deepseek-v4-pro`
+spent all 1200 of its ceiling thinking and returned an empty string. `chatComplete`'s ladder
+could not save it: the roomy retry spent all 4000 the same way and so did the gateway
+fallback. Instrumented signature, which is what named the bug:
+
+```
+before:  finish=length  output_tokens=4000  text=0ch    -> source: baseline
+after:   finish=stop    output_tokens=427   text=1599ch -> source: ai, 5 angles
+```
+
+Every attempt landed on `BASELINE_ANGLES`. The reason nobody saw it for nine days is the
+fallback branch: it re-persisted the stored angles purely to hold the `MIN_REGEN_HOURS` retry
+floor, and restamping `strategy_generated_at` was how it held them. So a dead planner and a
+healthy regeneration were indistinguishable by timestamp. `strategy_attempted_at` holds the
+floor now, `strategy_generated_at` only moves on a real result, `strategy_last_error` records
+the cause, and a parse failure reports `finish_reason` and the output count instead of a bare
+"Unexpected end of JSON input".
+
+The floor also had to move ahead of the freshness check. It had been covering the stale and
+brief-newer paths by accident, through the restamp that is now gone.
+
+`/api/workspaces/research-strategy` had the same bug and worse: it persisted unconditionally,
+so pressing Regenerate while the planner was down would have written `BASELINE_ANGLES` over a
+working strategy, whose questions belong to a brief the workspace does not have. It keeps what
+is stored now and the settings page reports the failure instead of "refreshed research plan".
+
+**What it cost.** Two questions the loop had already ruled unanswerable kept buying searches
+the whole time, because dropping a dead angle needs one successful plan. `tech_leader_blog`
+bought 721 pages and answered its question zero times; `cdn_infrastructure_mentions` bought
+1,022 and answered 14. Sudden re-planned after the fix and no angle now points at a retired
+question.
+
+Then capped a plan at 5 angles (`MAX_PLANNED_ANGLES`, interpolated into the prompt so code and
+prompt cannot disagree). The first plan after the repair took the code's old limit of 6 while
+the prompt asked for 3 to 5, which pushed a hot account from 5 searches to 6.
+
+### The anchor is now in the cite list
+
+`loadUsedAnchorIds` reads a previous draft's `cites` to decide what may anchor the next message
+to that account, and `cites` was whatever the model chose to list. All 13 drafts since the
+anchor shipped do cite it, because it is their opening line, but the guarantee was resting on
+the model. `validCites` now prepends `leadAnchor.id`, scoped to the drafter so a claim never
+cites a fact it does not mention.
+
+### Four things I got wrong, corrected in the same session
+
+- **Ranked research angles by pages bought.** Exa bills per search; the pages inside a result
+  are free. That table measured something nobody pays for.
+- **Claimed killing dead angles saves ~$9/month.** `selectByBuckets` spends its whole budget
+  regardless, so fewer angles means a cheaper hot account and more accounts covered. It is a
+  coverage gain, not a saving.
+- **Said the budget was the default 30/tick.** It is 8 — I read `search_budget` instead of
+  `searches_per_run`. This one matters, see the open item below.
+- **Proposed building a stop for unanswerable questions.** `questionsWorthSearching` already
+  was that stop, and it was correct. The planner was the broken part.
+
+### Where the Exa money actually goes, and the open question
+
+The `0 */4` dispatcher is spending exactly its configured 8 searches a tick. But research runs
+by UTC hour over 3 days show **01:00-02:00 with 100 runs and 400 searches (~133/day) against
+about 24 searches per cron tick**, matching no Inngest cron and no launchd job. That is roughly
+73% of research spend outside the budget knob, and it is why the 08-16 projection of $4.83/week
+never landed against an actual $14.45/7d. Recorded as the first thing to chase next session.
+
+Also measured, and the reason the "retire low-anchor questions" idea was NOT shipped: yield has
+to be divided by pages KEPT, not pages bought. Per question, `recent_launch` runs 2.4 kept pages
+per dated event, `delivery_scale` 4.0, `monetization_model` 41.7. My angle-level table had made
+`delivery_scale` look 60x worse than it is. A simulated bar came out non-monotonic (1-per-20
+retires two questions, 1-per-60 retires none) because one number was doing both the sample-size
+and the ratio job. All of that data also predates the planner repair, so the honest move is to
+let the repaired loop run a fair trial and re-measure.
+
+### Live state at wrap
+
+Exa hit its credit wall at 18:22 during a manual kick, latched a `scope='research'` pause with
+a plain reason (scoring, contacts and drafting kept running), Jake topped up, pause cleared,
+re-kicked. Three accounts / 15 searches produced 10 kept pages and 1 dated event, every kept
+page filed under `recent_launch`. Far too small to judge the new angles; the scheduled ticks
+are what will.
+
+Sameness across accounts was raised and dropped: Jake's position is that a working message is
+fine to repeat, and the only requirement is that the same or a similar client never gets two
+of the same. Checked all 71 drafts ever — four accounts share a cited fact across two drafts
+and every one of those pairs predates the guard shipping on 08-19.
+
+Commits: `07727f5`, `36c3507`, `bd0fb15`. `pnpm verify` green on each.
