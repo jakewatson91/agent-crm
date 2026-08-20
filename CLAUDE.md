@@ -58,24 +58,27 @@ The web build is in there because typecheck alone cannot see it. `next build` ru
 
 `pnpm typecheck` could not complete at all until 2026-07-28 — it died in `packages/composio` on import-extension noise and never reached tools, inngest or web. It exits 0 now; keep it that way.
 
-## Adding a new Inngest function
+## Verifying a new Inngest function after deploy
 
-Deploying the code is not enough. Render does not sync the app with Inngest, so a
-newly added function is never registered and **every event it listens for is
-accepted and then silently dropped** — no error anywhere, the sender's `send()`
-resolves fine, and the work just never happens. Existing functions keep running
-normally, which makes it look like the deploy worked.
+**Inngest's `/v1/events` API lags several minutes behind reality.** Do not use it
+to decide whether a function ran. On 2026-08-20 it showed zero runs of a function
+that had in fact already run, and the wrong conclusion drawn from it was "the
+function never registered."
 
-After the deploy goes green, run:
+Read the database instead. The Supabase event log is written synchronously by the
+function itself, so it is the ground truth for what happened and when.
 
-`curl -X PUT https://agent-crm-fm1f.onrender.com/api/inngest`
+Two things that make a debounced function look dead when it is healthy:
+- the debounce only fires after its quiet period, and Inngest adds slack on top
+  (measured: a 10m debounce fired at 12.3m)
+- every new request extends the window, so an account still receiving facts
+  legitimately has no run yet
 
-`{"message":"Successfully registered","modified":true}` means the registration
-changed, i.e. it really was out of date. `modified:false` means nothing new.
-
-Proven live 2026-08-20: `rescoreEntity` shipped, the enricher sent
-`entity.rescore_requested` on 13 runs, and zero handler runs happened until this
-PUT. Worth wiring as a Render post-deploy command so it stops being manual.
+If you do suspect the app is out of sync, `curl -X PUT
+https://agent-crm-fm1f.onrender.com/api/inngest` re-registers it and reports
+`modified:true/false`. It is harmless. Note that a `modified:true` does NOT prove
+the function was missing — it also fires on a routine checksum change, which is
+exactly the trap that produced the wrong diagnosis above.
 
 ## Competition (snapshot, May 2026)
 
