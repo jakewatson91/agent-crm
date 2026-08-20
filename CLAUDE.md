@@ -50,7 +50,9 @@ Specific bans:
 
 ## Before committing
 
-Run `pnpm verify` (typecheck across every package + the assertion suites). Not the per-package typecheck.
+Run `pnpm verify` (typecheck across every package + the assertion suites + the web production build). Not the per-package typecheck. Takes ~50s.
+
+The web build is in there because typecheck alone cannot see it. `next build` runs webpack, and webpack fails on things tsc is happy with — most of all a client component that reaches a server-only module. A client file imported `explainScore` from the `@agent-crm/tools` barrel, the barrel pulled `policy.ts`, `policy.ts` imports `node:crypto`, and webpack cannot resolve a `node:` scheme in a browser bundle. `pnpm verify` passed, the commit shipped, and **Render failed every deploy from 2026-08-14 to 2026-08-20 while the cloud quietly kept serving an older build.** Nothing alerts on this; the pipeline looks alive because the local launchd loop runs current code against the same database. Pure scoring math now lives in `packages/tools/src/score_explain.ts` (no imports at all) for the UI to use.
 
 `pnpm --filter <pkg> typecheck` is **not sufficient for anything shared**. Files under `inngest/` and `packages/` are compiled by more than one project with different settings, and the stricter one is what catches real bugs. This is not hypothetical: a `.catch()` on a PostgREST query builder (a thenable, not a Promise) passed the inngest typecheck, shipped, and would have thrown at runtime inside the error path it was added to. The web project flagged it instantly.
 

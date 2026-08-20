@@ -4,7 +4,7 @@
  * always agree on what to show and hide — see labels.ts for the underlying
  * code-detection rules this builds on.
  */
-import { breakdownFromFacts, explainScore, type ScoreWeights } from '@agent-crm/tools';
+import { breakdownFromFacts, explainScore, type ScoreWeights } from '@agent-crm/tools/score_explain';
 import { humanizePredicate, looksLikeCode } from './labels';
 import { SCORE_DIMENSIONS } from './score_labels';
 

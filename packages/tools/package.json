@@ -23,7 +23,8 @@
     "./source_metrics": "./src/source_metrics.ts",
     "./prompt_builders": "./src/prompt_builders.ts",
     "./chat_workspace": "./src/chat_workspace.ts",
-    "./icp_embeddings": "./src/icp_embeddings.ts"
+    "./icp_embeddings": "./src/icp_embeddings.ts",
+    "./score_explain": "./src/score_explain.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
