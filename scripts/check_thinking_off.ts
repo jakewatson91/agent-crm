@@ -76,6 +76,24 @@ async function main() {
   ok('and only the drafter, so the enricher and scorer are untouched',
     !/thinking: 'disabled' as const \}\s*:\s*\{ thinking/.test(call));
 
+  // The research-strategy planner, missed by the 2026-08-14 sweep that fixed the
+  // relevance gate. Same shape, same failure: it spent every token of the 1200
+  // ceiling reasoning, the roomy retry spent all 4000, and both returned an empty
+  // string, so every attempt fell back to BASELINE_ANGLES. The dispatcher's
+  // fallback branch then re-persisted the stored angles, which meant the only
+  // visible symptom was angles that never changed while the timestamp said they
+  // had. Measured on Sudden: nine days, and two questions the loop had already
+  // ruled unanswerable went on buying searches the whole time.
+  console.log('\nThe research-strategy planner, which needs one good call to drop a dead angle:');
+  const rs = readFileSync(new URL('../packages/tools/src/research_strategy.ts', import.meta.url), 'utf8');
+  const planner = rs.slice(rs.indexOf('export async function planResearchAngles'), rs.indexOf('function isValidAngleId') >= 0 ? rs.indexOf('function isValidAngleId') : rs.indexOf('export async function generateResearchStrategy'));
+  ok('planResearchAngles asks for thinking off', /thinking: 'disabled'/.test(planner), planner.slice(0, 300));
+  ok('and still asks for json_object, so the ladder still applies',
+    /response_format: \{ type: 'json_object' \}/.test(planner));
+  ok('a JSON parse failure reports finish_reason and the output count, not just the parse error',
+    /finish=\$\{llm\.finish_reason/.test(planner) && /output_tokens=\$\{llm\.output_tokens/.test(planner),
+    'the bare parse message is what made this a nine-day diagnosis');
+
   console.log(fail === 0 ? '\nOK: thinking-off assertions passed\n' : `\nFAILED: ${fail} assertion(s)\n`);
   process.exit(fail === 0 ? 0 : 1);
 }

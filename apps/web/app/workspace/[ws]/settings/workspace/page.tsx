@@ -308,15 +308,21 @@ export default function SettingsWorkspacePage() {
       const researchChanged = aboutChanged
         || guidance.trim() !== guidanceAtLoad.trim()
         || JSON.stringify(alwaysInclude) !== JSON.stringify(alwaysIncludeAtLoad);
+      let plannerFailed: string | null = null;
       if (researchChanged) {
-        await fetch('/api/workspaces/research-strategy', {
+        const rs = await fetch('/api/workspaces/research-strategy', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workspace_id: params.ws }),
-        }).catch(() => {});
+        }).then((x) => x.json()).catch(() => null);
+        // The save itself succeeded either way, so this is reported alongside the
+        // save message rather than replacing it. Silence here is what let an
+        // About change look like it had updated the search plan when it had not.
+        if (rs && rs.ok === false) plannerFailed = rs.planner_error ?? 'the planner did not return a usable strategy';
       }
+      if (plannerFailed) setErr(`saved, but the search plan is unchanged — the planner failed: ${plannerFailed}`);
       setMsg(aboutChanged
         ? `saved + regenerated structured fields at ${new Date().toLocaleTimeString()}`
-        : researchChanged ? `saved + refreshed research plan at ${new Date().toLocaleTimeString()}`
+        : researchChanged && !plannerFailed ? `saved + refreshed research plan at ${new Date().toLocaleTimeString()}`
         : `saved at ${new Date().toLocaleTimeString()}`);
       await load();
     } finally { setSaving(false); }
@@ -335,6 +341,11 @@ export default function SettingsWorkspacePage() {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { setErr(j.error ?? 'regenerate failed'); return; }
+      // A failed planner comes back 200 with ok:false and the existing angles
+      // kept, because keeping them is the right outcome. Without this the button
+      // reported success and the angles silently did not change — which is how a
+      // dead planner went unnoticed for nine days.
+      if (j.ok === false) setErr(`search plan unchanged — the planner failed: ${j.planner_error ?? 'unknown error'}`);
       await load();
     } finally { setRegen(false); }
   }

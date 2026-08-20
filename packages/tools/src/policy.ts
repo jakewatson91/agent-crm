@@ -694,7 +694,28 @@ export interface ResearchPolicy {
   empty_run_backoff_max?: number;
   selection_mix?: { high_value?: number; active_comms?: number; exploration?: number };
   strategy?: ResearchAngle[];
+  /**
+   * When the planner last SUCCEEDED. Only a real planner result moves this.
+   *
+   * It used to move on failure too: the fallback branch re-persisted the stored
+   * angles to hold the retry floor, and restamping was how it held them. That
+   * made a dead planner indistinguishable from a healthy regeneration — on
+   * Sudden this read 2026-08-20 while every angle's `record_since` was still
+   * 2026-08-11, so nine days of failures looked like a strategy planned five
+   * hours ago. `strategy_attempted_at` holds the floor now.
+   */
   strategy_generated_at?: string;
+  /**
+   * When the planner last RAN, success or failure. This is what the retry floor
+   * reads, so a failing planner still waits MIN_REGEN_HOURS between attempts
+   * instead of burning a call every 4h tick.
+   */
+  strategy_attempted_at?: string;
+  /**
+   * Why the last planner attempt failed, cleared on the next success. Without it
+   * the only evidence of a broken planner is angles that quietly never change.
+   */
+  strategy_last_error?: string;
   /**
    * The research brief — the questions every stage of research shares. Cached
    * like `strategy`: regenerated when stale or when About/guidance changes.

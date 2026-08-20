@@ -503,6 +503,17 @@ export async function planResearchAngles(
   try {
     const llm = await chatComplete({
       model: opts?.model ?? PLANNER_MODEL,
+      // The same fix the relevance gate got on 2026-08-14, in the one
+      // fixed-shape JSON call that was missed by that sweep. DeepSeek counts
+      // reasoning tokens against max_tokens, and on a prompt this size the
+      // planner spent all 1200 of them thinking and returned JSON that stopped
+      // mid-object. The roomy retry and the fallback model did the same, so the
+      // ladder could not rescue it and every attempt landed on BASELINE_ANGLES.
+      // Measured: Sudden's angles had not changed since 2026-08-11 while the
+      // strategy stamp read "today", and two questions the loop had already
+      // ruled unanswerable went on buying searches because dropping them needs
+      // one successful plan. Pinned by scripts/check_thinking_off.ts.
+      thinking: 'disabled',
       max_tokens: 1200,
       response_format: { type: 'json_object' },
       messages: [
@@ -515,7 +526,17 @@ export async function planResearchAngles(
         { role: 'user', content: `${buildUserPayload(ctx)}${angleRecordBlock(ctx.previous ?? [], ctx.records ?? [])}` },
       ],
     });
-    const parsed = JSON.parse(llm.text) as { angles?: unknown[] };
+    let parsed: { angles?: unknown[] };
+    try {
+      parsed = JSON.parse(llm.text) as { angles?: unknown[] };
+    } catch (e) {
+      // "Unexpected end of JSON input" on its own names neither the cause nor
+      // the rung it died on, and that is what nine days of silent fallbacks
+      // looked like from the outside. finish_reason plus the output count
+      // separates the two failures that land here: `length` with no text is the
+      // model reasoning past its ceiling, anything else is a malformed reply.
+      throw new Error(`planner returned unparseable JSON (${e instanceof Error ? e.message : String(e)}) — finish=${llm.finish_reason ?? 'unknown'} output_tokens=${llm.output_tokens} text=${llm.text.length}ch model=${llm.model}`);
+    }
     const usedIds = new Set<string>();
     const angles: ResearchAngle[] = [];
     const validQuestionIds = new Set((ctx.brief ?? []).map((q) => q.id));
@@ -1170,12 +1191,49 @@ export async function persistResearchStrategy(
 ): Promise<void> {
   const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
   const policy = (r.data?.policy ?? {}) as WorkspacePolicy;
+  const now = new Date().toISOString();
+  const research = { ...(policy.research ?? {}) };
+  // Deleted rather than set to undefined: the policy is serialised to JSONB, and
+  // relying on JSON.stringify to drop an undefined key is the kind of thing that
+  // works until a caller reads the object before it round-trips.
+  delete research.strategy_last_error;
+  const next = {
+    ...policy,
+    research: {
+      ...research,
+      strategy: carryOffSwitch(stampRecordSince(angles, policy.research?.strategy ?? []), policy.research?.strategy ?? []),
+      strategy_generated_at: now,
+      // Both stamps move on success, so the floor is the same either way and
+      // "generated" and "attempted" only ever diverge while the planner is down.
+      strategy_attempted_at: now,
+    },
+  };
+  await supabase.from('workspaces').update({ policy: next }).eq('id', workspace_id);
+}
+
+/**
+ * Record a planner attempt that fell back to BASELINE_ANGLES, WITHOUT touching
+ * the stored angles or `strategy_generated_at`.
+ *
+ * The old shape re-persisted the stored angles purely to move the timestamp,
+ * which held the retry floor and hid the failure in the same stroke. Splitting
+ * the two stamps keeps the floor and leaves `strategy_generated_at` meaning what
+ * it says. The error text is kept so the failure is legible from the policy
+ * alone; the angles themselves are left exactly as they were.
+ */
+export async function recordStrategyAttempt(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  error?: string,
+): Promise<void> {
+  const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
+  const policy = (r.data?.policy ?? {}) as WorkspacePolicy;
   const next = {
     ...policy,
     research: {
       ...(policy.research ?? {}),
-      strategy: carryOffSwitch(stampRecordSince(angles, policy.research?.strategy ?? []), policy.research?.strategy ?? []),
-      strategy_generated_at: new Date().toISOString(),
+      strategy_attempted_at: new Date().toISOString(),
+      strategy_last_error: (error ?? 'planner fell back to the baseline').slice(0, 300),
     },
   };
   await supabase.from('workspaces').update({ policy: next }).eq('id', workspace_id);
@@ -1244,6 +1302,22 @@ export function orphanedAngles(policy: WorkspacePolicy): string[] {
 const MIN_REGEN_HOURS = 12;
 
 /**
+ * Hours since the planner last RAN, whether it worked or not.
+ *
+ * Reads the later of the two stamps so an older successful generation cannot
+ * re-open the floor after a more recent failure, and so a workspace written
+ * before `strategy_attempted_at` existed still floors on its generation stamp
+ * instead of regenerating on the first tick after deploy.
+ */
+function sinceLastAttemptHours(policy: WorkspacePolicy): number {
+  const stamps = [policy.research?.strategy_attempted_at, policy.research?.strategy_generated_at]
+    .map((s) => Date.parse(s ?? ''))
+    .filter((n) => Number.isFinite(n));
+  if (!stamps.length) return Infinity;
+  return (Date.now() - Math.max(...stamps)) / 3_600_000;
+}
+
+/**
  * Return a usable strategy, regenerating + persisting if the cached one is missing,
  * stale, or contradicted by what its angles actually bought. Called by the
  * dispatcher once per workspace per tick (every 4h).
@@ -1261,21 +1335,25 @@ const MIN_REGEN_HOURS = 12;
  */
 export async function ensureResearchStrategy(supabase: SupabaseClient, workspace_id: string): Promise<ResearchAngle[]> {
   const policy = await getPolicy(supabase, workspace_id);
+  const stored = policy.research?.strategy ?? [];
+  // The floor applies to every path that would call the planner, not just the
+  // fresh-strategy one. While a failed attempt restamped `strategy_generated_at`
+  // the stale and brief-newer paths were floored by accident, because the
+  // restamp made the strategy look fresh again on the next tick. Now that only a
+  // success moves that stamp, a workspace whose planner is down and whose brief
+  // is newer than its strategy would call the planner on every 4h tick forever.
+  // A workspace with no angles at all is exempt: it has nothing to run.
+  if (stored.length && sinceLastAttemptHours(policy) < MIN_REGEN_HOURS) return resolveStrategy(policy);
   if (isStrategyFresh(policy)) {
-    const at = Date.parse(policy.research?.strategy_generated_at ?? '');
-    const hours = (Date.now() - at) / 3_600_000;
-    if (!Number.isFinite(hours) || hours < MIN_REGEN_HOURS) return resolveStrategy(policy);
     // Orphans are free to check (the brief is already in hand) so they go first
     // and usually save the read below. Both are evidence triggers, so both sit
     // under the floor — an orphan that regeneration cannot clear used to fire on
     // every tick.
-    const stored = policy.research?.strategy ?? [];
     const failing = orphanedAngles(policy).length > 0
       || failedAngles(stored, await loadAngleRecords(supabase, workspace_id, stored)).length > 0;
     if (!failing) return resolveStrategy(policy);
   }
-  const stored = policy.research?.strategy ?? [];
-  const { angles, source } = await generateResearchStrategy(supabase, workspace_id);
+  const { angles, source, error } = await generateResearchStrategy(supabase, workspace_id);
   // A planner error lands on BASELINE_ANGLES, and persisting those over a working
   // strategy is worse than not regenerating at all: the baseline answers `moves`
   // and `buyers`, which no generated brief contains, so every angle in the
@@ -1285,10 +1363,11 @@ export async function ensureResearchStrategy(supabase: SupabaseClient, workspace
   // planner call just timed out. Measured while proving the withholding rule: 1
   // planner run in 12 came back as a fallback.
   //
-  // Restamped rather than left alone, so the next attempt waits for the floor
-  // instead of retrying on every tick.
+  // The attempt is recorded rather than the angles re-persisted. Re-persisting
+  // was only ever a way to move the timestamp, and moving THAT timestamp is what
+  // made nine days of planner failures read as a fresh regeneration.
   if (source === 'baseline' && stored.length) {
-    try { await persistResearchStrategy(supabase, workspace_id, stored); } catch { /* keep using what is in hand */ }
+    try { await recordStrategyAttempt(supabase, workspace_id, error); } catch { /* keep using what is in hand */ }
     return resolveStrategy(policy);
   }
   try {
