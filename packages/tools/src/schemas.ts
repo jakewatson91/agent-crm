@@ -94,6 +94,10 @@ export const PostToChannelSchema = z.object({
   // (which almost never survives paraphrasing into readable draft copy).
   // touch_draft only; other post kinds leave this empty.
   cite_quotes: z.array(z.object({ fact_id: UuidSchema, quote: z.string().min(1) })).default([]),
+  // policy.drafter.arguments[].id — which argument this draft applied. Lets
+  // "what did we argue, and how often" be a query rather than a read of 26
+  // message bodies, and is what a withdrawal labels when one turns out wrong.
+  argument_id: z.string().min(1).optional(),
   parent_post_id: UuidSchema.optional(),
   thread_root_id: UuidSchema.optional(),
   // How much this claim's facts moved the account's score (score_after -

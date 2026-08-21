@@ -211,6 +211,69 @@ async function main() {
   ok('facts are numbered in the prompt', /^1\. business_model/m.test(seen), seen.slice(0, 200));
   ok('and the answer is asked for the number', /"evidence"/.test(seen) === false, 'the shape belongs in the system prompt, not the facts');
 
+  // A written-down argument states a condition, and the condition is checked in
+  // code rather than trusted to the prompt. This is the gate that stops the
+  // measured failure: on Sudden, 90 accounts had the trigger and 27 had the
+  // condition, so without it 63 messages assert something about a company that
+  // nobody established — confidently, specifically, and to someone who knows
+  // their own business better than we do.
+  console.log('\nAn argument does not run until its condition is shown to hold:');
+  const argued = {
+    ...base,
+    arguments: [{
+      id: 'catalogue_lift',
+      when: 'a new season lands',
+      only_if: 'they run a catalogue with real depth',
+      so: 'catch-up traffic grows on old titles',
+      ask: 'put the catalogue on us, leave the premiere alone',
+    }],
+  };
+  const argAnswer = (o: Record<string, unknown>) => answers(o);
+
+  let a = await pickDraftAngle(sb, WS, argued, argAnswer({ argument: 1, trigger_evidence: 2, precondition_evidence: 1, why: 'launch + catalogue', same_argument: [1] }));
+  ok('both facts present, the argument runs', a.reason === 'picked' && a.choice?.argument?.id === 'catalogue_lift', JSON.stringify(a));
+  ok('and the message argues the SO, not a pain point', a.choice?.problem === 'catch-up traffic grows on old titles', JSON.stringify(a.choice));
+  ok('the whole argument reaches the caller, so the ask survives', a.choice?.argument?.ask?.includes('leave the premiere alone') === true, JSON.stringify(a.choice));
+
+  a = await pickDraftAngle(sb, WS, argued, argAnswer({ argument: 1, trigger_evidence: 2, precondition_evidence: 0, why: 'no catalogue evidence', same_argument: [] }));
+  ok('trigger fired but condition unproven: NO message', a.choice === null && a.reason === 'precondition_unmet', JSON.stringify(a));
+
+  a = await pickDraftAngle(sb, WS, argued, argAnswer({ argument: 1, trigger_evidence: 2, precondition_evidence: 99, why: 'made it up', same_argument: [] }));
+  ok('a condition fact out of range is not a condition', a.choice === null && a.reason === 'precondition_unmet', JSON.stringify(a));
+
+  a = await pickDraftAngle(sb, WS, argued, argAnswer({ argument: 1, precondition_evidence: 1, why: 'no trigger', same_argument: [] }));
+  ok('no trigger fact is still no angle', a.choice === null && a.reason === 'no_evidence', JSON.stringify(a));
+
+  a = await pickDraftAngle(sb, WS, argued, argAnswer({ argument: 0, trigger_evidence: 0, precondition_evidence: 0, why: 'nothing fits', same_argument: [] }));
+  ok('no argument fits is a clean no', a.choice === null && a.reason === 'no_problem_fits', JSON.stringify(a));
+
+  // An argument with nothing to check must not be blocked by the check.
+  const noCondition = { ...base, arguments: [{ id: 'a1', when: 'they launch', so: 'cost grows', ask: 'try us' }] };
+  a = await pickDraftAngle(sb, WS, noCondition, argAnswer({ argument: 1, trigger_evidence: 1, precondition_evidence: 0, why: 'nothing to check', same_argument: [] }));
+  ok('an argument stating no condition runs on the trigger alone', a.reason === 'picked', JSON.stringify(a));
+
+  // One argument IS a choice — "does this fire here" is the question — where one
+  // pain point never was. Getting this wrong would silently switch the whole
+  // mechanism off for any workspace that wrote down a single argument.
+  const oneArg = { ...base, pain_points: ['only one'], arguments: [{ id: 'a1', when: 'they launch', so: 'cost grows', ask: 'try us' }] };
+  a = await pickDraftAngle(sb, WS, oneArg, argAnswer({ argument: 1, trigger_evidence: 1, precondition_evidence: 0, why: 'fires', same_argument: [] }));
+  ok('a single argument is enough to run the picker', a.reason === 'picked', JSON.stringify(a));
+
+  // And the old path is untouched for every workspace that has none.
+  const noArgs = await pickDraftAngle(sb, WS, base, answer({ problem: 1, evidence: 1, why: 'unchanged', same_argument: [] }));
+  ok('a workspace with no arguments behaves exactly as before',
+    noArgs.reason === 'picked' && noArgs.choice?.problem === base.pain_points[0] && noArgs.choice?.argument === undefined, JSON.stringify(noArgs));
+
+  let argSeen = '';
+  await pickDraftAngle(sb, WS, argued, async (text: string, job?: 'scope' | 'pick') => {
+    if (job !== 'scope') argSeen = text;
+    return JSON.stringify({ argument: 1, trigger_evidence: 2, precondition_evidence: 1, why: 'x', same_argument: [] });
+  });
+  ok('the condition is put in front of the model, not just checked after',
+    /ONLY IF they run a catalogue with real depth/.test(argSeen), argSeen.slice(0, 300));
+  ok('the pain-point menu is replaced, not appended',
+    !/PROBLEMS THE SELLER SOLVES/.test(argSeen), argSeen.slice(0, 300));
+
   console.log(fail === 0 ? '\nOK: pick-angle assertions passed\n' : `\nFAILED: ${fail} assertion(s)\n`);
   process.exit(fail === 0 ? 0 : 1);
 }

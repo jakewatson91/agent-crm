@@ -25,7 +25,8 @@ import { currentFactRows } from '../packages/tools/src/reads.ts';
 import {
   resolveBrief, BASELINE_BRIEF, PAIN_QUESTION, sysPrompt, briefInputHash,
   earnsItsSearches, unreachableQuestions, recordReading, foldFetchedByQuestion, carryQuestionOffSwitch, UNREACHABLE_PAGES,
-  makesAccountsWritable, questionsNotEarningTheirPages, MIN_FACTS_FOR_DATE_VERDICT, FAIR_TRIAL_PAGES, type QuestionRecord,
+  makesAccountsWritable, questionsNotEarningTheirPages, questionsServingAPrecondition, MIN_FACTS_FOR_DATE_VERDICT, FAIR_TRIAL_PAGES, type QuestionRecord,
+  buildUserPayload as buildUserPayloadForTest,
 } from '../packages/tools/src/research_brief.ts';
 import type { WorkspacePolicy } from '../packages/tools/src/policy.ts';
 
@@ -328,6 +329,59 @@ console.log('\na question that buys pages has to make some account writable:');
     ['monetization_model']);
   eq('a healthy brief triggers nothing',
     questionsNotEarningTheirPages([rec({ id: 'recent_launch', fetched: 1361, facts: 804, dated: 413, used: 29 })]), []);
+
+  // The hole this bar had, found by the argument work and already paid for once.
+  // A question establishing an argument's condition is never quoted in a message
+  // and is rarely an event, so it scores zero on both tests while being the
+  // thing that decides whether the message may be written at all. `catalogue_size`
+  // was retired from Sudden on exactly those numbers — 16 facts, no citations —
+  // and it is the condition for the only argument that workspace makes.
+  eq('a question serving an argument condition is NOT retired for going unquoted',
+    makesAccountsWritable(rec({ fetched: 900, facts: 200, dated: 0, used: 0, serves_precondition: true })), true);
+  eq('and without that flag the identical record fails, so the flag is what saves it',
+    makesAccountsWritable(rec({ fetched: 900, facts: 200, dated: 0, used: 0 })), false);
+}
+
+// The protection has to be a DECLARED link, not a guess from the wording, since
+// it decides whether a question can ever be retired.
+console.log('\na question is protected only when it says which argument it serves:');
+{
+  const withArg = (brief: any[], args: any[]) =>
+    questionsServingAPrecondition({ research: { brief }, drafter: { arguments: args } } as WorkspacePolicy);
+  const args = [{ id: 'catalogue_lift', when: 'a season lands', only_if: 'they have a deep catalogue', so: 'cost grows', ask: 'the catalogue' }];
+
+  eq('a question naming its argument is protected',
+    [...withArg([{ id: 'catalogue_size', label: 'c', question: 'How big is their catalogue?', serves: 'catalogue_lift' }], args)],
+    ['catalogue_size']);
+  eq('a question that names nothing is not',
+    [...withArg([{ id: 'catalogue_size', label: 'c', question: 'How big is their catalogue?' }], args)], []);
+  eq('naming an argument that does not exist protects nothing',
+    [...withArg([{ id: 'q', label: 'q', question: 'Something about them?', serves: 'gone' }], args)], []);
+  // An argument with no condition has nothing to establish, so nothing to protect.
+  eq('an argument stating no condition protects no question',
+    [...withArg([{ id: 'q', label: 'q', question: 'Something about them?', serves: 'a1' }],
+      [{ id: 'a1', when: 'x', so: 'y', ask: 'z' }])], []);
+  eq('a workspace with no arguments protects nothing',
+    [...withArg([{ id: 'q', label: 'q', question: 'Something about them?', serves: 'a1' }], [])], []);
+}
+
+// The planner has to be TOLD to write the condition question, or it writes the
+// trigger question only and every account whose trigger fires gets the claim
+// asserted at it blind.
+console.log('\nthe brief planner is told to cover both halves of an argument:');
+{
+  const ctx = {
+    about: 'a', icp: '{}', value_props: [], pain_points: [], guidance: '', always_include: [],
+    arguments: [{ id: 'catalogue_lift', when: 'a new season lands', only_if: 'they run a deep catalogue', so: 'catch-up traffic grows', ask: 'the catalogue' }],
+  };
+  const payload = buildUserPayloadForTest(ctx);
+  eq('the arguments reach the prompt', payload.includes('catalogue_lift'), true);
+  eq('the trigger is shown', payload.includes('a new season lands'), true);
+  eq('so is the condition', payload.includes('they run a deep catalogue'), true);
+  eq('it is told the condition needs its own question', payload.includes('serves'), true);
+  eq('and told what happens if it skips it', payload.includes('asserted it blind'), true);
+  const none = buildUserPayloadForTest({ ...ctx, arguments: [] });
+  eq('a workspace with no arguments gets none of this', none.includes('THE ARGUMENTS THIS SELLER MAKES'), false);
 }
 
 console.log(fail === 0 ? '\nALL PASS\n' : `\n${fail} FAILED\n`);

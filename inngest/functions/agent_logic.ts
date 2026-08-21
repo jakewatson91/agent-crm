@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, hiringEventDate, pickAnchorCandidates, cannotWriteAbout, type StepPurpose, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, hiringEventDate, pickAnchorCandidates, UNPROVEN_ARGUMENT_DRAFT_LIMIT, cannotWriteAbout, type StepPurpose, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -886,6 +886,9 @@ export async function runAgent(
       account_name: (ent.data.name as string) ?? '(unnamed)',
       facts: activeFacts.map((f) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text })),
       pain_points: (policy.drafter?.pain_points ?? []) as string[],
+      // When the workspace has written its arguments down, these replace the
+      // problem menu inside the same call. No extra spend.
+      arguments: policy.drafter?.arguments ?? [],
       templates: (policy.drafter?.templates ?? []) as Array<{ id: string; angle?: string; enabled?: boolean }>,
       // The FACT-level conditions, not the account-level ones. A company can be
       // perfectly sellable and every fresh thing known about it unwritable; this
@@ -894,6 +897,32 @@ export async function runAgent(
     });
   }
   const angle = angleDecision.choice;
+
+  // An UNPROVEN argument writes a few drafts and then waits for a human.
+  //
+  // An argument is a hypothesis about a market, and a new or freshly edited one
+  // is unproven however confident it reads. The first version of Sudden's ran
+  // 26 drafts in a week arguing the opposite of what the seller sells, and the
+  // only thing that stopped it was a person reading the output days later. This
+  // is that person's job made structural: three drafts is enough to see what an
+  // argument does to real accounts, and nothing like enough to matter if it is
+  // wrong. Setting proven_at (a human confirming it in settings) lifts the cap.
+  //
+  // Deliberately not a spend cap in config. A budget knob answers "how much did
+  // this cost" and the question that matters is "how many people got sent the
+  // wrong message before anyone looked".
+  if (behavior === 'drafter' && angle?.argument && !angle.argument.proven_at) {
+    const { count } = await supabase
+      .from('channel_posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('argument_id', angle.argument.id)
+      .is('withdrawn_at', null);
+    if ((count ?? 0) >= UNPROVEN_ARGUMENT_DRAFT_LIMIT) {
+      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+        `[argument_unproven] "${angle.argument.label ?? angle.argument.id}" has written ${count} drafts and has not been confirmed yet. Read those and confirm the argument to let it run on the book.`, []);
+      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'argument_unproven', behavior };
+    }
+  }
 
   // Facts about the part of the account we cannot serve come out of the
   // shortlist entirely. Leaving them in and asking the model not to lead with
@@ -967,7 +996,11 @@ export async function runAgent(
     forbidden_field_terms: policy.drafter?.forbidden_field_terms ?? [],
     market_brief: policy.drafter?.market_brief,
     templates: policy.drafter?.templates,
-    angle: angle ? { problem: angle.problem, withheld_template_ids: angle.withheld_template_ids } : undefined,
+    // Spread, not a hand-listed subset. This exact line has silently dropped a
+    // drafter field twice, because rebuilding an all-optional object by naming
+    // its keys gets no help from the type checker when one goes missing — the
+    // field just stops reaching the prompt and nothing anywhere says so.
+    angle: angle ? { ...angle } : undefined,
     message_rules: policy.drafter?.message_rules,
     char_budget: policy.drafter?.char_budget,
     trigger_max_age_days: policy.drafter?.trigger_max_age_days,
@@ -1156,6 +1189,10 @@ export async function runAgent(
       .map((cq) => ({ fact_id: cq.fact_id, quote: cq.quote.trim() }));
     const r = await callTool(supabase, actor, 'post_to_channel', {
       channel_id, kind: 'touch_draft', body: composed, cites: validCites, cite_quotes: validCiteQuotes,
+      // Which argument this message made. Without it "what did we argue to this
+      // account" was only answerable by reading the prose, which is why 26
+      // drafts could all make the same wrong argument unnoticed.
+      ...(angle?.argument ? { argument_id: angle.argument.id } : {}),
     }, meta);
     if (!r.ok) return { ok: false, action: 'skip', reason: r.error, behavior, ...tokens };
     // Open an approval for this draft. Sending is irreversible — gates are
@@ -2243,9 +2280,15 @@ export function icpBand(score: number): 'drop' | 'watch' | 'research' | 'draft-r
 async function loadUsedAnchorIds(supabase: SupabaseClient, channel_id: string): Promise<Set<string>> {
   const out = new Set<string>();
   try {
+    // A WITHDRAWN draft releases its anchors. Without this filter, taking a bad
+    // draft back is worse than leaving it: the message is gone and the event it
+    // was written about stays permanently spent, so the account can never be
+    // written to properly about the one thing that made it interesting. Measured
+    // when withdrawal was added: 71 drafts held 114 facts, 33 of them still
+    // inside the freshness window.
     const { data } = await supabase
       .from('channel_posts').select('cites')
-      .eq('channel_id', channel_id).eq('kind', 'touch_draft');
+      .eq('channel_id', channel_id).eq('kind', 'touch_draft').is('withdrawn_at', null);
     for (const p of (data ?? []) as Array<{ cites: string[] | null }>) {
       for (const id of p.cites ?? []) out.add(id);
     }

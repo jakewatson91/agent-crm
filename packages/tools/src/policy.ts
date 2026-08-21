@@ -147,6 +147,77 @@ export interface EnrichmentPolicy {
  * cooldown_days: after a draft is sent (gate approved), block re-drafting
  * for this many days via the `outreach_cooldown_until` fact.
  */
+/**
+ * One argument: the event that opens the window, what must already be true for
+ * the claim to be honest, the cost that follows, and what you are asking them to
+ * change.
+ *
+ * Written in plain language, not as a rule the code parses. Two of the four
+ * fields drive machinery — `when` decides which anchors can trigger it and
+ * `only_if` decides whether the account qualifies — and both are matched by the
+ * same cheap model call that already picks the problem today.
+ */
+export interface DrafterArgument {
+  /** Stable slug. Drafts are filed under it, so renaming one starts its record over. */
+  id: string;
+  /** Short human title for the settings screen and the audit line. */
+  label?: string;
+  /**
+   * The event at the prospect that makes this argument available, in plain words
+   * ("a new season, film or series lands on their service").
+   *
+   * This is also what the research brief should be hunting. An argument whose
+   * trigger no question can find is an argument that never fires, and that is a
+   * gap in the brief rather than a fault in the argument.
+   */
+  when: string;
+  /**
+   * What must already be true about the account for `so` to be honest ("they run
+   * an on-demand catalogue on the web with real depth").
+   *
+   * Checked against the account's facts before the argument can be used. Unset
+   * means the claim holds for anyone the ICP lets through, which is a strong
+   * thing to say and should be rare.
+   */
+  only_if?: string;
+  /** The cost or consequence that follows for them. The claim being made. */
+  so: string;
+  /**
+   * What you are asking them to change, scoped precisely enough that the wrong
+   * version is ruled out by the wording ("put the back catalogue on us, leaving
+   * the premiere exactly as it is").
+   *
+   * Deliberately no separate list of things never to propose. A blocklist beside
+   * the ask is how config rots: it grows, nobody dares prune it, and the ask
+   * stays vague because the list is doing its job. Say what you want precisely
+   * and the wrong ask has no room left.
+   */
+  ask: string;
+  /**
+   * When a human last confirmed this argument against real drafts.
+   *
+   * An argument is a hypothesis about a market, and a new or edited one is
+   * unproven however confident it sounds. Until this is set the drafter writes
+   * only a few messages under it and stops, so a wrong argument costs three
+   * drafts rather than the whole book — which is exactly what it cost the first
+   * time, at 26 in a week.
+   */
+  proven_at?: string;
+  /** Default true. */
+  enabled?: boolean;
+}
+
+/**
+ * How many drafts an unproven argument may produce before it stops and waits for
+ * a human to look.
+ *
+ * Three is enough to see what an argument actually does to real accounts and few
+ * enough that reading them is one sitting rather than a chore. The number that
+ * matters is that it is small and fixed: the failure being prevented is a wrong
+ * argument running unattended across a whole book.
+ */
+export const UNPROVEN_ARGUMENT_DRAFT_LIMIT = 3;
+
 export interface DrafterPolicy {
   cooldown_days?: number;
 
@@ -190,6 +261,40 @@ export interface DrafterPolicy {
     /** Default true. */
     enabled?: boolean;
   }>;
+  /**
+   * The arguments this workspace makes, and the only place one is written down.
+   *
+   * Everything else in this policy is a COMPONENT of a message: who to talk to,
+   * what to find out, what problems the product solves, what may be claimed,
+   * what shape the message takes. None of them is the argument itself, and an
+   * argument is the thing a salesperson actually has: when this happens at a
+   * prospect, this cost follows for them, so change this specific thing.
+   *
+   * Before this existed the drafter was asked to derive that link on every
+   * single message, from an About text describing how the product works. It is
+   * the most valuable sentence in the message and it was the one thing being
+   * improvised. Sudden's About says the savings are biggest on a large
+   * simultaneous audience for one title; every reader, human or model, takes
+   * that to mean a premiere, so 26 drafts in a week proposed carrying the
+   * customer's premiere. The real argument was that a new release drives
+   * catch-up traffic through the OLD seasons, and that the catalogue is the safe
+   * thing to move. Nothing in the system had anywhere to put that, so it was
+   * inferred, and the most probable inference was the wrong one. No amount of
+   * prompt wording fixes a missing input.
+   *
+   * `only_if` is not decoration and is the field most likely to be dropped as
+   * over-engineering. `so` is a causal claim about the prospect's world, and it
+   * is false at plenty of prospects: "your viewers go back through the earlier
+   * seasons" says nothing to a company with one show. Measured on Sudden the day
+   * this shipped: 90 accounts held a fresh dated anchor, 59 held any evidence of
+   * a catalogue, and only 27 held both. Without this field 63 accounts get told
+   * a story about themselves that nobody checked.
+   *
+   * Empty by default and vertical-neutral, like every other list here. A
+   * workspace with no arguments configured behaves exactly as before: the
+   * drafter picks a problem from `pain_points` and derives the link itself.
+   */
+  arguments?: DrafterArgument[];
   /** Drafting rules rendered verbatim into the template-driven DM prompt. */
   message_rules?: string[];
   /** Character target for the DM body. Default 400 when templates are present. */
@@ -581,6 +686,17 @@ export interface BriefQuestion {
   why?: string;
   /** 'event' needs something dated to have happened; 'state' describes how they stand. */
   kind?: 'event' | 'state';
+  /**
+   * The id of the argument whose `only_if` this question exists to establish.
+   *
+   * A question carrying this is protected from retirement, because it is judged
+   * by a test it cannot pass: a condition is never quoted in a message and is
+   * rarely an event, so it scores zero on citations and zero on dates while
+   * being the thing an argument depends on. Sudden's `catalogue_size` was
+   * retired on exactly those numbers, and it was the condition for the only
+   * argument that workspace makes.
+   */
+  serves?: string;
   enabled?: boolean;
 }
 

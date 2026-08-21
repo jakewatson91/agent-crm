@@ -43,7 +43,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { chatComplete } from '@agent-crm/primitives';
 import { getPolicy } from './policy.ts';
 import { fetchAll } from './paginate.ts';
-import type { BriefQuestion, WorkspacePolicy } from './policy.ts';
+import type { BriefQuestion, WorkspacePolicy, DrafterArgument } from './policy.ts';
 
 // Same model as the strategy planner, for the same reason: it runs about once
 // per workspace per fortnight and everything downstream is shaped by its output.
@@ -74,6 +74,11 @@ export function briefInputHash(ctx: BriefContext): string {
     // it has to re-open the brief. Without this, narrowing the floor leaves every
     // question still asking for a window the pipeline no longer reaches.
     String(ctx.max_age_days ?? ''),
+    // Editing an argument has to re-open the brief for the same reason. The
+    // questions exist to find what the arguments need, so changing what you
+    // argue while leaving the brief alone means the agent keeps researching for
+    // the argument you dropped and never looks for what the new one requires.
+    (ctx.arguments ?? []).map((a) => `${a.id}:${a.when}:${a.only_if ?? ''}:${a.so}`).sort().join('|'),
   ].join('\u0000');
   // Small non-cryptographic hash; this only has to notice that the text changed.
   let h = 2166136261;
@@ -180,6 +185,11 @@ function coerceQuestion(raw: unknown, idx: number, used: Set<string>): BriefQues
     question: question.slice(0, 300),
     why: typeof r.why === 'string' ? r.why.trim().slice(0, 200) : '',
     kind: r.kind === 'event' ? 'event' : 'state',
+    // Which argument's condition this question establishes, when the planner
+    // said so. Carried through because it decides whether the question is
+    // protected from retirement, and a protection that the planner can claim
+    // but the parser drops is no protection at all.
+    ...(typeof r.serves === 'string' && r.serves.trim() ? { serves: slugify(r.serves, '') } : {}),
     enabled: true,
   };
 }
@@ -431,9 +441,22 @@ export function makesAccountsWritable(r: {
   facts: number;
   dated: number;
   used: number;
+  serves_precondition?: boolean;
 }): boolean {
   if (r.fetched < FAIR_TRIAL_PAGES) return true;
   if (r.facts < MIN_FACTS_FOR_DATE_VERDICT) return true;
+  // A question establishing an argument's condition is judged by a test it can
+  // never pass, and this loop has already failed it once. A condition is never
+  // quoted in a message — its whole job is to decide whether the message may be
+  // written at all — and it is rarely an event, so it scores zero on citations
+  // and zero on dates while being the thing an argument depends on.
+  //
+  // `catalogue_size` was retired from Sudden's brief on exactly those numbers,
+  // 16 facts and no citations, and it is the condition for the only argument
+  // that workspace has. Measured after it was gone: 90 accounts held a fresh
+  // anchor, 59 held any evidence of a catalogue, 27 held both. The loop deleted
+  // the question that would have closed that gap and reported it as tidying up.
+  if (r.serves_precondition) return true;
   if (r.used > 0 && r.used >= r.facts * MIN_ANSWER_RATE) return true;
   return r.dated >= r.facts * MIN_DATED_RATE;
 }
@@ -539,6 +562,17 @@ export interface BriefContext {
   icp?: string;
   value_props: string[];
   pain_points: string[];
+  /**
+   * policy.drafter.arguments. What the research is FOR.
+   *
+   * Before this, the brief was planned from a description of the seller and the
+   * drafter was left to work out what any of it meant, so the two halves of the
+   * loop optimised for different things: research chased anything dated, the
+   * drafter chased anything plausible, and neither chased "we have a reason to
+   * make our actual argument to this account". Sudden's one working question
+   * happened to serve its one real argument by luck.
+   */
+  arguments?: DrafterArgument[];
   guidance: string;
   always_include: string[];
   /**
@@ -554,8 +588,32 @@ export interface BriefContext {
   max_age_days?: number;
 }
 
-function buildUserPayload(ctx: BriefContext): string {
+/** Exported for scripts/check_research_brief.ts: the argument block is the only
+ * thing telling the planner to write a question for an argument's condition, and
+ * a planner that is never told writes the trigger question alone. */
+export function buildUserPayload(ctx: BriefContext): string {
   const parts: string[] = [];
+  // The arguments come FIRST when there are any, because they are the reason
+  // the research exists. Every other block below describes the seller; this one
+  // says what the agent has to find before it is allowed to say anything, which
+  // makes it the only block that decides whether a question is worth buying.
+  if (ctx.arguments?.length) {
+    parts.push(`THE ARGUMENTS THIS SELLER MAKES — the research exists to find what these need, and nothing else here matters as much:\n${
+      ctx.arguments.map((a) => [
+        `- ${a.id}`,
+        `    fires when : ${a.when}`,
+        ...(a.only_if ? [`    only if    : ${a.only_if}`] : []),
+        `    then claims: ${a.so}`,
+      ].join('\n')).join('\n')}
+
+EVERY ARGUMENT NEEDS BOTH ITS QUESTIONS, AND THE SECOND IS THE ONE THAT GETS FORGOTTEN.
+
+One question that finds the TRIGGER: something dated, so the agent knows the window is open right now. Mark it kind "event".
+
+And one question that establishes the ONLY IF: whether the claim is even true of this company. Mark it kind "state" and set "serves" to that argument's id. This question is not optional and it is not a nice-to-have. The claim in "then claims" is a statement about the prospect's own business, and it is false at plenty of prospects. Without a question establishing it, the agent writes to everyone whose trigger fired and tells most of them something about themselves that nobody checked. Measured on a real book: the trigger fired on 90 accounts, the condition was established on 27, so 63 messages would have asserted it blind.
+
+An argument whose trigger no question can find never fires at all. An argument whose condition no question can establish fires on everyone, which is worse.`);
+  }
   if (ctx.about) parts.push(`THE SELLER (who they are, what they sell, who they sell to):\n${ctx.about.slice(0, 2000)}`);
   if (ctx.icp && ctx.icp !== '{}') parts.push(`WHO THEY TARGET (structured):\n${ctx.icp}`);
   if (ctx.value_props.length) parts.push(`WHAT THEIR PRODUCT DOES:\n- ${ctx.value_props.slice(0, 8).join('\n- ')}`);
@@ -625,6 +683,7 @@ async function loadContext(supabase: SupabaseClient, workspace_id: string): Prom
     icp: typeof icpObj === 'object' ? JSON.stringify(icpObj).slice(0, 1500) : '',
     value_props: (policy.drafter?.value_props ?? []).filter(Boolean),
     pain_points: (policy.drafter?.pain_points ?? []).filter(Boolean),
+    arguments: (policy.drafter?.arguments ?? []).filter((a) => a?.id && a.enabled !== false),
     guidance: (policy.research?.guidance ?? '').trim(),
     always_include: (policy.research?.always_include ?? []).filter(Boolean),
     max_age_days: policy.research?.max_age_days,
@@ -896,12 +955,14 @@ export async function loadQuestionRecords(
   // rather than stored on the record: a question reworded from an event into a
   // description should be judged as what it is now, not as what it once claimed.
   const kindById = new Map(resolveBrief(policy).map((q) => [q.id, q.kind === 'event' ? 'event' as const : 'state' as const]));
+  const precondition = questionsServingAPrecondition(policy);
   return records.map((r) => ({
     ...r,
     facts: factsByQuestion[r.id] ?? 0,
     dated: datedByQuestion[r.id] ?? 0,
     used: usedByQuestion[r.id] ?? 0,
     kind: kindById.get(r.id) ?? 'state',
+    serves_precondition: precondition.has(r.id),
   }));
 }
 
@@ -968,6 +1029,28 @@ export const BRIEF_REWRITE_COOLDOWN_HOURS = 24;
  */
 export function questionsNotEarningTheirPages(records: QuestionRecord[]): string[] {
   return records.filter((r) => !makesAccountsWritable(r)).map((r) => r.id);
+}
+
+/**
+ * Brief questions that exist to establish an argument's condition.
+ *
+ * Matched on the question's own `serves` field, which the brief planner sets
+ * when it writes a question for an argument's `only_if`. Deliberately a declared
+ * link and not a guess from wording: a rule that inferred it from the text would
+ * be a keyword match, and this decides whether a question is protected from
+ * retirement, which is not something to get wrong quietly.
+ */
+export function questionsServingAPrecondition(policy: WorkspacePolicy): Set<string> {
+  const argumentIds = new Set((policy.drafter?.arguments ?? [])
+    .filter((a) => a?.id && a.only_if?.trim())
+    .map((a) => a.id));
+  const out = new Set<string>();
+  if (!argumentIds.size) return out;
+  for (const q of resolveBrief(policy)) {
+    const serves = (q as BriefQuestion & { serves?: string }).serves;
+    if (serves && argumentIds.has(serves)) out.add(q.id);
+  }
+  return out;
 }
 
 /**

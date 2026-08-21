@@ -7,6 +7,7 @@
  * inngest/functions/agent_logic.ts; moved here in Phase 5 so the customer can
  * see exactly what the LLM will be told before saving Settings.
  */
+import type { DrafterArgument } from './policy.ts';
 
 // A handful of keys read better with a human label than raw snake_case. The map
 // is structural (it never touches the value); unknown keys fall back to a title-
@@ -99,7 +100,7 @@ export interface DrafterDecisionOpts {
    * matter how many rules say not to.
    * Unset = every exemplar renders in full and the model picks its own problem.
    */
-  angle?: { problem: string; withheld_template_ids?: string[] };
+  angle?: { problem: string; withheld_template_ids?: string[]; argument?: DrafterArgument };
   /** Drafting rules rendered verbatim above the templates. */
   message_rules?: string[];
   /** Character target for the DM body. Default 400. */
@@ -240,6 +241,12 @@ BANNED with no exceptions: "Open to a quick chat?", "Worth a quick call?", "Wort
 STEP 6 — WELD IT INTO ONE VOICE, THEN LINE EDIT. The steps above are how you THINK; they are not a list of sentences to emit. Your message has fewer sentences than there are steps, because beats share sentences. Weld them: the trigger and the problem it creates belong in one sentence; the credibility number never stands alone, it rides inside a sentence that says what it costs them; the pitch and the ask carry the close. Now read it back as the recipient, out loud. It should sound like one person talking, not parts with the bullets removed.
 - Open on them. The first five words are about their world, never yours. If STEP 7's shape opens with a line that disarms the cold approach, that line still has to name them or something they did — a disarm that would fit any recipient is not an opening.
 - THE FIRST SENTENCE NAMES THEM AND SOMETHING THEY DID. It has a subject and a verb. A string of nouns, metrics and product names with no verb is a data row, not an opening: company name, then a number, then another number, is the single most common way this message fails. If you cannot get a verb into the opening clause, you picked the wrong anchor — go back to STEP 1 and take one that describes an action.
+- DO NOT ANNOUNCE THE ANCHOR BACK TO THEM. They already know what they did. A sentence whose whole job is to state the fact tells the reader nothing they do not know and reads like a record being read out, which is the fastest way to sound automated even when every word is true. The anchor is the PREMISE of your first sentence, not its content: put it in the opening clause and let the rest of the sentence say the part they have NOT already thought about.
+  RECITED (wrong): "<their thing> just became your biggest <thing> this quarter, at <exact figure>."
+  USED (right):    "With <their thing> doing those numbers this quarter, <the consequence they have not thought about yet>."
+  Both name them and something they did. Only the second is worth reading if you already work there.
+  THE TEST: read your first sentence as the recipient. If the honest reaction is "yes, I know, I was there", it is a recitation — rewrite it so the sentence still earns its place for someone who knows the fact better than you do.
+- QUOTE THEIR NUMBERS THE WAY A COLLEAGUE WOULD, NOT THE WAY A RECORD DOES. A figure repeated back to the person whose figure it is, to the decimal, is the same recitation problem wearing a statistic. Round it, or refer to it without saying it. An exact figure echoed back is a field being read out; "the numbers it did" is a person talking.
 - Use their first name ONLY if a named contact was given to you in the user message. If none was, YOU ARE WRITING TO THE COMPANY, not to a person: write no greeting at all and open on them. Never invent a name, never guess one from the company, never address the founder or the head of anything by title, and never leave a slot for someone to fill in. A message addressed to a person who does not work there, or who does not exist, is the fastest way to be marked as spam. A bare greeting with no name is also worse than no greeting, so drop it entirely rather than writing "Hi there". Writing to the company is a normal case, not a degraded one — the opening names what they did, and that needs no name attached.
 - Never tell them what they think, feel, worry about or wonder. Anything that assigns them an emotion, or tells them what a fact makes them wonder, is out. State the fact and ask the question; let them supply the feeling.
 - Fifth-grade reading level: common words, plain sentences. Short does not mean chopped. A sentence may carry two welded beats joined by a comma or "and" when that makes it flow.
@@ -269,6 +276,7 @@ STEP 9 — CHECK BEFORE YOU OUTPUT. Any "no" means rewrite.
 - Does the anchor reach the problem in one hop?
 - Is there a question they can answer from memory in one line, and is it about THEIR situation rather than one you have seen before?
 - Does the message open on them, and does that first sentence have a subject and a verb?
+- Read the FIRST sentence as the recipient. Is the honest reaction "yes, I know, I was there"? Then it announces their own news back to them instead of using it, and it has to be rewritten.
 - Read the LAST sentence on its own. Does it have a subject? If it starts with a verb, it is a fragment — fix it.
 - Is the pitch one sentence or less, and does it come after the question?
 - Can I source every number and claim?
@@ -435,7 +443,24 @@ ${templatesBlock}
       // this was built to close: it would read the list after three exemplars
       // and pick whichever one the exemplars had already argued.
       const chosenProblem = opts.angle?.problem?.trim();
-      const painsBlock = chosenProblem
+      const arg = opts.angle?.argument;
+      // A written-down argument is not a richer problem statement, it is a
+      // different instruction. With a bare problem the model still has to work
+      // out what the anchor has to do with it and what to ask for, and that
+      // derivation is where 26 drafts went wrong at once: from an About text
+      // about simultaneous audiences, "so let us carry your premiere" is the
+      // most probable conclusion any reader would reach, and it is the opposite
+      // of what the seller sells. Here the reasoning is already done and the
+      // model's job is to say it well about this specific company.
+      const painsBlock = arg
+        ? `THE ARGUMENT YOU ARE MAKING — not a menu, and not yours to re-derive. It was matched to this account's facts before you saw any exemplar, and its condition was checked against them.
+  BECAUSE THIS HAPPENED: ${arg.when.trim()}
+  WHAT IT COSTS THEM:    ${arg.so.trim()}
+  WHAT YOU ARE ASKING:   ${arg.ask.trim()}
+Write THIS argument about THIS company. Do not reach a different conclusion from the anchor, however reasonable the other one seems — a conclusion that sounds obvious from what the product does is exactly the one that has been wrong before.
+The ask is scoped as written. Asking for more than it says, or for the thing it excludes, is the failure this block exists to stop.
+Build your Think question from what it costs them. If nothing in the facts actually shows that, do not substitute a different argument — stop and request_gate, as STEP 2 says.\n`
+        : chosenProblem
         ? `THE PROBLEM YOU ARE WRITING TO — chosen for this account by reading its facts, before you saw any exemplar:\n  ${chosenProblem}\nBuild your Think question from this one and no other. If nothing in the facts actually shows this problem, do not substitute a different one — stop and request_gate, as STEP 2 says.\n`
         : pains.length
           ? `PROBLEMS WE SOLVE — pick the ONE this account's anchor actually points at, and build your Think question from it. Never default to the first, and never list more than one in a message.\n${pains.map((p) => `  - ${p}`).join('\n')}\n`

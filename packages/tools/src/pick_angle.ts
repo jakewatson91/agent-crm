@@ -26,6 +26,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
+import type { DrafterArgument } from './policy.ts';
 
 export interface AngleTemplate {
   id: string;
@@ -47,6 +48,7 @@ export type AngleSkipReason =
   | 'unparseable'         // came back as something other than the JSON asked for
   | 'no_problem_fits'     // ran fine, and said none of the problems reach this account
   | 'no_evidence'         // picked a problem but could not point at a fact showing it
+  | 'precondition_unmet'  // the argument fits, but nothing shows its only_if is true here
   | 'all_facts_out_of_scope'; // it has facts, and every one is about a part we cannot serve
 
 export interface AngleDecision {
@@ -68,7 +70,11 @@ export interface AngleDecision {
 }
 
 export interface AngleChoice {
-  /** The chosen problem, verbatim from policy.drafter.pain_points. */
+  /**
+   * The claim this message makes. Verbatim from policy.drafter.pain_points, or
+   * from the chosen argument's `so` when the workspace has configured arguments.
+   * Same field either way so everything downstream is untouched by the switch.
+   */
   problem: string;
   /** Its 0-based index in the menu, for instrumentation. */
   problem_index: number;
@@ -76,6 +82,14 @@ export interface AngleChoice {
   why: string;
   /** Template ids whose exemplar argues the same thing; bodies get withheld. */
   withheld_template_ids: string[];
+  /**
+   * The full argument this message applies, when the workspace configured any.
+   *
+   * Undefined means the workspace has no arguments and the drafter derives the
+   * link from the anchor itself, which is the behaviour that produced 26 drafts
+   * proposing the opposite of what the seller actually sells.
+   */
+  argument?: DrafterArgument;
 }
 
 export interface PickDraftAngleArgs {
@@ -90,6 +104,19 @@ export interface PickDraftAngleArgs {
   facts: Array<{ id?: string; predicate: string; object_text: string | null }>;
   /** policy.drafter.pain_points — the menu the drafter already renders. */
   pain_points: string[];
+  /**
+   * policy.drafter.arguments. When any are configured they REPLACE pain_points
+   * as the menu, in the same call, at no extra cost.
+   *
+   * The difference is what the menu entries contain. A pain point is the middle
+   * term of an argument on its own — a cost, with no statement of which prospect
+   * event says it is live right now and no statement of what to ask for. So the
+   * picker could only ever answer "which cost is plausible here", and the
+   * drafter had to invent the rest. With arguments the picker answers the whole
+   * question: does this account's anchor trigger this argument, and is the claim
+   * honest about them.
+   */
+  arguments?: DrafterArgument[];
   templates: AngleTemplate[];
   /**
    * policy.drafter.out_of_scope, the same conditions the scorer vetoes on and
@@ -143,6 +170,48 @@ PICK THE ONE THIS ACCOUNT SINGLES OUT. Several problems on the menu will be defe
 
 Output strictly valid JSON:
 {"problem": <number, 0 if none fit>, "evidence": <the FACTS number that shows it, 0 if none>, "why": "<under 20 words, naming the specific fact that singles this problem out for this account>", "same_argument": [<numbers of colliding examples>]}`;
+
+/**
+ * The same job when the workspace has written its arguments down.
+ *
+ * Two differences from the menu above, and the second is the one that matters.
+ *
+ * The menu entries are whole arguments rather than bare costs, so the model is
+ * choosing which argument this account's facts actually trigger instead of which
+ * cost sounds plausible for a company like this.
+ *
+ * And it has to check the precondition separately. `so` is a claim about the
+ * prospect's world and it is false at plenty of prospects; the trigger firing
+ * says nothing about whether the claim holds. Measured on Sudden the day this
+ * shipped: 90 accounts had a fresh dated anchor, 59 had any evidence of a
+ * catalogue, and 27 had both. Without a separate check, 63 accounts get told a
+ * story about themselves that nobody verified — which reads as confident and
+ * specific and is exactly the message that gets marked as spam by someone who
+ * knows their own business.
+ *
+ * Nothing here names an industry. Every word of the menu is the workspace's own.
+ */
+const ARGUMENT_SYSTEM = `You choose which ARGUMENT an outreach message will make. You do not write the message.
+
+You get one account's facts and a numbered list of the arguments this seller makes. Each argument has three parts:
+  WHEN    the event at the prospect that makes this argument available
+  ONLY IF what has to already be true about them for the argument to be honest
+  SO      the cost that follows for them, which is what the message will claim
+
+Three jobs, and the second is the one people skip.
+
+1. PICK THE ARGUMENT. Choose the one whose WHEN this account's facts actually show happened, in a single step. Not a chain of "they did X so probably Y", and not an assumption about what companies of this type generally do. Return 0 when no fact shows any argument's WHEN.
+
+2. CHECK THE ONLY IF, SEPARATELY AND HONESTLY. Point at a DIFFERENT fact showing that this argument's ONLY IF is true of this company. The trigger firing tells you nothing about whether the claim holds: a company can obviously have done the thing in WHEN and still be one the SO is simply false about. If no fact establishes the ONLY IF, answer 0 for it. Answering 0 here is a good answer and costs nothing. Guessing is what costs, because the message then tells someone a confident story about their own business that nobody checked, and they know their business better than you do.
+
+Do not reuse the trigger fact as the ONLY IF evidence unless it genuinely establishes both. Do not treat the company being large, well known, or busy as evidence of anything.
+
+An argument with no ONLY IF stated needs no second fact — answer 0 for it and say so in your reason.
+
+3. NAME THE COLLISIONS. Say which of the example arguments make substantially the same point as the argument you picked. Same point means a reader would hear the same thing, not that they share a word.
+
+Output strictly valid JSON:
+{"argument": <number, 0 if none fit>, "trigger_evidence": <the FACTS number showing WHEN happened, 0 if none>, "precondition_evidence": <the FACTS number showing ONLY IF is true, 0 if none or not required>, "why": "<under 25 words, naming both facts>", "same_argument": [<numbers of colliding examples>]}`;
 
 /**
  * Its own call, before the pick, for workspaces that configured conditions.
@@ -230,9 +299,16 @@ export async function pickDraftAngle(
 ): Promise<AngleDecision> {
   const problems = (args.pain_points ?? []).map((p) => p.trim()).filter((p) => p.length > 0);
   const scope = (args.out_of_scope ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
-  // One problem is not a choice, and zero is nothing to render. Either way the
-  // old path is already correct, so skip the call rather than spend it.
-  if (problems.length < 2) return { choice: null, reason: 'menu_too_small', out_of_scope_fact_ids: [] };
+  // Written-down arguments win over the problem menu. Not a fallback order for
+  // its own sake: a pain point cannot say which event makes it live or what to
+  // ask for, so where both exist the argument is strictly the more complete
+  // statement of the same thing.
+  const argued = (args.arguments ?? []).filter((a) => a?.id && a.enabled !== false && a.when?.trim() && a.so?.trim() && a.ask?.trim());
+  // ONE argument is a real choice — the question is whether it fires here at all,
+  // and "no" is a useful answer. One PROBLEM is not a choice, and zero of either
+  // is nothing to render, in which case the old path is already correct and the
+  // call is not worth spending.
+  if (!argued.length && problems.length < 2) return { choice: null, reason: 'menu_too_small', out_of_scope_fact_ids: [] };
 
   const withAngle = (args.templates ?? []).filter((t) => t && t.enabled !== false && t.angle?.trim());
   const allFacts = (args.facts ?? []).filter((f) => f?.predicate && (f.object_text ?? '').trim())
@@ -315,31 +391,75 @@ export async function pickDraftAngle(
   // is in the book, researched, and its whole story is the part we cannot serve.
   if (!facts.length) return { choice: null, reason: 'all_facts_out_of_scope', out_of_scope_fact_ids };
 
-  // ---- Call 2: which problem, and what shows it ----
+  // ---- Call 2: which argument (or which problem), and what shows it ----
+  const exemplarBlock = withAngle.length
+    ? `ARGUMENTS THE EXAMPLE MESSAGES ALREADY MAKE:\n${withAngle.map((t, i) => `${i + 1}. ${t.angle!.trim()}`).join('\n')}`
+    : 'ARGUMENTS THE EXAMPLE MESSAGES ALREADY MAKE:\n(none recorded — return an empty same_argument list)';
+  const menuBlock = argued.length
+    ? `ARGUMENTS THIS SELLER MAKES:\n${argued.map((a, i) => [
+        `${i + 1}. WHEN    ${a.when.trim()}`,
+        `   ONLY IF ${a.only_if?.trim() || '(nothing to check — the claim holds for anyone in the target market)'}`,
+        `   SO      ${a.so.trim()}`,
+      ].join('\n')).join('\n')}`
+    : `PROBLEMS THE SELLER SOLVES:\n${problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
   const userPrompt = [
     `ACCOUNT: ${args.account_name}`,
     '',
     'FACTS:',
     facts.map((f, i) => `${i + 1}. ${factLine(f)}`).join('\n'),
     '',
-    'PROBLEMS THE SELLER SOLVES:',
-    problems.map((p, i) => `${i + 1}. ${p}`).join('\n'),
+    menuBlock,
     '',
-    withAngle.length
-      ? `ARGUMENTS THE EXAMPLE MESSAGES ALREADY MAKE:\n${withAngle.map((t, i) => `${i + 1}. ${t.angle!.trim()}`).join('\n')}`
-      : 'ARGUMENTS THE EXAMPLE MESSAGES ALREADY MAKE:\n(none recorded — return an empty same_argument list)',
+    exemplarBlock,
   ].join('\n');
 
   let text: string;
   try {
-    text = await ask('pick', SYSTEM_PROMPT, userPrompt, 200);
+    // Two evidence numbers and a longer reason when arguments are in play.
+    text = await ask('pick', argued.length ? ARGUMENT_SYSTEM : SYSTEM_PROMPT, userPrompt, argued.length ? 260 : 200);
   } catch {
     return { choice: null, reason: 'llm_error', out_of_scope_fact_ids };
   }
 
-  let parsed: { problem?: unknown; evidence?: unknown; why?: unknown; same_argument?: unknown };
+  let parsed: {
+    problem?: unknown; evidence?: unknown; why?: unknown; same_argument?: unknown;
+    argument?: unknown; trigger_evidence?: unknown; precondition_evidence?: unknown;
+  };
   try { parsed = JSON.parse(text.replace(/^```json\s*|\s*```$/g, '').trim()); }
   catch { return { choice: null, reason: 'unparseable', out_of_scope_fact_ids }; }
+
+  if (argued.length) {
+    const ai = Number(parsed.argument);
+    if (!Number.isInteger(ai) || ai < 1 || ai > argued.length) return { choice: null, reason: 'no_problem_fits', out_of_scope_fact_ids };
+    const chosen = argued[ai - 1]!;
+    const trig = Number(parsed.trigger_evidence);
+    if (!Number.isInteger(trig) || trig < 1 || trig > facts.length) return { choice: null, reason: 'no_evidence', out_of_scope_fact_ids };
+    // The precondition is checked in CODE, not left to the prompt's good
+    // intentions. An argument that states an only_if and comes back with no fact
+    // behind it does not get to run: that is the 63-of-90 case, where the event
+    // plainly happened and nothing established that the claim about them is
+    // true. Refusing here is cheap and silent; being wrong here is a message
+    // telling someone something false about their own company.
+    const pre = Number(parsed.precondition_evidence);
+    if (chosen.only_if?.trim() && (!Number.isInteger(pre) || pre < 1 || pre > facts.length)) {
+      return { choice: null, reason: 'precondition_unmet', out_of_scope_fact_ids };
+    }
+    const collidedArg = Array.isArray(parsed.same_argument) ? parsed.same_argument : [];
+    return {
+      choice: {
+        problem: chosen.so.trim(),
+        problem_index: ai - 1,
+        why: String(parsed.why ?? '').slice(0, 240),
+        withheld_template_ids: collidedArg
+          .map((n) => Number(n))
+          .filter((n) => Number.isInteger(n) && n >= 1 && n <= withAngle.length)
+          .map((n) => withAngle[n - 1]!.id),
+        argument: chosen,
+      },
+      reason: 'picked',
+      out_of_scope_fact_ids,
+    };
+  }
 
   const idx = Number(parsed.problem);
   // 0 means the picker found nothing in the facts pointing at any problem. That
