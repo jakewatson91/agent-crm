@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, pickAnchorCandidates, cannotWriteAbout, type StepPurpose, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, hiringEventDate, pickAnchorCandidates, cannotWriteAbout, type StepPurpose, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -271,6 +271,50 @@ export async function runAgent(
           parent_event_id: payload.parent_event_id ?? null,
         });
         return { ok: true, action: 'skip', reason: 'entity_dropped', behavior };
+      }
+    }
+  }
+
+  // Enricher: a job posting is a dated event, so write it down as one here
+  // rather than hoping the model reads it out of the description.
+  //
+  // Measured on Sudden across 60 days: 356 hiring_post signals produced 159
+  // facts and not one carried a date, so no job posting has ever made an
+  // account writable — pickAnchorCandidates rejects an undated fact as
+  // not_an_event. What the model wrote instead was the company's standing
+  // attributes (tech stack, office location, industry) plus the same "they are
+  // hiring" claim under four different names (hiring_role, is_hiring,
+  // hiring_for_role, hiring_for), because it names each fact fresh every run.
+  // Asserting it here fixes both at once: always dated, always one name.
+  //
+  // This sits BEFORE the dedup / coalesce / cooldown short-circuits below on
+  // purpose. Those exist so a company with N open roles does not fire N
+  // 13.5k-token LLM calls, and they are right to, but this fact costs no tokens
+  // and a role dropped by the burst collapse is exactly the one worth dating.
+  //
+  // Which roles are worth a signal at all was already decided upstream by
+  // policy.hiring_filter in the ATS connector, so anything arriving here has
+  // passed the workspace's own filter. Nothing vertical-specific belongs here.
+  if (behavior === 'enricher' && sigData?.structured_tags?.kind === 'hiring') {
+    const hireTags = sigData.structured_tags as Record<string, unknown>;
+    const jobTitle = typeof hireTags.job_title === 'string' ? hireTags.job_title.trim() : '';
+    if (jobTitle) {
+      const jobLocation = typeof hireTags.job_location === 'string' ? hireTags.job_location.trim() : '';
+      // Older of the two dates wins; hiringEventDate owns that rule and why.
+      const hiringDate = hiringEventDate({
+        observedAt: sigData.observed_at,
+        postedAt: hireTags.job_posted_at as string | null,
+      });
+      if (hiringDate) {
+        const r = await callTool(supabase, actor, 'assert_fact', {
+          subject_entity: ent.data.id,
+          predicate: 'hiring_role',
+          object_text: jobLocation ? `${jobTitle} (${jobLocation})` : jobTitle,
+          confidence: 0.95,
+          signal_id: sigData.id,
+          happened_at: hiringDate,
+        }, { parent_event_id: signalCreatedEventId ?? payload.parent_event_id });
+        if (!r.ok) console.warn(`[enricher] hiring_role assert failed for signal ${sigData.id}: ${r.error}`);
       }
     }
   }

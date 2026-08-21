@@ -1,6 +1,9 @@
 # Design: a job posting is a dated event, not a document to mine
 
-Status: measured, designed, not built. 2026-08-20.
+Status: the fact assertion is built (2026-08-21). Role filtering already existed.
+Board coverage turned out to be already built and already finished, and the answer
+it gave changes how much this is worth on Sudden — see "What building it found".
+2026-08-20.
 
 ## The measurement
 
@@ -87,12 +90,10 @@ infrastructure. A big company posts hundreds of roles and most are noise, so the
 filter is what stops this becoming spam. Vertical-neutral by default, per the
 portability rule.
 
-**3. Coverage is the real work.** Only 16 accounts produced hiring posts in 60 days
-because the ATS source watches a fixed slug list. To cover a book you need each
-account's ATS slug, which is discoverable from its careers page (a Greenhouse or
-Lever URL). This is the same shape as the existing `domain_backfill_per_day`
-resolver: a daily batch that resolves N accounts' ATS slug and caches it on
-`entities.attributes`. Cheap, because it is one fetch per account, once.
+**3. Coverage is the real work.** ~~Only 16 accounts produced hiring posts in 60
+days because the ATS source watches a fixed slug list.~~ Wrong, and the correction
+is the most important thing in this document — see below. The connector already
+discovers boards by itself and has already been round the whole book.
 
 **4. Then the anchor works unchanged.** `pickAnchorCandidates` needs a dated fact
 inside the freshness window and nothing else. A `hiring_role` fact with
@@ -116,6 +117,52 @@ inside the freshness window and nothing else. A `hiring_role` fact with
    company. This idea is strongest for exactly the market Jake named (tech) and
    weakest for Sudden's current one, which is worth knowing before judging it on
    Sudden's numbers.
+
+## What building it found
+
+**The fact assertion works exactly as predicted.** Replayed against all 356 stored
+job postings before deploying: every one of them now produces a dated
+`hiring_role` fact. Not near 1:1, actually 1:1. 182 of the 356 land inside the
+30-day anchor window.
+
+It also picks a better date than this document proposed. Boards mostly state their
+own posting date, and 255 of the 356 are older than the day our diff first saw the
+role, so that date is used instead. The rule is the older of the two wins, which
+is the same asymmetry `applyContentDate` already applies to article datelines: a
+date may move a thing older, never newer. Greenhouse is the reason for the second
+half — it reports last-updated rather than first-published, so a posting edited
+yesterday would otherwise re-date itself forward into the freshness window every
+time someone fixed a typo in it. This also defuses failure mode 1 below on its own:
+a backlog emitted the day a board is discovered keeps its real age, so a two-year-old
+vacancy never reads as this morning's news, and no first-run suppression is needed.
+
+The assertion runs before the burst-collapse guards, not after. Those guards exist
+so a company with 40 open roles doesn't fire 40 thirteen-thousand-token model
+calls, and they are right to, but this fact costs no tokens, and a role dropped by
+the burst collapse is exactly the one worth dating.
+
+**Board coverage is 1.2%, and it is not fixable by building anything.** The
+connector has done lazy per-account discovery since it was written, caching the
+result on `entities.attributes.ats`. Every one of Sudden's 1,961 live accounts has
+already been probed. 24 have a board: 10 Greenhouse, 8 Lever, 6 Ashby. 1,937
+returned nothing. There is no daily slug resolver left to build, because it exists
+and it has finished.
+
+So failure mode 4 below is not a risk any more, it is the result. Broadcast and
+international streaming operators do not post to Greenhouse. One caveat on the
+1.2%: 600 of those accounts carry no domain, and without one the connector can only
+guess a slug from the company name, which is the weaker path. The true ceiling is
+somewhat above 24, not multiples of it.
+
+**What that means in accounts.** Sudden today has 90 accounts of 1,961 holding a
+dated fact fresh enough to write on. Fresh hiring anchors exist on 8 accounts, 7 of
+which had no other reason to be written to. So this is +7 on 90.
+
+The change is still right and still cheap. It is the only way a hiring anchor's
+reply rate ever gets measured, and it costs nothing per posting. But it will not
+visibly move Sudden, and anyone judging the idea on Sudden's numbers is judging it
+on a book that has almost no job boards to read. It is aimed at the tech market,
+where ATS adoption is close to universal, and that market is not this one.
 
 ## How you know it worked
 

@@ -8,7 +8,7 @@
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
-import { resolveHappenedAt } from '../packages/tools/src/published_date.ts';
+import { resolveHappenedAt, hiringEventDate } from '../packages/tools/src/published_date.ts';
 
 let fail = 0;
 function ok(label: string, cond: boolean) {
@@ -65,6 +65,32 @@ ok('a date well in the future is refused',
   resolveHappenedAt({ isEvent: true, eventDate: nextYear, sourceDate: null }) === null);
 ok('a pre-web date is refused',
   resolveHappenedAt({ isEvent: true, eventDate: '1970-01-01', sourceDate: null }) === null);
+
+console.log('\nA job posting takes the OLDER of the two dates a board gives us:');
+// The whole reason this function exists. Before it, 356 job postings over 60
+// days produced 159 facts and none of them had a date, so not one made an
+// account writable.
+ok('the board date wins when it is older than the day we first saw the role',
+  day(hiringEventDate({ observedAt: '2026-08-19T14:02:55.000Z', postedAt: '2026-06-01' })) === '2026-06-01');
+// Greenhouse reports last-updated, not first-published, so a posting edited
+// yesterday claims to be newer than the day we actually first saw it. Believing
+// that would re-date an old vacancy forward into the anchor window every time
+// someone fixed a typo in it.
+ok('a board date NEWER than first sight loses',
+  day(hiringEventDate({ observedAt: '2026-06-01T00:00:00.000Z', postedAt: '2026-08-19' })) === '2026-06-01');
+ok('either date alone is used',
+  day(hiringEventDate({ observedAt: '2026-08-19T14:02:55.000Z', postedAt: null })) === '2026-08-19'
+  && day(hiringEventDate({ observedAt: null, postedAt: '2026-06-01' })) === '2026-06-01');
+ok('a board date in the page format falls back to first sight rather than being half-read',
+  day(hiringEventDate({ observedAt: '2026-08-19T14:02:55.000Z', postedAt: '19/08/2026' })) === '2026-08-19');
+// A backlog emitted the day a board is discovered is the failure this guards:
+// every open role shows up as first-seen today, and only the board's own date
+// keeps a two-year-old vacancy out of the 30-day anchor window.
+ok('a backlog role keeps its real age on the day its board is discovered',
+  day(hiringEventDate({ observedAt: new Date().toISOString(), postedAt: '2024-03-05' })) === '2024-03-05');
+ok('no readable date is null, NOT today',
+  hiringEventDate({ observedAt: null, postedAt: null }) === null
+  && hiringEventDate({ observedAt: '', postedAt: 'unknown' }) === null);
 
 console.log(fail === 0 ? '\nOK: happened_at assertions passed' : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);

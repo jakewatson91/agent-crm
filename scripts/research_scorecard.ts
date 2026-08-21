@@ -78,8 +78,13 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
   // --- pages kept, per question ---
   // The order is not decoration: 1,777 signals in this window is two pages, and
   // range pagination without a total order can skip or repeat rows at the seam.
+  // `observed_at` is selected because the rewritten-search block below dates
+  // these rows. Filtering on a column that was never selected reads `undefined`,
+  // `Date.parse` gives NaN, and every `>=` is false — so that block reported
+  // "0 kept since the rewrite" for every rewritten search no matter what had
+  // been kept. It read as three dead angles; 93 pages had been kept.
   const sigs = await fetchAll<any>((f, t) => sb.from('signals')
-    .select('id, structured_tags').eq('workspace_id', WS).eq('type', 'research_result')
+    .select('id, structured_tags, observed_at').eq('workspace_id', WS).eq('type', 'research_result')
     .gte('observed_at', since).order('observed_at').order('id').range(f, t));
   const keptByQuestion: Record<string, number> = {};
   const sigQ = new Map<string, string>();

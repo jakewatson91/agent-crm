@@ -219,6 +219,41 @@ export function resolveHappenedAt(args: {
 }
 
 /**
+ * When a job posting went up, from the two dates a job board hands us.
+ *
+ * A posting is always an event — a role appeared on a specific day — so unlike
+ * resolveHappenedAt there is no is_event question to answer. The only question
+ * is which of two dates to believe:
+ *
+ *   observedAt   when our board diff first saw the role. Reliable, but only ever
+ *                an upper bound: we cannot have seen it before it went up.
+ *   postedAt     the board's own date for the posting. Better when it is older,
+ *                and not trustworthy when it is newer, because Greenhouse
+ *                reports the last-updated date rather than the first-published
+ *                one, so an edited posting claims to be more recent than it is.
+ *
+ * So the older of the two wins, the same asymmetry applyContentDate uses on
+ * article datelines: a date may move a thing older, never newer.
+ *
+ * The case that makes this worth having is a board we discovered today. Nothing
+ * on it is in the seen-set, so every open role emits at once and observedAt says
+ * all of them appeared this morning. The board's own dates are the only thing
+ * keeping a two-year-old vacancy out of the 30-day anchor window.
+ *
+ * Returns null when neither date is readable, which keeps the posting out of the
+ * anchor path entirely rather than dating it to today.
+ */
+export function hiringEventDate(args: {
+  observedAt?: string | null;
+  postedAt?: string | null;
+}): string | null {
+  const firstSeen = isoDay(args.observedAt);
+  const posted = isoDay(args.postedAt);
+  if (posted && firstSeen) return posted < firstSeen ? posted : firstSeen;
+  return firstSeen ?? posted;
+}
+
+/**
  * A date from either shape we hold them in, on parseContentDate's checks.
  *
  * The model reports a bare `2026-04-23`; everything already stored upstream is a
