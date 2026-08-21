@@ -30,10 +30,10 @@ const RUNS = Number(process.argv[2] ?? 2);
 
   const [badSearch, dead, unproven, ...rest] = brief;
   const records: QuestionRecord[] = [
-    { id: badSearch!.id, fetched: 220, kept: 4, facts: 2, used: 0 },     // A
-    { id: dead!.id, fetched: 180, kept: 90, facts: 140, used: 0 },       // B
-    { id: unproven!.id, fetched: 6, kept: 2, facts: 3, used: 0 },        // C
-    ...rest.map((q) => ({ id: q.id, fetched: 150, kept: 60, facts: 70, used: 9 })),
+    { id: badSearch!.id, fetched: 220, kept: 4, facts: 2, dated: 1, used: 0, kind: 'state' },      // A
+    { id: dead!.id, fetched: 180, kept: 90, facts: 140, dated: 70, used: 0, kind: 'state' },       // B
+    { id: unproven!.id, fetched: 6, kept: 2, facts: 3, dated: 2, used: 0, kind: 'state' },         // C
+    ...rest.map((q) => ({ id: q.id, fetched: 150, kept: 60, facts: 70, dated: 35, used: 9, kind: 'state' as const })),
   ];
 
   console.log('TRACK RECORD FED IN:');

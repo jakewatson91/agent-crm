@@ -29,7 +29,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import { getPolicy, resolveBrief, loadQuestionRecords, earnsItsSearches, unreachableQuestions, FAIR_TRIAL_PAGES, UNREACHABLE_TRIALS } from '@agent-crm/tools';
+import { getPolicy, resolveBrief, loadQuestionRecords, earnsItsSearches, makesAccountsWritable, unreachableQuestions, FAIR_TRIAL_PAGES, UNREACHABLE_TRIALS } from '@agent-crm/tools';
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
 const argv = process.argv.slice(2);
@@ -147,7 +147,7 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
     console.log(`  note: the brief was rewritten ${briefAt.slice(0, 10)}; pages bought before then are not charged to these questions.`);
   }
   console.log('');
-  const head = 'question'.padEnd(24) + 'searches'.padStart(9) + 'fetched'.padStart(9) + 'kept'.padStart(6) + 'hit%'.padStart(6) + 'facts'.padStart(7) + 'used'.padStart(6) + '   verdict';
+  const head = 'question'.padEnd(24) + 'kind'.padStart(7) + 'fetched'.padStart(9) + 'kept'.padStart(6) + 'hit%'.padStart(6) + 'facts'.padStart(7) + 'dated%'.padStart(8) + 'used'.padStart(6) + '   verdict';
   // No derived searches-per-question column. It would be runs x searches aimed
   // at that question, which over-counts: cold accounts run fewer searches, a
   // domainless account skips own-site ones entirely. `fetched` is measured, so
@@ -170,8 +170,11 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
     const fetched = r?.fetched ?? serving.reduce((n, a) => n + (fetchedByAngle[a.id] ?? 0), 0);
     const kept = r?.kept ?? keptByQuestion[qid] ?? 0;
     const facts = r?.facts ?? factsByQuestion[qid] ?? 0;
+    const dated = r?.dated ?? 0;
     const used = r?.used ?? usedByQuestion[qid] ?? 0;
     const hit = fetched ? Math.round((kept / fetched) * 100) : 0;
+    const datedPct = facts ? Math.round((dated / facts) * 100) : 0;
+    const kind = r?.kind ?? (brief.find((q) => q.id === qid)?.kind === 'event' ? 'event' : 'state');
 
     let verdict: string;
     if (!inBrief) verdict = 'RETIRED — facts kept and still readable';
@@ -182,13 +185,16 @@ async function fetchAll<T>(build: (f: number, t: number) => any): Promise<T[]> {
     else if (fetched < FAIR_TRIAL_PAGES) verdict = `unproven (needs ${FAIR_TRIAL_PAGES}+ pages seen)`;
     else if (!earnsItsSearches({ fetched, kept })) verdict = 'THE SEARCH IS WRONG — reword the query, keep the question';
     else if (kept >= 5 && facts === 0) verdict = 'pages are right, nothing being read off them';
+    // Before the used===0 line, which this explains: facts nothing can open on
+    // are facts no message is able to use, and the fix is the wording, not the bin.
+    else if (!makesAccountsWritable({ kind, facts, dated })) verdict = 'NO DATES — asks what they ARE, needs to ask what they DID. Makes nothing writable';
     else if (facts >= 10 && used === 0 && posts.length >= 20) verdict = 'RETIRE CANDIDATE — produces facts no message uses';
     else verdict = 'earning its place';
 
     console.log(
       qid.slice(0, 23).padEnd(24) +
-      String(serving.length || '-').padStart(9) + String(fetched).padStart(9) + String(kept).padStart(6) +
-      `${hit}%`.padStart(6) + String(facts).padStart(7) + String(used).padStart(6) + '   ' + verdict,
+      kind.padStart(7) + String(fetched).padStart(9) + String(kept).padStart(6) +
+      `${hit}%`.padStart(6) + String(facts).padStart(7) + `${datedPct}%`.padStart(8) + String(used).padStart(6) + '   ' + verdict,
     );
 
     const newest = serving.map((a) => a.record_since).filter(Boolean).sort().pop();

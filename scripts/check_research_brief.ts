@@ -25,6 +25,7 @@ import { currentFactRows } from '../packages/tools/src/reads.ts';
 import {
   resolveBrief, BASELINE_BRIEF, PAIN_QUESTION, sysPrompt, briefInputHash,
   earnsItsSearches, unreachableQuestions, recordReading, foldFetchedByQuestion, carryQuestionOffSwitch, UNREACHABLE_PAGES,
+  makesAccountsWritable, questionsNotEarningTheirPages, MIN_FACTS_FOR_DATE_VERDICT, FAIR_TRIAL_PAGES, type QuestionRecord,
 } from '../packages/tools/src/research_brief.ts';
 import type { WorkspacePolicy } from '../packages/tools/src/policy.ts';
 
@@ -241,12 +242,92 @@ console.log('\nbeing unsearchable never takes a question out of the brief:');
 console.log('\nthe brief planner is given the reading, not just the numbers:');
 {
   const line = (fetched: number, kept: number, facts = 0) =>
-    recordReading({ id: 'q', fetched, kept, facts, used: 0 });
+    recordReading({ id: 'q', fetched, kept, facts, dated: facts, used: 0, kind: 'state' });
   eq('a fresh question is protected', line(10, 0).includes('TOO EARLY TO JUDGE'), true);
   eq('a bad search is called a bad search', line(100, 1).includes('rewrite its query'), true);
   eq('an unreachable question is called unreachable', line(264, 1).includes('searching for this does not work'), true);
   eq('and it is told to keep it anyway', line(264, 1).includes('KEEP the question'), true);
   eq('a working question is left alone', line(199, 84, 5).includes('earning its place'), true);
+}
+
+// The bar the loop was missing. A fact with no date cannot open a message, so a
+// question producing only undated facts contributes nothing to whether the agent
+// can write — and until this existed it read as healthy on every other number.
+// Sudden's real figures: one event question at 51% dated produced 88 of the
+// workspace's 90 writable accounts, while monetization_model sat at 9% dated
+// across 212 facts and was reported as earning its place.
+console.log('\na question that buys pages has to make some account writable:');
+{
+  const rec = (o: Partial<QuestionRecord>): QuestionRecord =>
+    ({ id: 'q', fetched: 200, kept: 60, facts: 100, dated: 50, used: 0, kind: 'state', ...o });
+
+  // Sudden's two real questions, side by side. Both are past a fair trial, both
+  // keep pages, and only one of them has ever made an account writable.
+  eq('monetization_model — 1,590 pages, 212 facts, 19 dated — fails',
+    makesAccountsWritable(rec({ fetched: 1590, facts: 212, dated: 19, used: 1 })), false);
+  eq('recent_launch — 804 facts, 413 dated — passes',
+    makesAccountsWritable(rec({ fetched: 1361, facts: 804, dated: 413, used: 29 })), true);
+
+  // The label is not a defence. The first version of this bar judged only
+  // questions marked 'event', and monetization_model is marked 'state', so the
+  // largest spender on the book walked straight through reading "earning its
+  // place". Calling a question a description does not make its searches free.
+  eq('being declared a description does not exempt a question that spends',
+    makesAccountsWritable(rec({ kind: 'state', fetched: 1590, facts: 212, dated: 19, used: 1 })), false);
+
+  eq('exactly at the bar passes, so the threshold is not off by one',
+    makesAccountsWritable(rec({ facts: 100, dated: 20, used: 0 })), true);
+  eq('just under the bar fails',
+    makesAccountsWritable(rec({ facts: 100, dated: 19, used: 0 })), false);
+
+  // The exemption that matters most. `pain` buys nothing — no search points at
+  // it, its answers are noticed on pages bought for other questions, they are
+  // undated by nature, and it is the most valuable thing research finds. A bar
+  // that condemned it would delete the best question in the brief.
+  eq('a question that buys no pages is never judged — this is pain',
+    makesAccountsWritable(rec({ fetched: 0, facts: 98, dated: 0, used: 1 })), true);
+
+  // An honest description question that spends and gets cited is doing real
+  // work: it is never the reason to write, it is what makes the message worth
+  // reading once a reason exists.
+  eq('facts messages actually cite justify the pages, dates or not',
+    makesAccountsWritable(rec({ fetched: 400, facts: 100, dated: 2, used: 20 })), true);
+  eq('but one citation in a hundred facts does not',
+    makesAccountsWritable(rec({ fetched: 400, facts: 100, dated: 2, used: 1 })), false);
+
+  // Same shape as the fair-trial rule: new is not failing.
+  eq('too few pages is not a verdict',
+    makesAccountsWritable(rec({ fetched: FAIR_TRIAL_PAGES - 1, facts: 200, dated: 0, used: 0 })), true);
+  eq('too few facts is not a verdict either',
+    makesAccountsWritable(rec({ facts: MIN_FACTS_FOR_DATE_VERDICT - 1, dated: 0, used: 0 })), true);
+  eq('and one fact past that bar it becomes one',
+    makesAccountsWritable(rec({ facts: MIN_FACTS_FOR_DATE_VERDICT, dated: 0, used: 0 })), false);
+
+  const failing = recordReading(rec({ fetched: 1590, facts: 212, dated: 19, used: 1 }));
+  eq('the planner is told to rewrite it, not drop it', failing.includes('REWRITE it to ask what the company DID'), true);
+  eq('the planner is told to keep the id, so the record survives', failing.includes('Keep the id'), true);
+  eq('it is shown what the pages bought', failing.includes('bought 1590 pages'), true);
+  eq('the numbers are in the line it reads', failing.includes('19 of them dated (9%)'), true);
+
+  // pain's real shape on Sudden: 98 facts, none dated, cited by a message, no
+  // searches bought. It must never be told to go and find dates.
+  const painLine = recordReading(rec({ fetched: 0, facts: 98, dated: 0, used: 1 }));
+  eq('a question that spends nothing is never told to rewrite for dates', painLine.includes('REWRITE'), false);
+
+  // The link that makes every line above reachable. The brief's staleness hash
+  // covers About, ICP and the age floor — none of which move when a question
+  // spends a month buying pages and makes nobody writable. Without a trigger
+  // keyed on the record, a broken brief is "current" forever and none of these
+  // guardrails is ever consulted.
+  eq('a failing question is named as a reason to re-plan',
+    questionsNotEarningTheirPages([
+      rec({ id: 'monetization_model', fetched: 1590, facts: 212, dated: 19, used: 1 }),
+      rec({ id: 'recent_launch', fetched: 1361, facts: 804, dated: 413, used: 29 }),
+      rec({ id: 'pain', fetched: 0, facts: 98, dated: 0, used: 1 }),
+    ]),
+    ['monetization_model']);
+  eq('a healthy brief triggers nothing',
+    questionsNotEarningTheirPages([rec({ id: 'recent_launch', fetched: 1361, facts: 804, dated: 413, used: 29 })]), []);
 }
 
 console.log(fail === 0 ? '\nALL PASS\n' : `\n${fail} FAILED\n`);

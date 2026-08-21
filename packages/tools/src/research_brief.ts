@@ -199,9 +199,26 @@ WHAT MAKES A GOOD QUESTION:
 - It is about the PROSPECT, and its answer differs from one prospect to the next. "What industry are they in?" is not a question — the agent already picked them for that.
 - Knowing the answer changes what the message says, or whether it gets sent at all.
 - A stranger reading the answer would be able to tell whether this seller has something worth saying to that company.
-- At least ONE question must be answerable by something DATED that happened — that is the only thing a first message can honestly open on.
 - At least ONE question must be about how the prospect currently operates the thing this seller would change, replace, or sit beside.
 - Prefer questions whose answers are published numbers, named systems, named customers, or something a person there actually said. Avoid questions answered by adjectives.
+
+MOST OF YOUR QUESTIONS MUST ASK WHAT HAPPENED, NOT WHAT IS TRUE.
+
+The agent is only allowed to write to a company when it holds a fact about something that HAPPENED on a knowable date, recently. A fact with no date is thrown out before a message is written, however true and however interesting it is. So a question whose answers have no dates on them cannot make a single account writable, no matter how well its searches work or how much the agent learns from it.
+
+This is measured, per question, and you are shown the result below. A brief that fails here fails silently in the worst way: searches run, pages are kept, facts pile up, and the agent still has nothing to say to anybody.
+
+  NO DATE (cannot open a message): "Which delivery providers does the company use?"
+  DATED   (can open a message):    "What has the company changed, launched or moved to recently, and when?"
+
+  NO DATE: "How does the company make money?"
+  DATED:   "What has the company announced about a new pricing tier, plan or ad product, and when?"
+
+Both of a pair can be about the same subject. The difference is entirely whether the answer comes with a date attached, and that difference decides whether the agent can act on it.
+
+So: at least HALF your questions must be ones a dated answer is the natural answer to, and mark those "event". Do not settle for one. If the single event question you wrote turns out to be unsearchable for a given seller, a brief with only one has left the agent unable to write to anyone at all, which is exactly what has happened in production.
+
+Keep some "state" questions too — how a company operates, and what it says is hard or expensive today, are what make a message worth reading once it has a reason to exist. They are just never the reason itself.
 
 DO NOT ASK A QUALIFYING QUESTION. This is the most common mistake and it wastes more money than every other mistake combined.
 
@@ -229,7 +246,7 @@ Each question has:
 - "label": a short human title, under 6 words.
 - "question": the question itself, in plain language, as you would ask a researcher.
 - "why": one line on why this seller specifically cares about the answer.
-- "kind": "event" if answering it requires something dated that happened, "state" if it describes how the company stands.
+- "kind": "event" if answering it requires something dated that happened, "state" if it describes how the company stands. This is a promise you are held to: every "event" question is measured on what share of its facts carry a real date, and one that does not deliver them is reported back to you as failing. Do not mark a question "event" to satisfy the rule above when its honest answer is a description.
 
 COVER WHAT THEY SELL AGAINST. Every problem the seller says it solves must be reachable by at least one question — a question whose answer would tell you whether that problem is real and growing at this prospect, and roughly how big it is. Go through their problems one at a time and check each has a question. A problem with no question is a problem the agent will never find evidence for.
 
@@ -271,8 +288,35 @@ export interface QuestionSearchRecord {
 export interface QuestionRecord extends QuestionSearchRecord {
   /** Facts read off the kept pages. */
   facts: number;
+  /**
+   * Of those facts, how many record something that happened on a knowable date.
+   *
+   * This is the column the loop was missing, and it is the only one that maps to
+   * whether the agent can write at all. A message needs an anchor, an anchor is a
+   * dated fact inside the freshness window, and an undated fact is rejected by
+   * pickAnchorCandidates as not_an_event however true and however useful it is.
+   * So a question can keep pages, produce facts, and read as healthy on every
+   * other number here while never once making an account writable.
+   *
+   * Measured on Sudden over 60 days when this was added: the workspace had 90
+   * writable accounts out of 1,961, and ONE question produced 88 of them.
+   * monetization_model had bought 250 searches and produced 212 facts, of which
+   * 19 were dated, reaching 10 accounts — and the scorecard called it "earning
+   * its place", correctly by the old bar, which is the problem.
+   */
+  dated: number;
   /** Facts a draft actually cited. Sparse early on — see the guardrail below. */
   used: number;
+  /**
+   * What the brief SAID this question would produce, from its own `kind` field.
+   *
+   * The planner has always declared this per question and until now nothing read
+   * it, so a question could promise dated events, deliver none, and never be
+   * told. A 'state' question is not expected to produce dates and must never be
+   * judged on them: `pain` is a state question, it is the most valuable thing
+   * research finds, and a date bar applied to it would delete it.
+   */
+  kind: 'event' | 'state';
 }
 
 /**
@@ -321,6 +365,77 @@ export const MIN_ANSWER_RATE = 0.03;
  */
 export function earnsItsSearches(r: { fetched: number; kept: number }): boolean {
   return r.kept >= r.fetched * MIN_ANSWER_RATE;
+}
+
+/**
+ * How much of what an event question produces has to be genuinely dated: a fifth.
+ *
+ * Fitted the same way MIN_ANSWER_RATE was, and worth stating as plainly. On
+ * Sudden's 60-day record the one event question that works runs at 51% dated and
+ * produces 88 of the workspace's 90 writable accounts. The questions that produce
+ * facts nobody can open on run at 0%, 8%, 9% and 10%. There is a wide empty gap
+ * between 10% and 51% and this sits in it.
+ *
+ * Deliberately not "any dated fact at all". A question that lands one dated fact
+ * in 200 is immune to correction under a zero test, for the same reason
+ * earnsItsSearches is not written as `kept === 0`.
+ */
+export const MIN_DATED_RATE = 0.2;
+
+/**
+ * Facts needed before the date share means anything.
+ *
+ * A separate number from FAIR_TRIAL_PAGES because it counts a different thing: a
+ * question can see plenty of pages and produce few facts, and judging a date
+ * share off three facts is judging noise. 20 is roughly where one unlucky run
+ * stops being able to move the verdict on its own.
+ */
+export const MIN_FACTS_FOR_DATE_VERDICT = 20;
+
+/**
+ * Does what this question buys ever let the agent write to anybody?
+ *
+ * The bar the loop did not have. Every other measure here asks whether research
+ * found ANYTHING; this asks whether what it found can become a message. A fact
+ * with no date cannot: pickAnchorCandidates rejects it as not_an_event, so a
+ * question producing only undated facts adds nothing to whether the agent can
+ * write, however true and however interesting its answers are.
+ *
+ * It keys off SPEND, not off the question's declared kind, and that is the whole
+ * design. The first version judged only questions marked 'event', which read
+ * well and let the largest waste on the book straight through: Sudden's
+ * `monetization_model` is declared 'state', had bought 1,590 pages — more than
+ * any other question — and returned 19 dated facts across 10 accounts. Labelling
+ * a question as a description does not make the searches free.
+ *
+ * Three ways to pass, and the exemptions matter more than the threshold:
+ *
+ *   1. It buys nothing. A question with no searches pointed at it costs nothing
+ *      and is answered on pages bought for other questions. `pain` is the case
+ *      that proves it: nobody searches for pain, its answers are undated by
+ *      nature, and it is the most valuable thing research finds. A bar that
+ *      condemned it would delete the best question in the brief.
+ *   2. Too few facts to judge. Same shape as the fair-trial rule — a new
+ *      question has produced nothing yet and that is not a failure.
+ *   3. It produces dated facts, OR facts that messages actually cite. The second
+ *      half is what keeps an honest description question alive: knowing how a
+ *      company operates is never the REASON to write, but it is often what makes
+ *      the message worth reading, and a question doing that job is earning its
+ *      pages even with no dates at all.
+ *
+ * True whenever there is not enough evidence, so this can never condemn a
+ * question for being new.
+ */
+export function makesAccountsWritable(r: {
+  fetched: number;
+  facts: number;
+  dated: number;
+  used: number;
+}): boolean {
+  if (r.fetched < FAIR_TRIAL_PAGES) return true;
+  if (r.facts < MIN_FACTS_FOR_DATE_VERDICT) return true;
+  if (r.used > 0 && r.used >= r.facts * MIN_ANSWER_RATE) return true;
+  return r.dated >= r.facts * MIN_DATED_RATE;
 }
 
 /**
@@ -398,13 +513,23 @@ export function unreachableQuestions(records: QuestionSearchRecord[]): string[] 
 export function recordReading(r: QuestionRecord): string {
   if (r.fetched < FAIR_TRIAL_PAGES) return `  [only ${r.fetched} pages seen so far — TOO EARLY TO JUDGE, keep it]`;
   const hit = r.fetched ? Math.round((r.kept / r.fetched) * 100) : 0;
-  const parts = [`${r.fetched} pages seen, ${r.kept} kept (${hit}%)`, `${r.facts} facts`, `${r.used} used in a message`];
+  const datedPct = r.facts ? Math.round((r.dated / r.facts) * 100) : 0;
+  const parts = [
+    `${r.fetched} pages seen, ${r.kept} kept (${hit}%)`,
+    `${r.facts} facts, ${r.dated} of them dated (${datedPct}%)`,
+    `${r.used} used in a message`,
+  ];
   let read: string;
   if (r.fetched >= UNREACHABLE_PAGES && !earnsItsSearches(r)) {
     read = 'searching for this does not work — several different searches have now been tried and the pages they bought do not answer it. Searches for it have been STOPPED. KEEP the question anyway and keep its wording: pages bought for the other questions are still read against it, which is how the most valuable answers arrive';
   } else if (!earnsItsSearches(r)) read = 'the SEARCH is finding the wrong pages — rewrite its query, do NOT drop the question';
   else if (r.kept >= 5 && r.facts === 0) read = 'right pages, nothing being read off them — keep the question';
-  else if (r.facts >= 10 && r.used === 0) read = 'produces facts no message has ever used — a candidate to drop';
+  // Read before the used===0 line, because it explains it. A question producing
+  // undated facts produces facts no message CAN use, and the fix is not to drop
+  // the question — it is to ask for the same subject as something that happened.
+  else if (!makesAccountsWritable(r)) {
+    read = `${100 - datedPct}% of what this finds has NO DATE on it, and it has bought ${r.fetched} pages to get there${r.kind === 'event' ? ', despite being written as a question about something that happened' : ''}. An undated fact cannot open a message, so this question is not making a single account writable. REWRITE it to ask what the company DID and WHEN — the event behind the same subject, not the standing description of it. Keep the id`;
+  } else if (r.facts >= 10 && r.used === 0) read = 'produces facts no message has ever used — a candidate to drop';
   else read = 'earning its place — keep it, and keep its wording close';
   return `  [${parts.join(', ')} -> ${read}]`;
 }
@@ -726,18 +851,23 @@ export async function loadQuestionRecords(
 
   const sigIds = [...sigQ.keys()];
   const factsByQuestion: Record<string, number> = {};
+  const datedByQuestion: Record<string, number> = {};
   const factIdQ = new Map<string, string>();
   // Same cap, one chunk at a time: .limit(3000) over 200 signals still stops at
   // 1000 rows. Nothing has crossed it yet on this book, and nothing warns when
   // it does. The count just quietly stops climbing.
   for (let i = 0; i < sigIds.length; i += 200) {
-    const rows = await fetchAll<{ id: string; signal_id: string }>((from, to) =>
-      supabase.from('facts').select('id, signal_id')
+    const rows = await fetchAll<{ id: string; signal_id: string; happened_at: string | null }>((from, to) =>
+      supabase.from('facts').select('id, signal_id, happened_at')
         .in('signal_id', sigIds.slice(i, i + 200)).order('id').range(from, to));
     for (const f of rows) {
       const q = sigQ.get(f.signal_id);
       if (!q) continue;
       factsByQuestion[q] = (factsByQuestion[q] ?? 0) + 1;
+      // A stored happened_at has already been through resolveHappenedAt, so it
+      // is a date somebody could read rather than a crawl timestamp standing in
+      // for one. Counting the column directly is counting anchor candidates.
+      if (f.happened_at) datedByQuestion[q] = (datedByQuestion[q] ?? 0) + 1;
       factIdQ.set(f.id, q);
     }
   }
@@ -762,7 +892,17 @@ export async function loadQuestionRecords(
     if (q) usedByQuestion[q] = (usedByQuestion[q] ?? 0) + 1;
   }
 
-  return records.map((r) => ({ ...r, facts: factsByQuestion[r.id] ?? 0, used: usedByQuestion[r.id] ?? 0 }));
+  // The brief is where a question's declared kind lives, so it is read back here
+  // rather than stored on the record: a question reworded from an event into a
+  // description should be judged as what it is now, not as what it once claimed.
+  const kindById = new Map(resolveBrief(policy).map((q) => [q.id, q.kind === 'event' ? 'event' as const : 'state' as const]));
+  return records.map((r) => ({
+    ...r,
+    facts: factsByQuestion[r.id] ?? 0,
+    dated: datedByQuestion[r.id] ?? 0,
+    used: usedByQuestion[r.id] ?? 0,
+    kind: kindById.get(r.id) ?? 'state',
+  }));
 }
 
 /**
@@ -807,6 +947,30 @@ export async function persistResearchBrief(
 }
 
 /**
+ * How long a rewritten brief is left alone before its record can force another.
+ *
+ * The reason it is needed at all: a rewrite resets a question's `fetched` (spend
+ * is charged from brief_generated_at), which puts it back under the fair-trial
+ * guard, so the natural cycle is already rewrite -> protected -> re-judged. On a
+ * quiet workspace that is days. On one researching hard it could be an hour, and
+ * a planner that keeps returning much the same question would then rewrite the
+ * brief every hour, at one LLM call each, churning the questions every angle is
+ * built from. A day is long enough that a rewrite gets a real trial and short
+ * enough that a broken brief is not left running for a week.
+ */
+export const BRIEF_REWRITE_COOLDOWN_HOURS = 24;
+
+/**
+ * Questions whose track record says they are not earning their pages.
+ *
+ * Split out from the regeneration path so it can be asserted on directly, and so
+ * the scorecard and the dispatcher agree about which questions are failing.
+ */
+export function questionsNotEarningTheirPages(records: QuestionRecord[]): string[] {
+  return records.filter((r) => !makesAccountsWritable(r)).map((r) => r.id);
+}
+
+/**
  * Return a usable brief, regenerating + persisting when the cached one is
  * missing or stale. Called by the dispatcher once per workspace per tick, so the
  * runner and the enricher only ever read the cache.
@@ -819,7 +983,44 @@ export async function ensureResearchBrief(supabase: SupabaseClient, workspace_id
   } catch {
     return resolveBrief(policy); // cannot tell if it changed — keep what is stored
   }
-  if (isBriefCurrent(policy, ctx)) return resolveBrief(policy);
+  if (isBriefCurrent(policy, ctx)) {
+    // The hash only covers the INPUTS — About, ICP, the age floor. A question
+    // that has been buying pages for a month and has never made one account
+    // writable changes none of them, so on the hash alone a broken brief is
+    // current forever and every guardrail below is unreachable code. This is the
+    // second half of the bug in the comment further down: the records were being
+    // loaded and handed to the planner, but nothing could ever call the planner
+    // on the strength of what they said.
+    //
+    // Bounded to once a day per workspace, and deliberately gated on the clock
+    // BEFORE the read: loadQuestionRecords scans a month of events, signals,
+    // facts and posts, which is not something to run on every dispatcher tick.
+    const generatedAt = Date.parse(policy.research?.brief_generated_at ?? '');
+    const cooled = !Number.isFinite(generatedAt)
+      || Date.now() - generatedAt > BRIEF_REWRITE_COOLDOWN_HOURS * 3600_000;
+    if (!cooled) return resolveBrief(policy);
+    const judged = records ?? await loadQuestionRecords(supabase, workspace_id).catch(() => []);
+    const failing = questionsNotEarningTheirPages(judged);
+    if (!failing.length) return resolveBrief(policy);
+    const rewritten = await planResearchBrief(ctx, { previous: policy.research?.brief ?? [], records: judged });
+    if (rewritten.source === 'baseline') return resolveBrief(policy);   // never trade tuned questions for the generic set
+    await persistResearchBrief(supabase, workspace_id, rewritten.questions, briefInputHash(ctx));
+    await supabase.from('events').insert({
+      workspace_id,
+      actor_kind: 'agent',
+      actor_id: 'brief_planner',
+      action: 'brief_rewritten',
+      target_kind: 'workspace',
+      target_id: workspace_id,
+      payload: {
+        reason: 'questions_not_earning_their_pages',
+        failing,
+        records: judged.filter((r) => failing.includes(r.id))
+          .map((r) => ({ id: r.id, fetched: r.fetched, facts: r.facts, dated: r.dated, used: r.used, kind: r.kind })),
+      },
+    });
+    return rewritten.questions;
+  }
   // Load the track record here rather than making every caller remember to pass
   // it. `records` was an optional argument and NO caller ever supplied one — not
   // the dispatcher, not the settings route — so every regeneration in production
