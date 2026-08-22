@@ -904,23 +904,32 @@ export async function runAgent(
   }
   const angle = angleDecision.choice;
 
-  // An account whose facts do not show an argument's condition does not get the
-  // message at all.
+  // NO ARGUMENT, NO MESSAGE. If this workspace has written its arguments down,
+  // a draft requires one that matched and whose condition its facts verified.
+  // Every other outcome stops here, whatever the reason was.
   //
-  // The picker already refused the argument here. What it could not do was stop
-  // the draft: the drafter carried on and fell back to the problem menu, and on
-  // a workspace whose problems restate the same claim in prose, the model picks
-  // it straight back off the menu. So the claim nobody verified went out anyway.
-  // 3 of the 5 accounts drafted on 2026-08-22 came through this path.
+  // The condition is deliberately "did an argument come back", not a list of
+  // the refusal reasons that should stop. A list is the shape of this bug: it
+  // was written for precondition_unmet, no_problem_fits leaked straight past it
+  // the same afternoon, and any reason added later would have leaked too. There
+  // is no reason code to keep up to date here, so a refusal invented next year
+  // fails closed without anyone remembering this line exists.
   //
-  // ONLY precondition_unmet stops. llm_error, unparseable, no_facts and
-  // menu_too_small keep drafting exactly as they did: a picker that fails closed
-  // is a picker whose bad afternoon switches off outbound with nobody deciding
-  // to. This one is not a failure — it is the check returning "no".
-  if (behavior === 'drafter' && (policy.drafter?.arguments ?? []).length && angleDecision.reason === 'precondition_unmet') {
+  // What leaked through the list: with no argument the prompt falls back to the
+  // pain_points menu, and a workspace whose problems restate its argument in
+  // prose gets the model to pick the same claim off the menu with none of the
+  // checking. That is how a company got told about its own back catalogue by a
+  // message nothing had verified.
+  //
+  // Yes, this means an LLM outage stops outbound rather than writing something
+  // unchecked. That is the right way round: a stopped afternoon is recoverable
+  // and a false claim about someone's business is not. The reason is recorded on
+  // every skip and sweep.ts alarms when the picker is failing rather than
+  // honestly answering no, so failing closed is loud instead of silent.
+  if (behavior === 'drafter' && (policy.drafter?.arguments ?? []).length && !angle?.argument) {
     const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-      '[precondition_unmet] No configured argument has its condition shown by this account\'s facts, so there is nothing we can honestly say about their business yet. Left alone until research turns that fact up.', []);
-    return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'precondition_unmet', behavior };
+      `[no_argument:${angleDecision.reason}] No configured argument both fits this account and has its condition shown by its facts, so there is nothing we can honestly say about their business yet. Left alone until research turns that fact up.`, []);
+    return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: `no_argument:${angleDecision.reason}`, behavior };
   }
 
   // An UNPROVEN argument writes a few drafts and then waits for a human.

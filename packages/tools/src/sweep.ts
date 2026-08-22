@@ -73,6 +73,19 @@ export const SWEEP_THRESHOLDS = {
   // are still pending. A request older than this is a backlog question, not a
   // "did draining stop today" question.
   contact_request_lookback_days: 90,
+
+  // Share of argument picks in 24h that broke rather than answered.
+  //
+  // Once a workspace writes its arguments down, no matched argument means no
+  // message, so a picker that is erroring instead of deciding stops outbound
+  // without anyone choosing to. That is the correct trade (a stopped afternoon
+  // is recoverable, a false claim about someone's business is not) but it has to
+  // be loud, and this is what makes it loud. Only genuine breakage counts:
+  // refusing an account because nothing verifies the claim is the gate working
+  // and must never raise an alarm, however often it happens.
+  argument_pick_broken_share_yellow: 0.10,
+  argument_pick_broken_share_red: 0.30,
+  argument_pick_min_picks: 5,
 };
 
 const HOUR = 3600_000;
@@ -577,6 +590,38 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
           action: truncating
             ? `model output is being truncated — compare output_tokens vs max_tokens on the agent_llm_failed events and raise the budget`
             : `model call failing — check the provider key, the configured model id, and remaining credit`,
+        });
+      }
+    }
+
+    // (a2) The argument picker breaking rather than deciding.
+    //
+    // With arguments configured the drafter will not write without one, so this
+    // call is now load-bearing for whether anything goes out at all. Split the
+    // outcomes by KIND, not by count: precondition_unmet and no_problem_fits are
+    // the gate answering honestly and are healthy at any volume, while llm_error
+    // and unparseable are the call failing and silently holding back messages.
+    const picks = await fetchAll<{ payload: { angle_outcome?: string } | null }>((f, t) => sb.from('events')
+      .select('payload')
+      .eq('workspace_id', workspace_id).eq('action', 'drafter_shortlist_pick')
+      .gte('created_at', since24).order('id').range(f, t));
+    const BROKEN = new Set(['llm_error', 'unparseable']);
+    const outcomes = picks.map((p) => p.payload?.angle_outcome).filter((o): o is string => Boolean(o));
+    const broken = outcomes.filter((o) => BROKEN.has(o));
+    if (outcomes.length >= T.argument_pick_min_picks && broken.length > 0) {
+      const share = broken.length / outcomes.length;
+      const sev: Severity = share >= T.argument_pick_broken_share_red ? 'red'
+        : share >= T.argument_pick_broken_share_yellow ? 'yellow' : 'green';
+      if (sev !== 'green') {
+        const byOutcome = new Map<string, number>();
+        for (const o of outcomes) byOutcome.set(o, (byOutcome.get(o) ?? 0) + 1);
+        const detail = [...byOutcome.entries()].sort((a, b) => b[1] - a[1]).map(([o, n]) => `${o}=${n}`).join(' ');
+        out.push({
+          id: 'argument_pick_broken',
+          severity: sev,
+          metric: `${broken.length}/${outcomes.length} argument picks broke instead of deciding (${fmtPct(share)}) — ${detail}`,
+          threshold: `< ${fmtPct(T.argument_pick_broken_share_yellow)}`,
+          action: `the argument picker is erroring, and with arguments configured that holds back drafts instead of writing something unchecked — check the cheap model's key, id and credit`,
         });
       }
     }
