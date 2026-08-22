@@ -158,7 +158,7 @@ export function EnvVarsEditor({
               onChange={(e) => setName(i, e.target.value)}
               onPaste={(e) => handlePaste(i, e)}
               placeholder="OPENAI_API_KEY"
-              style={{ ...inputStyle, fontFamily: 'JetBrains Mono, monospace' }}
+              style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }}
             />
             {masked ? (
               <div style={{ display: 'flex', gap: '.3rem', alignItems: 'center' }}>

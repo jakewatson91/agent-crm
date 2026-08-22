@@ -356,7 +356,6 @@ function AssistantText({ text }: { text: string }) {
           color: 'var(--text-3)', cursor: 'pointer',
           fontSize: '.65rem', padding: '.15rem .35rem', borderRadius: 4,
           opacity: 0, transition: 'opacity 120ms ease',
-          fontFamily: 'JetBrains Mono, monospace',
         }}
       >
         {copied ? '✓' : 'copy'}
@@ -373,7 +372,7 @@ function AssistantText({ text }: { text: string }) {
         .md ul, .md ol { margin: .25em 0 .5em; padding-left: 1.25em; }
         .md li { margin: .1em 0; }
         .md code {
-          font-family: 'JetBrains Mono', ui-monospace, monospace;
+          font-family: var(--font-mono);
           font-size: .85em;
           background: var(--panel); padding: .05em .35em;
           border-radius: 3px;
@@ -404,7 +403,7 @@ function ThinkingPill({ text }: { text: string }) {
   const tail = text.length > 140 ? '…' + text.slice(-140) : text;
   return (
     <div style={{ alignSelf: 'flex-start', maxWidth: '85%', padding: '.4rem .65rem', background: 'transparent', border: '1px dashed var(--border)', borderRadius: 8, fontSize: '.72rem', color: 'var(--text-3)', fontStyle: 'italic', display: 'flex', gap: '.5rem', alignItems: 'baseline' }}>
-      <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.05em', fontStyle: 'normal' }}>thinking</span>
+      <span style={{ color: 'var(--text-3)', fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.05em', fontStyle: 'normal' }}>thinking</span>
       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
         {tail}
       </span>
@@ -435,7 +434,7 @@ function ToolPartView({ part, ws }: { part: ToolUIPartLike; ws: string }) {
   if (part.state === 'input-streaming' || part.state === 'input-available') {
     return (
       <div style={{ alignSelf: 'flex-start', maxWidth: '85%', padding: '.4rem .65rem', background: 'transparent', border: '1px dashed var(--border)', borderRadius: 8, fontSize: '.72rem', color: 'var(--text-3)', fontStyle: 'italic', display: 'flex', gap: '.5rem', alignItems: 'baseline' }}>
-        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.05em', fontStyle: 'normal' }}>running</span>
+        <span style={{ fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.05em', fontStyle: 'normal' }}>running</span>
         <span>{name}…</span>
       </div>
     );
@@ -549,7 +548,7 @@ function ThreadPicker({
 function ResultCard({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ alignSelf: 'flex-start', maxWidth: '85%', width: '100%', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '.55rem .7rem', fontSize: '.8rem' }}>
-      <div style={{ color: 'var(--text-3)', fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '.35rem', fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      <div style={{ color: 'var(--text-3)', fontSize: '.65rem', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '.35rem' }}>{label}</div>
       {children}
     </div>
   );
@@ -565,7 +564,7 @@ function ErrorResult({ name, error }: { name: string; error: string }) {
 
 function RawResult({ name, content }: { name: string; content: string }) {
   return (
-    <details style={{ alignSelf: 'flex-start', maxWidth: '85%', fontSize: '.72rem', color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', cursor: 'pointer' }}>
+    <details style={{ alignSelf: 'flex-start', maxWidth: '85%', fontSize: '.72rem', color: 'var(--text-3)', cursor: 'pointer' }}>
       <summary>← {name} result</summary>
       <pre style={{ marginTop: '.3rem', padding: '.4rem', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 4, overflow: 'auto', maxHeight: 240, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
         {tryPretty(content)}
@@ -606,17 +605,17 @@ function QueryContacts({ data }: { data: any }) {
   return (
     <ResultCard label={label}>
       {acct?.domain && (
-        <div style={{ color: 'var(--text-3)', fontSize: '.7rem', marginBottom: '.3rem', fontFamily: 'JetBrains Mono, monospace' }}>@{acct.domain}</div>
+        <div style={{ color: 'var(--text-3)', fontSize: '.7rem', marginBottom: '.3rem' }}>@{acct.domain}</div>
       )}
       {rows.length === 0 && <div style={{ color: 'var(--text-3)' }}>{data?.note ?? 'no contacts.'}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
         {rows.map((r, i) => (
           <div key={r.entity_id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'baseline' }}>
-            <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.65rem' }}>{(r.entity_id ?? '').slice(0, 8)}</span>
+            <span style={{ color: 'var(--text-3)', fontSize: '.65rem' }}>{(r.entity_id ?? '').slice(0, 8)}</span>
             <span style={{ minWidth: 120 }}>{r.name}</span>
             {r.email && <span style={{ color: 'var(--text-2)', fontSize: '.7rem' }}>{r.email}</span>}
             {r.role && <span style={{ color: 'var(--text-3)', fontSize: '.7rem', fontStyle: 'italic' }}>{r.role}</span>}
-            <span style={{ marginLeft: 'auto', color: 'var(--text-3)', fontSize: '.65rem', fontFamily: 'JetBrains Mono, monospace' }}>{r.link_source}</span>
+            <span style={{ marginLeft: 'auto', color: 'var(--text-3)', fontSize: '.65rem' }}>{r.link_source}</span>
           </div>
         ))}
       </div>
@@ -632,7 +631,7 @@ function EnrichContactsResult({ data }: { data: any }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
         {rows.map((r, i) => (
           <div key={r.contact_entity_id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'baseline' }}>
-            <span style={{ color: r.created ? '#3a7' : 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.65rem', minWidth: 50 }}>{r.created ? 'new' : 'existed'}</span>
+            <span style={{ color: r.created ? '#3a7' : 'var(--text-3)', fontSize: '.65rem', minWidth: 50 }}>{r.created ? 'new' : 'existed'}</span>
             <span style={{ minWidth: 120 }}>{r.name}</span>
             <span style={{ color: 'var(--text-2)', fontSize: '.7rem' }}>{r.email}</span>
             {r.role && <span style={{ color: 'var(--text-3)', fontSize: '.7rem', fontStyle: 'italic' }}>{r.role}</span>}
@@ -654,7 +653,7 @@ function QueryEntities({ rows, total }: { rows: any[]; total?: number }) {
         <div style={{ marginTop: '.25rem' }}>
           {facts.slice(0, 8).map((f, i) => (
             <div key={f.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
-              <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>{f.predicate}</span>
+              <span style={{ color: 'var(--text-3)' }}>{f.predicate}</span>
               <span style={{ flex: 1, wordBreak: 'break-word' }}>{f.object_text}</span>
               {f.id && <CiteChain fact_id={f.id} label="trace" />}
             </div>
@@ -671,8 +670,8 @@ function QueryEntities({ rows, total }: { rows: any[]; total?: number }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
         {rows.map((r, i) => (
           <div key={r.entity_id ?? i} style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.78rem' }}>
-            {!isMatch && <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.7rem', minWidth: 18 }}>{i + 1}.</span>}
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-3)', fontSize: '.7rem' }}>{(r.entity_id ?? '').slice(0, 8)}</span>
+            {!isMatch && <span style={{ color: 'var(--text-3)', fontSize: '.7rem', minWidth: 18 }}>{i + 1}.</span>}
+            <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{(r.entity_id ?? '').slice(0, 8)}</span>
             <span style={{ flex: 1 }}>{r.name}</span>
             {r.kind && <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{r.kind}</span>}
             {typeof r.icp_fit === 'number' && <ScoreChip value={r.icp_fit} />}
@@ -689,7 +688,7 @@ function QueryFacts({ rows }: { rows: any[] }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
         {rows.slice(0, 20).map((f, i) => (
           <div key={f.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
-            <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', minWidth: 110 }}>{f.predicate}</span>
+            <span style={{ color: 'var(--text-3)', minWidth: 110 }}>{f.predicate}</span>
             <span style={{ flex: 1, wordBreak: 'break-word' }}>{f.object_text}</span>
             {lowConfLabel(f.confidence) && <span style={{ color: 'var(--accent-coral)', fontSize: '.65rem' }}>{lowConfLabel(f.confidence)}</span>}
             {f.id && <CiteChain fact_id={f.id} label="trace" />}
@@ -709,7 +708,7 @@ function QueryEvents({ rows, ws }: { rows: any[]; ws: string }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
         {rows.slice(0, 20).map((e, i) => (
           <div key={e.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem' }}>
-            <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', minWidth: 120 }}>{e.action}</span>
+            <span style={{ color: 'var(--text-3)', minWidth: 120 }}>{e.action}</span>
             <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{relTime(e.created_at)}</span>
             <span style={{ flex: 1, color: 'var(--text-2)', wordBreak: 'break-word' }}>{e.target_kind}{e.target_id ? `:${String(e.target_id).slice(0, 8)}` : ''}</span>
           </div>
@@ -726,7 +725,7 @@ function QuerySources({ rows, window }: { rows: any[]; window?: number }) {
         {rows.slice(0, 20).map((s, i) => (
           <div key={s.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'center' }}>
             <span style={{ flex: 1, fontWeight: 500 }}>{s.name ?? s.id}</span>
-            <span style={{ color: 'var(--text-3)', fontSize: '.7rem', fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>
               sig {s.signals ?? 0} · runs {s.agent_runs ?? 0} · facts {s.facts ?? 0}
             </span>
           </div>
@@ -742,7 +741,7 @@ function QueryGates({ rows }: { rows: any[] }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
         {rows.slice(0, 20).map((g, i) => (
           <div key={g.id ?? i} style={{ display: 'flex', gap: '.5rem', fontSize: '.75rem', alignItems: 'center' }}>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-3)', fontSize: '.7rem' }}>{(g.id ?? '').slice(0, 8)}</span>
+            <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{(g.id ?? '').slice(0, 8)}</span>
             <span style={{ flex: 1 }}>{g.kind} · {g.policy ?? ''}</span>
             <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>
               {g.decided_at ? `${g.decision} ${relTime(g.decided_at)}` : 'pending'}
@@ -757,7 +756,7 @@ function QueryGates({ rows }: { rows: any[] }) {
 function CreateAccountResult({ data }: { data: any }) {
   return (
     <ResultCard label="create_account · created">
-      <div>created <strong>{data.name}</strong> <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.7rem' }}>{(data.entity_id ?? '').slice(0, 8)}</span></div>
+      <div>created <strong>{data.name}</strong> <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{(data.entity_id ?? '').slice(0, 8)}</span></div>
     </ResultCard>
   );
 }
@@ -772,7 +771,7 @@ function ExtractFactsResult({ data }: { data: any }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '.3rem' }}>
           {facts.map((f, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '.5rem', padding: '.3rem .4rem', background: 'var(--panel)', borderRadius: 5, fontSize: '.78rem' }}>
-              <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.7rem', minWidth: 90 }}>{f.predicate}</span>
+              <span style={{ color: 'var(--text-3)', fontSize: '.7rem', minWidth: 90 }}>{f.predicate}</span>
               <span style={{ flex: 1, wordBreak: 'break-word' }}>{f.object_text}</span>
               {lowConfLabel(f.confidence) && <span style={{ color: 'var(--accent-coral)', fontSize: '.65rem' }}>{lowConfLabel(f.confidence)}</span>}
             </div>
@@ -823,7 +822,7 @@ function ProposeActionResult({ data }: { data: any }) {
   return (
     <ResultCard label="propose_action">
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.35rem' }}>
-        <span style={{ padding: '.15rem .5rem', background: actionColor[d.action] ?? '#888', color: '#fff', borderRadius: 4, fontSize: '.72rem', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>{d.action}</span>
+        <span style={{ padding: '.15rem .5rem', background: actionColor[d.action] ?? '#888', color: '#fff', borderRadius: 4, fontSize: '.72rem', fontWeight: 600 }}>{d.action}</span>
         <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>{d.policy}</span>
       </div>
       <div style={{ fontSize: '.75rem', color: 'var(--text-2)', marginBottom: '.4rem' }}>{d.reason}</div>
@@ -855,7 +854,7 @@ function ScoreChip({ value }: { value: number }) {
   const v = Math.max(0, Math.min(1, value));
   const color = bandColor(v);
   return (
-    <span style={{ padding: '.1rem .35rem', background: color, color: '#fff', borderRadius: 3, fontSize: '.7rem', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+    <span style={{ padding: '.1rem .35rem', background: color, color: '#fff', borderRadius: 3, fontSize: '.7rem', fontWeight: 600 }}>
       {v.toFixed(2)}
     </span>
   );
@@ -866,8 +865,8 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
   const color = bandColor(v);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.7rem' }}>
-      <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', minWidth: 110 }}>{label}</span>
-      <span style={{ fontFamily: 'JetBrains Mono, monospace', color, fontWeight: 600 }}>{v.toFixed(2)}</span>
+      <span style={{ color: 'var(--text-3)', minWidth: 110 }}>{label}</span>
+      <span style={{ color, fontWeight: 600 }}>{v.toFixed(2)}</span>
     </div>
   );
 }
@@ -925,7 +924,7 @@ function AgentActionsCard({ rows: initial, ws }: { rows: AgentActionRow[]; ws: s
           {rows.map((row) => (
             <div key={row.event_id} style={{ padding: '.45rem .55rem', background: 'var(--panel)', borderRadius: 5, display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.75rem' }}>
-                <span style={{ color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace', fontSize: '.7rem' }}>
+                <span style={{ color: 'var(--text-3)', fontSize: '.7rem' }}>
                   {actionLabel(row.action_type)}
                 </span>
                 <span style={{ flex: 1, fontWeight: 500 }}>{row.source_name}</span>
@@ -951,7 +950,7 @@ function AgentActionsCard({ rows: initial, ws }: { rows: AgentActionRow[]; ws: s
                 <div style={{ color: 'var(--text-2)', fontSize: '.72rem', wordBreak: 'break-word' }}>{row.reasoning}</div>
               )}
               {row.new_query && (
-                <div style={{ color: 'var(--text-3)', fontSize: '.7rem', fontFamily: 'JetBrains Mono, monospace', wordBreak: 'break-word' }}>
+                <div style={{ color: 'var(--text-3)', fontSize: '.7rem', wordBreak: 'break-word' }}>
                   new query: {row.new_query}
                 </div>
               )}

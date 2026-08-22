@@ -47,7 +47,7 @@ export function DeveloperView({
         <span style={{ fontSize: '.7rem', color: 'var(--text-3)' }}>raw policy json + workspace metadata</span>
       </summary>
       <div style={{ marginTop: '.6rem', display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
-        <div style={{ fontSize: '.7rem', color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>
+        <div style={{ fontSize: '.7rem', color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
           workspace_id: {workspaceMeta.id}<br />
           created_at: {workspaceMeta.created_at ?? '?'}<br />
           updated_at: {workspaceMeta.updated_at ?? '?'}
@@ -62,7 +62,7 @@ export function DeveloperView({
           readOnly={!unlocked}
           rows={20}
           style={{
-            width: '100%', fontFamily: 'JetBrains Mono, monospace', fontSize: '.75rem',
+            width: '100%', fontFamily: 'var(--font-mono)', fontSize: '.75rem',
             padding: '.5rem', borderRadius: 5, border: '1px solid var(--border)',
             background: unlocked ? 'var(--bg)' : 'var(--panel)', color: 'var(--text)',
             resize: 'vertical',

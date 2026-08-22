@@ -1,118 +1,125 @@
-/* Light pastel theme. Warm off-white background, muted accents, sans for
-   chrome and mono for IDs/timestamps. Variables expose the palette so pages
-   can reference --color-* without hardcoding values. */
+/* Neutral + violet theme, built from the Radix Colors scale (slate, violet,
+   blue, green, indigo, red — radix-ui/colors, MIT). Violet is the one real
+   accent (links, buttons, chart fills). The five badge slots keep their old
+   variable names for every component that already references them, but
+   `--accent-amber` / `--badge-amber-fg` now hold an indigo value, not yellow
+   — indigo covers the "attention/pending" role instead. Step 9 in each Radix
+   scale is the theme-invariant "solid" color, so accent-* stays the same hex
+   in light and dark; only the neutrals and the soft/text steps around it
+   flip. */
 
 :root {
-  --bg: #fbfaf6;
+  --bg: #fcfcfd;
   --panel: #ffffff;
-  --panel-2: #f6f3ec;
-  --border: #e7e2d6;
-  --border-strong: #d5cebe;
-  --text: #2a2a28;
-  --text-2: #6b6760;
-  --text-3: #9a958a;
+  --panel-2: #f0f0f3;
+  --border: #d9d9e0;
+  --border-strong: #b9bbc6;
+  --text: #1c2024;
+  --text-2: #60646c;
+  --text-3: #8b8d98;
 
-  --accent: var(--accent-blue);
+  --accent: var(--accent-purple);
   --accent-fg: #ffffff;
-  --accent-blue: #8fa8d1;
-  --accent-blue-soft: #e6ecf6;
-  --accent-green: #8fb893;
-  --accent-green-soft: #e6f0e6;
-  --accent-amber: #d5a76a;
-  --accent-amber-soft: #f6ecd9;
-  --accent-coral: #d68b80;
-  --accent-coral-soft: #f6dfd9;
-  --accent-purple: #b09bc8;
-  --accent-purple-soft: #ede6f4;
+  --accent-blue: #0090ff;
+  --accent-blue-soft: #e6f4fe;
+  --accent-green: #30a46c;
+  --accent-green-soft: #e6f6eb;
+  --accent-amber: #3e63dd;
+  --accent-amber-soft: #edf2fe;
+  --accent-coral: #e5484d;
+  --accent-coral-soft: #feebec;
+  --accent-purple: #6e56cf;
+  --accent-purple-soft: #f4f0fe;
 
   /* Badge text colors + link colors as tokens so dark mode flips in one place
      (the token block) instead of every component. */
-  --badge-blue-fg: #4f6da3;
-  --badge-green-fg: #5a7e5f;
-  --badge-amber-fg: #8d6429;
-  --badge-coral-fg: #a14d44;
-  --badge-purple-fg: #6f5c8a;
-  --link: #8fa8d1;
-  --link-hover: #6e8ec0;
+  --badge-blue-fg: #0d74ce;
+  --badge-green-fg: #218358;
+  --badge-amber-fg: #3a5bc7;
+  --badge-coral-fg: #ce2c31;
+  --badge-purple-fg: #6550b9;
+  --link: #6e56cf;
+  --link-hover: #654dc4;
 
-  /* Chart marks. A darker step of the accent blue so a bar clears 3:1 against
-     the panel; the track is a light step of the same hue (meter pattern). */
-  --chart-ink: #4f6da3;
-  --chart-ink-strong: #3d5787;
-  --chart-track: #dfe6f2;
-  --shadow: 0 1px 2px rgba(40, 36, 30, .04);
+  /* Chart marks. A darker step of the accent purple so a bar clears 3:1
+     against the panel; the track is a light step of the same hue (meter
+     pattern). */
+  --chart-ink: #6550b9;
+  --chart-ink-strong: #2f265f;
+  --chart-track: #f4f0fe;
+  --shadow: 0 1px 2px rgba(28, 32, 36, .05);
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace;
   /* Used for quoted source sentences in the provenance trace (CiteChain), so a
      quote reads as someone else's words. System stack, no webfont to load. */
   --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Georgia', serif;
 }
 
-/* Dark theme — a warm near-black that keeps the same muted-pastel accent
-   family, just brightened to read on a dark ground. The token set is defined
-   twice: once for "OS is dark and the user hasn't forced light", once for the
-   explicit toggle. Base :root above stays the light theme, so forcing light
-   (data-theme="light") needs no override — it just excludes the media block. */
+/* Dark theme — the same Radix scales' dark steps. The token set is defined
+   twice: once for "OS is dark and the user hasn't forced light", once for
+   the explicit toggle. Base :root above stays the light theme, so forcing
+   light (data-theme="light") needs no override — it just excludes the media
+   block. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #181714;
-    --panel: #201e1a;
-    --panel-2: #282520;
-    --border: #35312a;
-    --border-strong: #47423a;
-    --text: #ece9e2;
-    --text-2: #a8a399;
-    --text-3: #726d63;
+    --bg: #111113;
+    --panel: #18191b;
+    --panel-2: #212225;
+    --border: #363a3f;
+    --border-strong: #5a6169;
+    --text: #edeef0;
+    --text-2: #b0b4ba;
+    --text-3: #696e77;
 
-    --accent-blue: #8fa8d1;   --accent-blue-soft: #242a38;
-    --accent-green: #8fb893;  --accent-green-soft: #1f2a20;
-    --accent-amber: #d5a76a;  --accent-amber-soft: #2e2716;
-    --accent-coral: #d68b80;  --accent-coral-soft: #2f1e1b;
-    --accent-purple: #b09bc8; --accent-purple-soft: #272031;
+    --accent-blue: #0090ff;   --accent-blue-soft: #0d2847;
+    --accent-green: #30a46c;  --accent-green-soft: #132d21;
+    --accent-amber: #3e63dd;  --accent-amber-soft: #182449;
+    --accent-coral: #e5484d;  --accent-coral-soft: #3b1219;
+    --accent-purple: #6e56cf; --accent-purple-soft: #291f43;
 
-    --badge-blue-fg: #a9bde0;
-    --badge-green-fg: #9ecfa3;
-    --badge-amber-fg: #e0bd82;
-    --badge-coral-fg: #e0a49a;
-    --badge-purple-fg: #c6b3dc;
-    --link: #8fa8d1;
-    --link-hover: #b3c6e6;
+    --badge-blue-fg: #70b8ff;
+    --badge-green-fg: #3dd68c;
+    --badge-amber-fg: #9eb1ff;
+    --badge-coral-fg: #ff9592;
+    --badge-purple-fg: #baa7ff;
+    --link: #baa7ff;
+    --link-hover: #e2ddfe;
 
-    --chart-ink: #a9bde0;
-    --chart-ink-strong: #c6d5ee;
-    --chart-track: #2b3444;
-    --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+    --chart-ink: #baa7ff;
+    --chart-ink-strong: #e2ddfe;
+    --chart-track: #291f43;
+    --shadow: 0 1px 3px rgba(0, 0, 0, .4);
   }
 }
 :root[data-theme="dark"] {
-  --bg: #181714;
-  --panel: #201e1a;
-  --panel-2: #282520;
-  --border: #35312a;
-  --border-strong: #47423a;
-  --text: #ece9e2;
-  --text-2: #a8a399;
-  --text-3: #726d63;
+  --bg: #111113;
+  --panel: #18191b;
+  --panel-2: #212225;
+  --border: #363a3f;
+  --border-strong: #5a6169;
+  --text: #edeef0;
+  --text-2: #b0b4ba;
+  --text-3: #696e77;
 
-  --accent-blue: #8fa8d1;   --accent-blue-soft: #242a38;
-  --accent-green: #8fb893;  --accent-green-soft: #1f2a20;
-  --accent-amber: #d5a76a;  --accent-amber-soft: #2e2716;
-  --accent-coral: #d68b80;  --accent-coral-soft: #2f1e1b;
-  --accent-purple: #b09bc8; --accent-purple-soft: #272031;
+  --accent-blue: #0090ff;   --accent-blue-soft: #0d2847;
+  --accent-green: #30a46c;  --accent-green-soft: #132d21;
+  --accent-amber: #3e63dd;  --accent-amber-soft: #182449;
+  --accent-coral: #e5484d;  --accent-coral-soft: #3b1219;
+  --accent-purple: #6e56cf; --accent-purple-soft: #291f43;
 
-  --badge-blue-fg: #a9bde0;
-  --badge-green-fg: #9ecfa3;
-  --badge-amber-fg: #e0bd82;
-  --badge-coral-fg: #e0a49a;
-  --badge-purple-fg: #c6b3dc;
-  --link: #8fa8d1;
-  --link-hover: #b3c6e6;
+  --badge-blue-fg: #70b8ff;
+  --badge-green-fg: #3dd68c;
+  --badge-amber-fg: #9eb1ff;
+  --badge-coral-fg: #ff9592;
+  --badge-purple-fg: #baa7ff;
+  --link: #baa7ff;
+  --link-hover: #e2ddfe;
 
-  --chart-ink: #a9bde0;
-  --chart-ink-strong: #c6d5ee;
-  --chart-track: #2b3444;
-  --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  --chart-ink: #baa7ff;
+  --chart-ink-strong: #e2ddfe;
+  --chart-track: #291f43;
+  --shadow: 0 1px 3px rgba(0, 0, 0, .4);
 }
 
 * {

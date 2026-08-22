@@ -36,7 +36,6 @@ export function StatusBar() {
   }
 
   const kbd: React.CSSProperties = {
-    fontFamily: 'JetBrains Mono, monospace',
     fontSize: '.65rem',
     color: 'var(--text-2)',
     background: 'var(--panel-2)',
@@ -75,7 +74,7 @@ export function StatusBar() {
           <span style={{ fontSize: '.8rem' }}>{theme === 'dark' ? '☾' : '☀'}</span>
           {theme === 'dark' ? 'dark' : 'light'}
         </button>
-        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '.68rem' }}>
+        <span style={{ fontSize: '.68rem' }}>
           {ws ? `${ws.slice(0, 8)}…` : ''}
         </span>
       </div>
