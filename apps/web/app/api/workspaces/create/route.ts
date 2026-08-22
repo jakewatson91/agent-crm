@@ -197,7 +197,11 @@ export async function POST(req: Request) {
           }
         }
 
-        emit({ step: 'done', workspace_id, source_id });
+        // The arguments ride back on the done event so the wizard can put them
+        // in front of the customer without a second round trip. This is the one
+        // moment they are guaranteed to be looking, and until now the guess was
+        // stored silently and left in a Settings tab nobody opens.
+        emit({ step: 'done', workspace_id, source_id, arguments: argumentsDerived });
         controller.close();
       } catch (e) {
         emit({ step: 'error', error: e instanceof Error ? e.message : String(e) });

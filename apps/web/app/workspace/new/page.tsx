@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CsvImportPanel } from '../../_components/CsvImportPanel';
+import { ArgumentsEditor } from '../[ws]/settings/_components/ArgumentsEditor';
+import type { DrafterArgument } from '@agent-crm/tools';
 
 interface ConnectorMeta {
   type: string;
@@ -61,6 +63,15 @@ export default function NewWorkspacePage() {
   // zero accounts, so it's the right place to bring the first batch in
   // instead of making that a separate trip to Settings later.
   const [createdWorkspaceId, setCreatedWorkspaceId] = useState<string | null>(null);
+  // Read the argument back before anything else. It decides what every message
+  // says, it was guessed from one paragraph, and until now it was written to the
+  // policy silently and left in a Settings tab a new customer has no reason to
+  // open. Confirming here is also what lifts the three-draft limit, so a
+  // customer who skips this gets three messages and a pause rather than a book
+  // full of an argument nobody read.
+  const [derivedArguments, setDerivedArguments] = useState<DrafterArgument[]>([]);
+  const [argumentsDone, setArgumentsDone] = useState(false);
+  const [savingArguments, setSavingArguments] = useState(false);
 
   useEffect(() => {
     fetch('/api/sources/connectors').then((r) => r.json()).then((j) => {
@@ -105,9 +116,13 @@ export default function NewWorkspacePage() {
         buf = lines.pop() ?? '';
         for (const line of lines) {
           if (!line.trim()) continue;
-          const event = JSON.parse(line) as { step: string; error?: string; workspace_id?: string };
+          const event = JSON.parse(line) as { step: string; error?: string; workspace_id?: string; arguments?: DrafterArgument[] };
           if (event.step === 'error') { streamErr = event.error ?? 'create failed'; continue; }
-          if (event.step === 'done') { workspaceId = event.workspace_id ?? null; continue; }
+          if (event.step === 'done') {
+            workspaceId = event.workspace_id ?? null;
+            setDerivedArguments(Array.isArray(event.arguments) ? event.arguments : []);
+            continue;
+          }
           const doneKey = STEP_DONE_BY[event.step];
           const startedKey = Object.entries(STEP_DONE_BY).find(([, v]) => v === event.step)?.[0];
           if (startedKey) {
@@ -137,6 +152,64 @@ export default function NewWorkspacePage() {
     border: '1px solid var(--border)', borderRadius: 6, fontFamily: 'inherit', fontSize: '.9rem',
   };
   const textareaStyle: React.CSSProperties = { ...inputStyle, lineHeight: 1.5 };
+
+  async function saveArguments() {
+    if (!createdWorkspaceId) return;
+    setSavingArguments(true);
+    setErr(null);
+    try {
+      const res = await fetch('/api/workspaces/arguments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id: createdWorkspaceId, arguments: derivedArguments }),
+      });
+      const j = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(j?.error ?? 'could not save');
+      setArgumentsDone(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingArguments(false);
+    }
+  }
+
+  if (createdWorkspaceId && !argumentsDone) {
+    return (
+      <main style={{ padding: '2rem', maxWidth: 720, margin: '0 auto' }}>
+        <h1 style={{ fontSize: '1.5rem', marginBottom: '.25rem' }}>Here is the argument we read out of your description</h1>
+        <p style={{ color: 'var(--text-3)', marginBottom: '1rem', fontSize: '.9rem', lineHeight: 1.55 }}>
+          This is the reason your emails will give someone to act, and it is the one thing worth getting
+          right before anything is written. Everything else can be fixed later. Read it as if you were the
+          person receiving it: does that event really cost them what it says, and is that a change they
+          could actually agree to from a first email?
+        </p>
+        <p style={{ color: 'var(--text-3)', marginBottom: '1.5rem', fontSize: '.9rem', lineHeight: 1.55 }}>
+          We guessed this from one paragraph, so expect to rewrite it. The agent will write three messages
+          with it and then stop and wait for you, so a wrong guess costs three drafts, not a book.
+        </p>
+
+        <ArgumentsEditor values={derivedArguments} onChange={setDerivedArguments} showConfirm={false} />
+
+        {err && <div style={{ color: 'var(--accent-coral)', fontSize: '.85rem', marginTop: '1rem' }}>✗ {err}</div>}
+
+        <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}>
+          <button
+            onClick={saveArguments}
+            disabled={savingArguments}
+            style={{
+              padding: '.65rem 1.25rem', background: 'var(--accent-green)', color: '#fff', border: 'none',
+              borderRadius: 6, cursor: 'pointer', fontWeight: 500, opacity: savingArguments ? 0.5 : 1,
+            }}
+          >
+            {savingArguments ? 'saving…' : 'Save and continue →'}
+          </button>
+          <div style={{ color: 'var(--text-3)', fontSize: '.75rem', marginTop: '.6rem' }}>
+            You can change this any time under Settings → Writing style.
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (createdWorkspaceId) {
     return (

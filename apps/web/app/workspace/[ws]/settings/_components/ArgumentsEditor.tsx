@@ -28,9 +28,16 @@ const FIELDS: Array<{ key: 'when' | 'only_if' | 'so' | 'ask'; label: string; hel
 export function ArgumentsEditor({
   values,
   onChange,
+  showConfirm = true,
 }: {
   values: DrafterArgument[];
   onChange: (next: DrafterArgument[]) => void;
+  /**
+   * Hidden during setup. Confirming means "I read the three drafts this wrote
+   * and they make sense", and at setup there are no drafts yet, so offering the
+   * checkbox there would ask someone to vouch for something that does not exist.
+   */
+  showConfirm?: boolean;
 }) {
   function patch(i: number, field: 'when' | 'only_if' | 'so' | 'ask', v: string) {
     onChange(values.map((a, j) => {
@@ -108,10 +115,12 @@ export function ArgumentsEditor({
             </div>
           ))}
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: '.4rem', fontSize: '.75rem', color: 'var(--text-2)' }}>
-            <input type="checkbox" checked={Boolean(a.proven_at)} onChange={(e) => setConfirmed(i, e.target.checked)} />
-            I have read the drafts this wrote and they make sense. Use it on the whole book.
-          </label>
+          {showConfirm && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '.4rem', fontSize: '.75rem', color: 'var(--text-2)' }}>
+              <input type="checkbox" checked={Boolean(a.proven_at)} onChange={(e) => setConfirmed(i, e.target.checked)} />
+              I have read the drafts this wrote and they make sense. Use it on the whole book.
+            </label>
+          )}
         </div>
       ))}
 
