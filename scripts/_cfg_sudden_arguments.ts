@@ -50,13 +50,25 @@ const WITHDRAW_REASON =
   for (const a of ARGUMENTS) console.log(`  ${a.id}  proven_at=${a.proven_at ?? '(unproven — writes 3 drafts then waits)'}`);
 
   // --- withdraw the drafts that made the old argument ---
-  const chans = await sb.from('channels').select('id').eq('workspace_id', WS).limit(2000);
-  const chIds = ((chans.data ?? []) as any[]).map((c) => c.id);
-  let live: any[] = [];
-  for (let i = 0; i < chIds.length; i += 200) {
-    const r = await sb.from('channel_posts').select('id, cites, created_at')
-      .in('channel_id', chIds.slice(i, i + 200)).eq('kind', 'touch_draft').is('withdrawn_at', null).limit(1000);
-    live = live.concat(r.data ?? []);
+  //
+  // Scoped through the join and paged, NOT by collecting channel ids first.
+  // The first version of this read the channel list with .limit(2000);
+  // PostgREST caps a select at 1000 rows whatever the limit says, Sudden has
+  // 1,961 channels, so it withdrew the drafts in the first 1,000 channels,
+  // printed a confident "42", and left 34 live. The count was real and the
+  // conclusion drawn from it was wrong, which is the same trap as reading a
+  // 1000-capped count anywhere else in this codebase.
+  let live: Array<{ id: string; cites: string[] | null }> = [];
+  for (let from = 0; ; from += 1000) {
+    const r = await sb.from('channel_posts')
+      .select('id, cites, channels!inner(workspace_id)')
+      .eq('channels.workspace_id', WS).eq('kind', 'touch_draft').is('withdrawn_at', null)
+      .order('created_at', { ascending: true })
+      .range(from, from + 999);
+    if (r.error) throw r.error;
+    const page = (r.data ?? []) as any[];
+    live = live.concat(page.map((p) => ({ id: p.id, cites: p.cites })));
+    if (page.length < 1000) break;
   }
   console.log(`\nlive drafts to withdraw: ${live.length}`);
   const anchors = new Set<string>();
