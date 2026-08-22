@@ -118,5 +118,71 @@ ok('every gate-clearer survives the 400 cap, buried in a 500-way tie',
 ok('gate-clearers come first, before any of the tie',
   walked.slice(0, 12).every((s) => s.entity_id.startsWith('ready-')));
 
+// 12. Freshness. The draft cap is what makes this matter: on a day with more
+//     draftable accounts than slots, the slots have to go to the events that are
+//     about to expire, not to the best-fitting company. Everything else the
+//     comparator ranks on is a property of the company and reads the same
+//     tomorrow; how old the event is does not.
+const dated = (entity_id: string, tot: number, daysAgo: number, ev = 0.83, sig = 0.4): Scored =>
+  ({ entity_id, tot, sig, ev, anchor: true, anchorAt: new Date(Date.now() - daysAgo * 86400e3).toISOString() });
+
+const yesterday = dated('yesterday', 0.66, 1);
+const lastMonth = dated('last-month', 0.98, 28, 1.0, 0.99);
+ok('a day-old event outranks a four-week-old one at a better-fitting account',
+  sort([lastMonth, yesterday])[0]!.entity_id === 'yesterday');
+
+ok('freshness orders the whole queue, newest first',
+  sort([dated('d20', 0.9, 20), dated('d2', 0.7, 2), dated('d9', 0.8, 9)])
+    .map((s) => s.entity_id).join(' ') === 'd2 d9 d20');
+
+// 13. Freshness sits BELOW the bars, not above them. A fresh event at an account
+//     that cannot be drafted is still worth less than a stale one at an account
+//     that can, because the pass does nothing at all for the first.
+const freshButBlocked: Scored = { entity_id: 'fresh-blocked', tot: 0.66, sig: 0.4, ev: 0.10, anchor: true, anchorAt: new Date().toISOString() };
+ok('a gate-clearer with a stale event still outranks a fresh event that clears nothing',
+  sort([freshButBlocked, dated('stale-ready', 0.66, 29)])[0]!.entity_id === 'stale-ready');
+ok('and the fresh blocked account really does miss the gates', clearsGates(freshButBlocked) === false);
+
+// 14. A caller that sets `anchor` and not `anchorAt` must keep working. Unknown
+//     age ranks last among gate-clearers rather than anywhere in the middle,
+//     which is the same fail-closed reading NaN gets above.
+const undatedAnchor = acc('undated', 0.99, true, 1.0, 0.99);
+ok('an anchor with no date ranks below one with a date',
+  sort([undatedAnchor, dated('has-date', 0.66, 29)])[0]!.entity_id === 'has-date');
+ok('two undated anchors still fall through to signal then fit',
+  sort([acc('u-lo', 0.70, true, 1.0, 0.20), acc('u-hi', 0.70, true, 1.0, 0.90)])[0]!.entity_id === 'u-hi');
+
+// 15. An unparseable date must not poison the sort. `happened_at` is written by
+//     the enricher, a backfill script and a CSV import, so a junk value reaching
+//     here is a question of when, not whether.
+const junkDate: Scored = { entity_id: 'junk', tot: 0.70, sig: 0.4, ev: 0.83, anchor: true, anchorAt: 'not a date' };
+ok('a junk date never returns NaN from the comparator',
+  Number.isFinite(cmp(junkDate, yesterday)) && Number.isFinite(cmp(yesterday, junkDate)));
+ok('a junk date ranks below a real one', sort([junkDate, dated('real', 0.66, 29)])[0]!.entity_id === 'real');
+
+// 16. The total-order properties again, now with dates in the pool. A new key in
+//     the comparator is exactly how transitivity gets broken.
+const datedPool = [...pool, yesterday, lastMonth, freshButBlocked, undatedAnchor, junkDate, dated('d5', 0.5, 5)];
+let dAnti = true, dTies = true, dTrans = true;
+for (const a of datedPool) for (const b of datedPool) {
+  if (Math.sign(cmp(a, b)) !== -Math.sign(cmp(b, a))) dAnti = false;
+  if (a.entity_id !== b.entity_id && cmp(a, b) === 0) dTies = false;
+}
+for (const a of datedPool) for (const b of datedPool) for (const c of datedPool) {
+  if (cmp(a, b) < 0 && cmp(b, c) < 0 && !(cmp(a, c) < 0)) dTrans = false;
+}
+ok('comparator is still antisymmetric with dates in play', dAnti);
+ok('no two distinct dated accounts compare equal', dTies);
+ok('comparator is still transitive with dates in play', dTrans);
+
+// 17. The live shape: twelve slots, sixty draftable accounts, and the fresh ones
+//     scattered through a fit-ordered book. This is the case that was losing.
+const queue: Scored[] = [
+  ...Array.from({ length: 60 }, (_, i) => dated(`old-${String(i).padStart(2, '0')}`, 0.95, 20 + (i % 8))),
+  ...Array.from({ length: 5 }, (_, i) => dated(`new-${i}`, 0.66, 1)),
+];
+ok('all five fresh events make the twelve-draft cut, ahead of sixty better-fitting stale ones',
+  sort(queue).slice(0, 12).filter((s) => s.entity_id.startsWith('new-')).length === 5);
+
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);

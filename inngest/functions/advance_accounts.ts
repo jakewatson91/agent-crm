@@ -126,6 +126,16 @@ export interface Scored {
    * caller), which then behaves as it always did.
    */
   anchor?: boolean;
+  /**
+   * When that event actually happened, ISO. Undefined when there is no anchor,
+   * and undefined is also what an older caller passes, in which case the walk
+   * orders exactly as it did before this field existed.
+   *
+   * Separate from `anchor` because the two answer different questions and only
+   * one of them is a bar: `anchor` decides whether the account can be drafted at
+   * all, `anchorAt` decides who goes first among the ones that can.
+   */
+  anchorAt?: string;
 }
 
 /**
@@ -178,10 +188,34 @@ export function compareWalkOrder(
   // 2. Has a real reason to write, even if another bar is short.
   const sa = a.anchor ? 1 : 0, sb = b.anchor ? 1 : 0;
   if (sa !== sb) return sb - sa;
-  // 3. Strength of that reason, then fit.
+  // 3. FRESHEST reason first. Among accounts that can all be written to today,
+  //    the one whose event happened most recently goes first, because that is the
+  //    only input here that expires. Everything below this line is a property of
+  //    the company and will read the same tomorrow; the age of the event will
+  //    not, and once it passes trigger_fresh_days the account stops being
+  //    writable at all.
+  //
+  //    Parsed rather than string-compared: `happened_at` reaches here from a
+  //    PostgREST read and a backfill script, and one of those could hand over a
+  //    bare date while the other sends a full timestamp. Unparseable sorts last
+  //    rather than anywhere, the same fail-closed reading `sig` gets below.
+  //
+  //    Unknown age is `null` and ranks after any known one, rather than being
+  //    read as "infinitely old". Reading it as -Infinity would look equivalent
+  //    and is not: the subtraction then returns Infinity, which is not a finite
+  //    comparator result, and a comparator that can return a non-finite number
+  //    is one bad input away from an undefined sort.
+  const at = (s: Scored) => { const t = s.anchorAt ? Date.parse(s.anchorAt) : NaN; return Number.isFinite(t) ? t : null; };
+  const ta = at(a), tb = at(b);
+  if (ta !== tb) {
+    if (ta === null) return 1;
+    if (tb === null) return -1;
+    return tb - ta;
+  }
+  // 4. Strength of that reason, then fit.
   if (Math.abs(num(b.sig) - num(a.sig)) > 1e-9) return num(b.sig) - num(a.sig);
   if (Math.abs(num(b.tot) - num(a.tot)) > 1e-9) return num(b.tot) - num(a.tot);
-  // 4. A stable, arbitrary-but-fixed last resort so the sort is deterministic
+  // 5. A stable, arbitrary-but-fixed last resort so the sort is deterministic
   //    rather than dependent on the order rows came back in.
   return a.entity_id < b.entity_id ? -1 : a.entity_id > b.entity_id ? 1 : 0;
 }
@@ -231,14 +265,14 @@ async function loadCurrentScores(supabase: SupabaseClient, workspace_id: string)
  */
 async function loadAnchoredAccounts(
   supabase: SupabaseClient, workspace_id: string, freshDays: number,
-): Promise<Set<string>> {
+): Promise<Map<string, string>> {
   const since = new Date(Date.now() - freshDays * 86400_000).toISOString();
   const PAGE = 1000;
-  const rows: Array<{ subject_entity: string; id: string; supersedes: string | null }> = [];
+  const rows: Array<{ subject_entity: string; id: string; supersedes: string | null; happened_at: string }> = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('facts')
-      .select('subject_entity, id, supersedes')
+      .select('subject_entity, id, supersedes, happened_at')
       .eq('workspace_id', workspace_id)
       .not('happened_at', 'is', null)
       .gte('happened_at', since)
@@ -254,8 +288,16 @@ async function loadAnchoredAccounts(
   // whose superseding row happened to land on the next page, and deciding it per
   // ACCOUNT would drop an account that still holds a second live anchor.
   const pointedAt = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
-  const out = new Set<string>();
-  for (const r of rows) if (!pointedAt.has(r.id)) out.add(r.subject_entity);
+  // The FRESHEST live anchor per account, not just whether one exists. That date
+  // is what the walk orders on, and it has to be the newest one: an account
+  // holding a two-day-old launch and a three-week-old hire is a two-day-old
+  // reason to write, and taking the older of the two would bury it.
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    if (pointedAt.has(r.id)) continue;
+    const held = out.get(r.subject_entity);
+    if (!held || r.happened_at > held) out.set(r.subject_entity, r.happened_at);
+  }
   return out;
 }
 
@@ -337,7 +379,7 @@ export async function advanceAccounts(
   // accounts on the live book.
   const scores = (await loadCurrentScores(supabase, workspace_id))
     .filter((s) => s.tot >= T.ENRICH_CONTACTS_ACCOUNT_ICP)   // only invest in real fits
-    .map((s) => ({ ...s, anchor: anchored.has(s.entity_id) }))
+    .map((s) => ({ ...s, anchor: anchored.has(s.entity_id), anchorAt: anchored.get(s.entity_id) }))
     .sort((a, b) => compareWalkOrder(a, b, clearsGates))
     .slice(0, maxAccounts);
 

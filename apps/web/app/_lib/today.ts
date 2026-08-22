@@ -355,6 +355,10 @@ const DETAIL_ACTIONS = [
   'agent_run_metrics', 'domain_resolved', 'domain_resolve_failed',
   'action_selector_skip', 'health_alert', 'retention_run', 'agent_dispatch_result',
   'enrichment_skipped', 'enrichment_no_facts',
+  // The advance pass's own run record. Its payload carries the decision tally,
+  // which is the only place that says how many accounts the pass DECLINED to
+  // write to and why. One or two rows a day, so the fat payload costs nothing.
+  'advance_completed',
 ];
 
 // ---------------------------------------------------------------- helpers
@@ -1393,6 +1397,61 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
       hrefLabel: null,
     });
   }
+  // An argument nobody has confirmed stops the drafter after three messages, by
+  // design. What was missing is any way to find that out: the pass records one
+  // `skip:argument_unproven` per account in a tally nothing reads, and the
+  // confirm control is a checkbox three levels into Settings. On Sudden that was
+  // 17 accounts a run held back with nothing on screen saying so.
+  //
+  // Read from the pass's own tally rather than recomputing the rule here, so
+  // this can never disagree with what actually happened.
+  const tallies = ev('advance_completed').map((e) => (e.payload?.decisions ?? {}) as Record<string, number>);
+  const worstOf = (pick: (key: string) => boolean) => tallies.reduce((n, d) =>
+    Math.max(n, Object.entries(d).reduce((s, [k, v]) => (pick(k) ? s + Number(v ?? 0) : s), 0)), 0);
+  const heldBack = worstOf((k) => k === 'skip:argument_unproven');
+  // Accounts the arguments simply do not reach: the picker ran, found no argument
+  // whose condition their facts show to be true, and stopped. The reason keys
+  // moved from `skip:<reason>` to `skip:no_argument:<reason>` on 2026-08-22, so
+  // both shapes are counted or the number silently halves across that boundary.
+  const NO_FIT = new Set(['precondition_unmet', 'no_problem_fits', 'no_evidence']);
+  const uncovered = worstOf((k) => {
+    const r = k.startsWith('skip:no_argument:') ? k.slice('skip:no_argument:'.length)
+      : k.startsWith('skip:') ? k.slice('skip:'.length) : '';
+    return NO_FIT.has(r);
+  });
+  const unconfirmed = ((policy.drafter?.arguments ?? []) as Array<Record<string, unknown>>)
+    .filter((a) => a && a.enabled !== false && !a.proven_at);
+  if (heldBack > 0 && unconfirmed.length) {
+    const label = String(unconfirmed[0]?.label ?? unconfirmed[0]?.id ?? 'your argument');
+    alerts.push({
+      id: 'argument_unproven',
+      severity: 'amber',
+      title: `${heldBack} ${heldBack === 1 ? 'company is' : 'companies are'} waiting on you to confirm an argument`,
+      detail: `"${label}" has written its first three messages and stops there until you say they made sense. Read those three, then confirm it to let it run on the whole book.`,
+      href: `/workspace/${ws}/settings/workspace#arguments`,
+      hrefLabel: 'Read and confirm',
+    });
+  }
+
+  // The other way an argument stops a message, and the one with no surface at
+  // all: the picker ran and found nothing it could honestly say. That is not a
+  // fault, it is the arguments not covering this part of the book, and the only
+  // person who can fix it is the one who wrote them. Measured on Sudden, one
+  // argument left 24 accounts a run with nothing to say and nothing on screen.
+  const argCount = ((policy.drafter?.arguments ?? []) as unknown[]).length;
+  if (uncovered >= 5 && argCount > 0) {
+    alerts.push({
+      id: 'arguments_uncovered',
+      severity: 'amber',
+      title: `${uncovered} companies cleared every bar and got no message`,
+      detail: argCount === 1
+        ? 'Your one argument does not fit them, so there was nothing honest to say. A second argument, for a different thing that happens at a company, would reach them.'
+        : `None of your ${argCount} arguments fits them, so there was nothing honest to say. Another argument, for a different thing that happens at a company, would reach them.`,
+      href: `/workspace/${ws}/settings/workspace#arguments`,
+      hrefLabel: 'Add an argument',
+    });
+  }
+
   if (!pipeline.paused && counters.signals === 0 && counters.researchRuns === 0) {
     alerts.push({
       id: 'no_research',

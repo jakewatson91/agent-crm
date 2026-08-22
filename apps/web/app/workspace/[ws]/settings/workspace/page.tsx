@@ -401,7 +401,7 @@ export default function SettingsWorkspacePage() {
             </div>
           </HelpRow>
 
-          <HelpRow label="Your arguments" help="Why someone should act, as opposed to the pieces a message is built from. Each one is a chain: when this happens at their company, and this other thing is true of them, here's what it costs them, so change this. Without one the agent works the connection out itself on every message, and it will reach the most obvious conclusion every time, which is usually the wrong one. Guessed from your About text when the workspace is created, and yours to rewrite.">
+          <HelpRow id="arguments" label="Your arguments" help="Why someone should act, as opposed to the pieces a message is built from. Each one is a chain: when this happens at their company, and this other thing is true of them, here's what it costs them, so change this. Without one the agent works the connection out itself on every message, and it will reach the most obvious conclusion every time, which is usually the wrong one. Guessed from your About text when the workspace is created, and yours to rewrite.">
             <ArgumentsEditor values={drafterArguments} onChange={setDrafterArguments} />
           </HelpRow>
 

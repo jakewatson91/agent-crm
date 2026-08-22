@@ -8,18 +8,21 @@ import type { ReactNode } from 'react';
  * in one sentence. No jargon.
  */
 export function HelpRow({
+  id,
   label,
   help,
   children,
   badge,
 }: {
+  /** Anchor target, so a link elsewhere can point straight at this one setting. */
+  id?: string;
   label: string;
   help?: string;
   children: ReactNode;
   badge?: ReactNode;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem', padding: '.5rem 0' }}>
+    <div id={id} style={{ display: 'flex', flexDirection: 'column', gap: '.25rem', padding: '.5rem 0', scrollMarginTop: '4rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
         <label style={{ fontSize: '.85rem', fontWeight: 500, color: 'var(--text)' }}>{label}</label>
         {badge}
