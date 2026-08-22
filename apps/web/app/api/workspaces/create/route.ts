@@ -2,6 +2,7 @@ import { createServerClient } from '@agent-crm/db';
 import { callTool } from '@agent-crm/tools';
 import { listConnectors } from '@agent-crm/inngest/functions/sources/registry_meta';
 import { deriveDefaults } from '../_derive_defaults';
+import { deriveArguments } from '../_derive_arguments';
 import { getUser } from '../../../_lib/auth';
 
 export const runtime = 'nodejs';
@@ -52,8 +53,15 @@ export async function POST(req: Request) {
           actor_id: 'wizard',
         };
 
+        // Two calls, run together. They read the same paragraph and neither
+        // needs the other's output, so running them in parallel keeps the
+        // wizard the same length as when there was only one. Sequential would
+        // roughly double the wait on the slowest screen in the product.
         emit({ step: 'deriving' });
-        const derived = await deriveDefaults(body.about);
+        const [derived, argumentsDerived] = await Promise.all([
+          deriveDefaults(body.about),
+          deriveArguments(body.about),
+        ]);
         emit({ step: 'derived' });
 
         const policy: Record<string, unknown> = {
@@ -71,6 +79,13 @@ export async function POST(req: Request) {
             pain_points: derived.pain_points,
             value_props: derived.value_props,
             tone_keywords: derived.tone_keywords,
+            // The reason to write, as opposed to the pieces a message is built
+            // from. Every one of these arrives with no proven_at, so the
+            // drafter writes three messages under each and then waits for the
+            // customer to confirm it on Settings → Writing style. An empty
+            // array here is fine and just means the drafter picks a problem
+            // from pain_points, which is what it did before this existed.
+            arguments: argumentsDerived,
             // All four are editable on Settings → Writing style. out_of_scope in
             // particular is a hard veto, so it must never be a value the customer
             // can only discover by reading their empty shortlist.

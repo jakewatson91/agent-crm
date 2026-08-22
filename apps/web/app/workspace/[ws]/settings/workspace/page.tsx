@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { HelpRow } from '../_components/HelpRow';
 import { ChipList } from '../_components/ChipList';
+import { ArgumentsEditor } from '../_components/ArgumentsEditor';
+import type { DrafterArgument } from '@agent-crm/tools';
 
 interface Workspace {
   id: string;
@@ -89,6 +91,7 @@ export default function SettingsWorkspacePage() {
   const [hireAlwaysExec, setHireAlwaysExec] = useState<boolean>(false);
 
   const [outreachChannel, setOutreachChannel] = useState<'email' | 'linkedin'>('email');
+  const [drafterArguments, setDrafterArguments] = useState<DrafterArgument[]>([]);
   const [outOfScope, setOutOfScope] = useState<string[]>([]);
   const [triggerFresh, setTriggerFresh] = useState(14);
   const [triggerMaxAge, setTriggerMaxAge] = useState(90);
@@ -125,6 +128,7 @@ export default function SettingsWorkspacePage() {
     setBannedPhrases(((out.banned_phrases ?? []) as string[]));
     const dr = (policy.drafter ?? {}) as Record<string, any>;
     setOutreachChannel((dr.outreach_channel === 'linkedin' ? 'linkedin' : 'email'));
+    setDrafterArguments(Array.isArray(dr.arguments) ? (dr.arguments as DrafterArgument[]) : []);
     setOutOfScope(Array.isArray(dr.out_of_scope) ? dr.out_of_scope : []);
     setTriggerFresh(num(dr.trigger_fresh_days, 14));
     setTriggerMaxAge(num(dr.trigger_max_age_days, 90));
@@ -181,6 +185,7 @@ export default function SettingsWorkspacePage() {
       drafter: {
         ...(base.drafter ?? {}),
         outreach_channel: outreachChannel,
+        arguments: drafterArguments,
         out_of_scope: outOfScope,
         // Clamped the same way sanitizeDerived clamps the wizard's guess: a max
         // below fresh makes trigger-led messages unreachable.
@@ -236,7 +241,7 @@ export default function SettingsWorkspacePage() {
     };
   }, [
     ws,
-    outreachChannel, overrideTo, fromEmail, bannedPhrases,
+    outreachChannel, overrideTo, fromEmail, bannedPhrases, drafterArguments,
     outOfScope, triggerFresh, triggerMaxAge, outreachLanguage,
     searchesPerRun, draftsPerRun,
     draftIcp, draftSignal, draftEvidence, draftSuppress,
@@ -394,6 +399,10 @@ export default function SettingsWorkspacePage() {
                 </label>
               ))}
             </div>
+          </HelpRow>
+
+          <HelpRow label="Your arguments" help="Why someone should act, as opposed to the pieces a message is built from. Each one is a chain: when this happens at their company, and this other thing is true of them, here's what it costs them, so change this. Without one the agent works the connection out itself on every message, and it will reach the most obvious conclusion every time, which is usually the wrong one. Guessed from your About text when the workspace is created, and yours to rewrite.">
+            <ArgumentsEditor values={drafterArguments} onChange={setDrafterArguments} />
           </HelpRow>
 
           <HelpRow label="Never sell to" help="Accounts matching any of these are dropped entirely, whatever their fit score. Write one plain sentence each, checkable against facts about a company: 'They resell what we sell instead of buying it.' Leave empty unless you have a real limit — this deletes prospects, it doesn't rank them down. Re-derived from About whenever you edit About.">
