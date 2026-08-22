@@ -877,7 +877,13 @@ export async function runAgent(
   // prompt renders exactly as it did before, so the picker can never block a
   // draft. Only the template-driven channel has exemplars to withhold.
   let angleDecision: AngleDecision = { choice: null, reason: 'menu_too_small', out_of_scope_fact_ids: [] };
-  if (behavior === 'drafter' && (policy.drafter?.templates ?? []).length) {
+  // Templates OR arguments. The templates-only condition made sense when the
+  // only thing this call did was withhold exemplar bodies, which is meaningless
+  // with no exemplars. It now also matches the argument and checks its
+  // condition, and templates are a LinkedIn feature the setup wizard does not
+  // create — so on a new workspace the picker never ran, and the argument the
+  // wizard had just derived was matched to nothing and read by no one.
+  if (behavior === 'drafter' && ((policy.drafter?.templates ?? []).length || (policy.drafter?.arguments ?? []).length)) {
     angleDecision = await pickDraftAngle(supabase, payload.workspace_id, {
       // The workspace's cheap model, same one classifyRole uses. The drafter
       // itself stays on DRAFTER_MODEL; this call picks an argument, it does
@@ -898,6 +904,25 @@ export async function runAgent(
   }
   const angle = angleDecision.choice;
 
+  // An account whose facts do not show an argument's condition does not get the
+  // message at all.
+  //
+  // The picker already refused the argument here. What it could not do was stop
+  // the draft: the drafter carried on and fell back to the problem menu, and on
+  // a workspace whose problems restate the same claim in prose, the model picks
+  // it straight back off the menu. So the claim nobody verified went out anyway.
+  // 3 of the 5 accounts drafted on 2026-08-22 came through this path.
+  //
+  // ONLY precondition_unmet stops. llm_error, unparseable, no_facts and
+  // menu_too_small keep drafting exactly as they did: a picker that fails closed
+  // is a picker whose bad afternoon switches off outbound with nobody deciding
+  // to. This one is not a failure — it is the check returning "no".
+  if (behavior === 'drafter' && (policy.drafter?.arguments ?? []).length && angleDecision.reason === 'precondition_unmet') {
+    const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+      '[precondition_unmet] No configured argument has its condition shown by this account\'s facts, so there is nothing we can honestly say about their business yet. Left alone until research turns that fact up.', []);
+    return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'precondition_unmet', behavior };
+  }
+
   // An UNPROVEN argument writes a few drafts and then waits for a human.
   //
   // An argument is a hypothesis about a market, and a new or freshly edited one
@@ -914,7 +939,13 @@ export async function runAgent(
   if (behavior === 'drafter' && angle?.argument && !angle.argument.proven_at) {
     const { count } = await supabase
       .from('channel_posts')
-      .select('id', { count: 'exact', head: true })
+      // Scoped to this workspace through the join. Argument ids are short
+      // per-workspace slugs and the setup wizard derives them from the model's
+      // own labels, falling back to argument_1, so two customers WILL collide —
+      // and an unscoped count means one customer's drafts silently spend
+      // another's budget of three.
+      .select('id, channels!inner(workspace_id)', { count: 'exact', head: true })
+      .eq('channels.workspace_id', payload.workspace_id)
       .eq('argument_id', angle.argument.id)
       .is('withdrawn_at', null);
     if ((count ?? 0) >= UNPROVEN_ARGUMENT_DRAFT_LIMIT) {

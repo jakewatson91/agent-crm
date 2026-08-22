@@ -561,7 +561,24 @@ STEP 1 STILL GOVERNS THE FIRST TOUCH. A market shift is not an anchor: it is not
     ? 'SUBJECT — phrase as a short, specific question (under 60 chars). Avoid generic openers.'
     : 'SUBJECT — short phrase, 2-5 words. Concrete and signal-specific. Avoid vague openers like "Quick question" or "Following up".';
 
-  const painBlock = pains.length
+  // The argument, when one was matched, replaces the problem menu here exactly
+  // as it does on the LinkedIn branch above. Same order of preference: the
+  // argument, then the single problem the picker chose, then the menu.
+  //
+  // Without this the email channel accepted an argument and rendered none of
+  // it, and email is the default channel, so every workspace the setup wizard
+  // creates was storing an argument that never reached a message.
+  const arg = opts.angle?.argument;
+  const chosenProblem = opts.angle?.problem?.trim();
+  const painBlock = arg
+    ? `THE ARGUMENT YOU ARE MAKING — 1-2 sentences. Not a menu, and not yours to re-derive: it was matched to this account's facts before you saw this prompt, and its condition was checked against them.
+   BECAUSE THIS HAPPENED: ${arg.when.trim()}
+   WHAT IT COSTS THEM:    ${arg.so.trim()}
+   WHAT YOU ARE ASKING:   ${arg.ask.trim()}
+   State what it costs them, in the language a prospect EXACTLY LIKE THIS ACCOUNT would use, tied to a specific fact about THIS account. Do not reach a different conclusion from the anchor, however reasonable the other one seems — a conclusion that sounds obvious from what the product does is exactly the one that has been wrong before. If nothing in the facts actually shows what it costs them, do not substitute a different argument — stop and request_gate, as STEP 2 says.`
+    : chosenProblem
+    ? `PROBLEM STATEMENT — 1-2 sentences naming this problem, chosen for this account by reading its facts before you saw this prompt:\n   ${chosenProblem}\n   Say it in the language a prospect EXACTLY LIKE THIS ACCOUNT would use, and tie it to a specific fact about THIS account. If nothing in the facts actually shows this problem, do not substitute a different one — stop and request_gate, as STEP 2 says.`
+    : pains.length
     ? `PROBLEM STATEMENT — 1-2 sentences naming the problem you found in STEP 2, in the language a prospect EXACTLY LIKE THIS ACCOUNT would use. The pains this product speaks to (pick the one that fits, never list them all):\n${pains.map((p) => `   - ${p}`).join('\n')}\n   Tie it to a specific fact about THIS account.`
     : `PROBLEM STATEMENT — 1-2 sentences naming the problem you found in STEP 2, anchored in one of the entity's active facts. Don't generalize.`;
 
@@ -574,7 +591,13 @@ STEP 1 STILL GOVERNS THE FIRST TOUCH. A market shift is not an anchor: it is not
     ? `THIS WORKSPACE'S RULES — these override anything above if they conflict:${fieldTermsLine}\n`
     : '';
 
-  const askBlock = 'ASK — the ending STEP 5 gives you, in one short sentence.';
+  // With an argument matched, the ask is already decided and scoped. Leaving
+  // this on STEP 5's generic ending would let the email close on something
+  // wider than the argument asks for, which is the one failure the ask being
+  // written down at all is meant to prevent.
+  const askBlock = arg
+    ? `ASK — one short sentence, in your own words, asking for exactly this and nothing wider: ${arg.ask.trim()}\n   Asking for more than it says, or for the thing it excludes, is the failure this line exists to stop.`
+    : 'ASK — the ending STEP 5 gives you, in one short sentence.';
 
   const forbiddenBlock = forbidden.length
     ? `\nFORBIDDEN PHRASES (do NOT use any variant): ${forbidden.map((p) => `"${p}"`).join(', ')}. These are filler. Use a concrete behavior or a number instead.`

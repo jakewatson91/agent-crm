@@ -127,5 +127,40 @@ const configured = buildDrafterDecision({ pain_points: ['Their invoices go out l
 ok('configured pains render', configured.includes('Their invoices go out late.'));
 ok('configured value props render', configured.includes('Sends the invoice the day the job closes.'));
 
+// The same failure as the nine steps in the header, one feature later: the
+// argument a workspace writes down rendered on the templated LinkedIn DM and
+// nowhere else. Email is the DEFAULT channel and the only one the setup wizard
+// produces, so every workspace it created stored an argument that never reached
+// a message. Asserted per channel, with strings that appear nowhere in the
+// prompt's own boilerplate, so a block that renders its heading and drops the
+// content still fails.
+console.log('\nThe argument reaches every channel, and replaces the menu when it is there:');
+const ARG = {
+  id: 'assert_arg',
+  when: 'THEIR_TRIGGER_HAPPENED',
+  only_if: 'THEIR_CONDITION_HOLDS',
+  so: 'THEIR_COST_LANDS',
+  ask: 'CHANGE_THIS_ONE_THING',
+};
+for (const { name, opts } of CHANNELS) {
+  const withArg = buildDrafterDecision({
+    ...opts,
+    pain_points: ['A DIFFERENT PROBLEM ENTIRELY'],
+    angle: { problem: ARG.so, argument: ARG },
+  });
+  ok(`${name} — states what it costs them`, withArg.includes('THEIR_COST_LANDS'));
+  ok(`${name} — states what to ask for`, withArg.includes('CHANGE_THIS_ONE_THING'));
+  ok(`${name} — states the event it is built on`, withArg.includes('THEIR_TRIGGER_HAPPENED'));
+  // The menu is what the model reaches for when the argument is missing, and
+  // reaching for it is how an unverified claim got into 3 drafts on 2026-08-22.
+  // With an argument matched it must not be on the page at all.
+  ok(`${name} — the problem menu is gone`, !withArg.includes('A DIFFERENT PROBLEM ENTIRELY'));
+}
+// And without one, nothing changes for a workspace that has written no arguments.
+for (const { name, opts } of CHANNELS) {
+  const noArg = buildDrafterDecision({ ...opts, pain_points: ['A DIFFERENT PROBLEM ENTIRELY'] });
+  ok(`${name} — the menu still renders with no argument configured`, noArg.includes('A DIFFERENT PROBLEM ENTIRELY'));
+}
+
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);

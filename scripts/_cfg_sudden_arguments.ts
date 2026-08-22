@@ -15,7 +15,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { createClient } from '@supabase/supabase-js';
-import type { DrafterArgument } from '@agent-crm/tools';
+import { fetchAll, type DrafterArgument } from '@agent-crm/tools';
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
 const WS = 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
 
@@ -58,18 +58,14 @@ const WITHDRAW_REASON =
   // printed a confident "42", and left 34 live. The count was real and the
   // conclusion drawn from it was wrong, which is the same trap as reading a
   // 1000-capped count anywhere else in this codebase.
-  let live: Array<{ id: string; cites: string[] | null }> = [];
-  for (let from = 0; ; from += 1000) {
-    const r = await sb.from('channel_posts')
+  const live = await fetchAll<{ id: string; cites: string[] | null }>((from, to) =>
+    sb.from('channel_posts')
       .select('id, cites, channels!inner(workspace_id)')
       .eq('channels.workspace_id', WS).eq('kind', 'touch_draft').is('withdrawn_at', null)
+      // fetchAll requires a stable order or .range() can skip or repeat rows
+      // between pages.
       .order('created_at', { ascending: true })
-      .range(from, from + 999);
-    if (r.error) throw r.error;
-    const page = (r.data ?? []) as any[];
-    live = live.concat(page.map((p) => ({ id: p.id, cites: p.cites })));
-    if (page.length < 1000) break;
-  }
+      .range(from, to) as any);
   console.log(`\nlive drafts to withdraw: ${live.length}`);
   const anchors = new Set<string>();
   for (const p of live) for (const c of p.cites ?? []) anchors.add(c);
