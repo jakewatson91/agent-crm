@@ -1,10 +1,18 @@
 /**
- * Retention — keeps the two unbounded tables (signals, events) from growing
- * forever. Reversible / provenance-safe by construction:
+ * Retention — keeps the tables that grow unbounded (signals, events, facts)
+ * from growing forever. Reversible / provenance-safe by construction:
  *   - signal embeddings are nulled (recomputable from body_for_embedding), the
  *     row + body + facts stay;
  *   - only whitelisted telemetry events are deleted, and prune_events (0039)
- *     refuses to delete any event a fact references.
+ *     refuses to delete any event a fact references;
+ *   - only whitelisted fact predicates roll up (prune_fact_history, 0058):
+ *     the current value of every fact is untouched, and old (superseded)
+ *     readings only go once a later same-day reading exists to stand in for
+ *     them, so a metric built from the history still spans the account's
+ *     full life at daily resolution. Freeing a fact this way is also what
+ *     lets its assert_fact/supersede_fact event clear on the same pass,
+ *     since prune_events refuses to delete an event any fact still points
+ *     to.
  *
  * Driven entirely by workspaces.policy.retention (off by default). Callable from
  * the launchd loop (run_loop) and from an Inngest cron; an internal ~daily
@@ -13,6 +21,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getPolicy } from './policy.ts';
+import { isSubstantiveFact } from './scoring.ts';
 
 const THROTTLE_MS = 20 * 60 * 60 * 1000; // 20h — runs ~once/day even on an hourly loop
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -30,6 +39,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // confirmed 2026-08-14), so that path needs a much smaller batch.
 const EVENT_PRUNE_BATCH = 2000;
 const EMBEDDING_ARCHIVE_BATCH = 200;
+const FACT_HISTORY_PRUNE_BATCH = 2000;
 
 // pg_net's internal async-HTTP response log (net._http_response) — not app
 // data, not workspace-scoped. Found holding ~46MB of dead rows against ~500
@@ -43,6 +53,7 @@ export interface RetentionResult {
   skipped: boolean;
   embeddings_archived: number;
   events_pruned: number;
+  fact_history_pruned: number;
 }
 
 export async function runRetention(
@@ -50,7 +61,7 @@ export async function runRetention(
   workspace_id: string,
   opts: { force?: boolean } = {},
 ): Promise<RetentionResult> {
-  const result: RetentionResult = { workspace_id, skipped: false, embeddings_archived: 0, events_pruned: 0 };
+  const result: RetentionResult = { workspace_id, skipped: false, embeddings_archived: 0, events_pruned: 0, fact_history_pruned: 0 };
 
   // Throttle: skip if we already ran within THROTTLE_MS (shared by all callers).
   if (!opts.force) {
@@ -102,7 +113,49 @@ export async function runRetention(
     }
   }
 
-  // 2. Prune telemetry events older than the window (provenance-safe via the
+  // 2. Roll up old fact history (migration 0058): for whitelisted predicates
+  //    (score_total and its scoring inputs — never a one-off account fact),
+  //    delete superseded readings older than the window once a later
+  //    same-day reading exists to replace them. Keeps one reading per
+  //    entity/predicate/day forever plus the chain's original — a metric
+  //    built from this still spans the account's full history, just at
+  //    daily instead of per-recompute resolution past the window. Runs
+  //    before the event prune below so the assert_fact/supersede_fact
+  //    events those deleted facts were the last reference to become
+  //    eligible in the same pass.
+  const factTtl = ret.fact_history_ttl_days ?? 0;
+  // A structural floor, not just config discipline: even if a predicate that
+  // scoring treats as real evidence about the account ever lands in this
+  // list by mistake, it never reaches the delete function. isSubstantiveFact
+  // is the same boundary scoreEntity already uses to decide what counts as
+  // evidence, so a predicate can't be "safe to prune" here and "real
+  // evidence" there at the same time.
+  const configuredPredicates = ret.prunable_fact_predicates ?? [];
+  const rejected = configuredPredicates.filter((p) => isSubstantiveFact(p));
+  if (rejected.length > 0) {
+    console.error(`[retention ${workspace_id}] refusing to prune substantive predicate(s) found in prunable_fact_predicates: ${rejected.join(', ')}`);
+  }
+  const factPredicates = configuredPredicates.filter((p) => !isSubstantiveFact(p));
+  if (factTtl > 0 && factPredicates.length > 0) {
+    const cutoff = new Date(Date.now() - factTtl * DAY_MS).toISOString();
+    for (;;) {
+      const pruned = await supabase.rpc('prune_fact_history', {
+        p_workspace_id: workspace_id,
+        p_predicates: factPredicates,
+        p_cutoff: cutoff,
+        p_limit: FACT_HISTORY_PRUNE_BATCH,
+      });
+      if (pruned.error) {
+        console.error(`[retention ${workspace_id}] fact history prune failed: ${pruned.error.message}`);
+        break;
+      }
+      const n = (pruned.data as number) ?? 0;
+      result.fact_history_pruned += n;
+      if (n < FACT_HISTORY_PRUNE_BATCH) break;
+    }
+  }
+
+  // 3. Prune telemetry events older than the window (provenance-safe via the
   //    SECURITY DEFINER function — direct DELETE is revoked on events).
   //    Batched via prune_events' p_limit (migration 0053) for the same reason.
   const evTtl = ret.event_ttl_days ?? 0;
@@ -134,7 +187,7 @@ export async function runRetention(
     action: 'retention_run',
     target_kind: 'workspace',
     target_id: workspace_id,
-    payload: { embeddings_archived: result.embeddings_archived, events_pruned: result.events_pruned },
+    payload: { embeddings_archived: result.embeddings_archived, events_pruned: result.events_pruned, fact_history_pruned: result.fact_history_pruned },
   });
 
   return result;

@@ -199,8 +199,8 @@ async function tick() {
   for (const w of wss.data ?? []) {
     try {
       const r = await runRetention(sb, w.id as string);
-      if (!r.skipped && (r.embeddings_archived > 0 || r.events_pruned > 0)) {
-        console.log(`  [retention ${w.id}] embeddings_archived=${r.embeddings_archived} events_pruned=${r.events_pruned}`);
+      if (!r.skipped && (r.embeddings_archived > 0 || r.events_pruned > 0 || r.fact_history_pruned > 0)) {
+        console.log(`  [retention ${w.id}] embeddings_archived=${r.embeddings_archived} events_pruned=${r.events_pruned} fact_history_pruned=${r.fact_history_pruned}`);
       }
     } catch (e) {
       console.error(`  [retention ${w.id}] error:`, e instanceof Error ? e.message : String(e));
