@@ -1208,6 +1208,29 @@ export function carryOffSwitch(next: ResearchAngle[], previous: ResearchAngle[])
   return next.map((a) => (off.has(a.id) ? { ...a, enabled: false } : a));
 }
 
+/**
+ * Carry a human's PINNED searches across a regeneration, verbatim.
+ *
+ * The off switch above was the only human decision that survived a regeneration,
+ * so a customer could stop a search but never keep one. That asymmetry is what
+ * made a hand-written search for an uncovered question pointless: the next
+ * regeneration deleted it and the question went back to having nothing looking
+ * for it.
+ *
+ * A pinned angle is restored exactly as the human left it, including its query
+ * and its record, and it wins over anything the planner returns under the same
+ * id — the planner's rewrite is precisely what the pin exists to refuse.
+ * Pinned angles are appended rather than counted against MAX_PLANNED_ANGLES,
+ * because the cap is a budget decision about the planner's guesses and this is
+ * not a guess.
+ */
+export function carryPinnedAngles(next: ResearchAngle[], previous: ResearchAngle[]): ResearchAngle[] {
+  const pinned = previous.filter((a) => a.pinned);
+  if (!pinned.length) return next;
+  const pinnedIds = new Set(pinned.map((a) => a.id));
+  return [...next.filter((a) => !pinnedIds.has(a.id)), ...pinned];
+}
+
 /** Merge an angle set onto workspaces.policy.research.strategy (cache write, not user config). */
 export async function persistResearchStrategy(
   supabase: SupabaseClient,
@@ -1226,7 +1249,13 @@ export async function persistResearchStrategy(
     ...policy,
     research: {
       ...research,
-      strategy: carryOffSwitch(stampRecordSince(angles, policy.research?.strategy ?? []), policy.research?.strategy ?? []),
+      // Pins go on LAST so a pinned angle survives whatever the planner said
+      // about the same id. stampRecordSince would otherwise treat the planner's
+      // rewrite as the current query and restart the pinned angle's record.
+      strategy: carryPinnedAngles(
+        carryOffSwitch(stampRecordSince(angles, policy.research?.strategy ?? []), policy.research?.strategy ?? []),
+        policy.research?.strategy ?? [],
+      ),
       strategy_generated_at: now,
       // Both stamps move on success, so the floor is the same either way and
       // "generated" and "attempted" only ever diverge while the planner is down.
@@ -1312,6 +1341,44 @@ export function orphanedAngles(policy: WorkspacePolicy): string[] {
   return (policy.research?.strategy ?? [])
     .filter((a) => a.enabled !== false && a.answers && !live.has(a.answers))
     .map((a) => a.id);
+}
+
+/**
+ * Questions nothing is buying pages for. The other direction of the check
+ * above, and the one that was missing.
+ *
+ * `orphanedAngles` catches a search pointing at a question that no longer
+ * exists. Nothing caught the reverse, and the planner is explicitly allowed to
+ * leave a question uncovered when it judges that no search would find the
+ * answer. So a question can be quietly abandoned and go on looking healthy
+ * forever: it is still in the brief, the page filter still offers it as an
+ * answer, the extractor is still told to look for it, and its scorecard reads
+ * near-zero — which the maintenance loop then reads as a failing question and
+ * rewrites or drops, when nothing ever searched for it.
+ *
+ * Found live on Sudden: the question asking what a technical leader had said
+ * about delivery costs had no angle at all, and the search named for it was
+ * filed as answering the new-launch question instead.
+ *
+ * Deliberately NOT wired into the strategy-freshness test. Forcing a
+ * regeneration would loop against a planner that has already decided it cannot
+ * cover the question. This is for a human to see and overrule by pinning a
+ * search, which is a judgement the planner should not get to make alone.
+ */
+export function uncoveredQuestions(policy: WorkspacePolicy): string[] {
+  const covered = new Set(
+    (policy.research?.strategy ?? [])
+      .filter((a) => a.enabled !== false && a.answers)
+      .map((a) => a.answers as string),
+  );
+  return resolveBrief(policy)
+    .filter((q) => q.enabled !== false && !covered.has(q.id))
+    // The pain question is appended to every brief by resolveBrief and is
+    // deliberately not something you go searching for — it is noticed on a page
+    // fetched for another reason. Reporting it would put a permanent false
+    // alarm on every workspace, which is how a real alert stops being read.
+    .filter((q) => q.id !== PAIN_QUESTION.id)
+    .map((q) => q.id);
 }
 
 /**

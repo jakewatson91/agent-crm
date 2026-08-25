@@ -19,14 +19,17 @@ import { graphProximity } from './graph.ts';
 import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.ts';
 import { getPolicy, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache, stampArgumentChanges, type DrafterArgument, type WorkspacePolicy } from './policy.ts';
 import { ALIAS_MIN_CHARS } from './aliases.ts';
+import { stampQuestionChanges } from './research_brief.ts';
+import type { BriefQuestion } from './policy.ts';
+import { readWorkspaceConfig, stageConfigChange, CONFIG_SECTIONS } from './workspace_config.ts';
 
 export { TOOL_SCHEMAS, type ToolName };
 export { sweepWorkspace, SWEEP_THRESHOLDS };
 export type { CheckResult, Severity };
 export { runExaSearch, fetchPageText, type ExaResult, type ExaSearchParams, type ExaSearchResult, type ExaContentsResult } from './exa_search.ts';
 export { publishedDateFromUrl, resolvePublishedDate, parseContentDate, applyContentDate, unreadableContentDate, resolveHappenedAt, hiringEventDate, type ResolvedPublishedDate } from './published_date.ts';
-export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, recordStrategyAttempt, stampRecordSince, carryOffSwitch, failedAngles, orphanedAngles, questionsWorthSearching, loadAngleRecords, clampQuery, angleRecordBlock, resolveStrategy, resolveContactStrategy, filterResultsByEntity, gateFailureReason, fetchEntityGrounding, pageMentionsEntity, readEntityAliases, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type AngleRecord, type RelevanceResult, type RelevanceTarget, type GateRejectReason } from './research_strategy.ts';
-export { generateResearchBrief, planResearchBrief, ensureResearchBrief, persistResearchBrief, carryQuestionOffSwitch, briefInputHashFor, loadQuestionRecords, loadQuestionSearchRecords, unreachableQuestions, earnsItsSearches, makesAccountsWritable, questionsNotEarningTheirPages, questionsServingAPrecondition, BRIEF_REWRITE_COOLDOWN_HOURS, foldFetchedByQuestion, recordReading, resolveBrief, renderBrief, BASELINE_BRIEF, PAIN_QUESTION, FAIR_TRIAL_PAGES, MIN_ANSWER_RATE, MIN_DATED_RATE, MIN_FACTS_FOR_DATE_VERDICT, UNREACHABLE_PAGES, UNREACHABLE_TRIALS, UNREACHABLE_WINDOW_DAYS, type BriefContext, type QuestionRecord, type QuestionSearchRecord, type RunMarker } from './research_brief.ts';
+export { generateResearchStrategy, planResearchAngles, ensureResearchStrategy, persistResearchStrategy, recordStrategyAttempt, stampRecordSince, carryOffSwitch, failedAngles, orphanedAngles, questionsWorthSearching, uncoveredQuestions, carryPinnedAngles, loadAngleRecords, clampQuery, angleRecordBlock, resolveStrategy, resolveContactStrategy, filterResultsByEntity, gateFailureReason, fetchEntityGrounding, pageMentionsEntity, readEntityAliases, dedupeResearchCandidates, DUP_LOOKBACK_DAYS, BASELINE_ANGLES, type PlannerContext, type AngleRecord, type RelevanceResult, type RelevanceTarget, type GateRejectReason } from './research_strategy.ts';
+export { generateResearchBrief, planResearchBrief, ensureResearchBrief, persistResearchBrief, carryQuestionOffSwitch, stampQuestionChanges, briefInputHashFor, loadQuestionRecords, loadQuestionSearchRecords, unreachableQuestions, earnsItsSearches, makesAccountsWritable, questionsNotEarningTheirPages, questionsServingAPrecondition, BRIEF_REWRITE_COOLDOWN_HOURS, foldFetchedByQuestion, recordReading, resolveBrief, renderBrief, BASELINE_BRIEF, PAIN_QUESTION, FAIR_TRIAL_PAGES, MIN_ANSWER_RATE, MIN_DATED_RATE, MIN_FACTS_FOR_DATE_VERDICT, UNREACHABLE_PAGES, UNREACHABLE_TRIALS, UNREACHABLE_WINDOW_DAYS, type BriefContext, type QuestionRecord, type QuestionSearchRecord, type RunMarker } from './research_brief.ts';
 export { resolveAliasesViaSearch, backfillAliases, validateAliases, usedAsProperNoun, ALIAS_MIN_CHARS, MAX_ALIASES, type AliasResolveOutcome, type AliasResolveStatus, type AliasRejection, type AliasRejectReason, type AliasValidation, type AliasBackfillResult } from './aliases.ts';
 export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
@@ -38,6 +41,7 @@ export { getPipelineStatus, setPipelineStatus, getPipelineActivity, PIPELINE_ACT
 export type { PipelineActivity } from './policy.ts';
 export { sendOwnerAlert, resolveOwnerEmail, notifyPipelinePaused, type AlertResult } from './notify.ts';
 export { UNPROVEN_ARGUMENT_DRAFT_LIMIT, stampArgumentChanges } from './policy.ts';
+export { readWorkspaceConfig, stageConfigChange, CONFIG_SECTIONS, isConfigSection, type ConfigSection, type ConfigRead, type ConfigChange } from './workspace_config.ts';
 export type { DrafterArgument } from './policy.ts';
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy, ResearchPolicy, ResearchAngle, BriefQuestion, QualificationPolicy, PipelineStatus, ModelBehavior } from './policy.ts';
 export { cronToMinIntervalMinutes } from './cron.ts';
@@ -129,6 +133,30 @@ export async function callTool(
 
   try {
     switch (tool) {
+      case 'read_workspace_config': {
+        const a = args as { section?: string };
+        const data = await readWorkspaceConfig(supabase, actor.workspace_id, a.section);
+        return { ok: true, event_id: '', target_id: actor.workspace_id, data };
+      }
+
+      case 'update_workspace_config': {
+        const a = args as { section: string; value: unknown; reasoning: string };
+        const staged = await stageConfigChange(supabase, actor.workspace_id, a.section, a.value);
+        if ('error' in staged) return { ok: false, error: staged.error };
+        // Through set_workspace_policy rather than writing the row here, so the
+        // rules that sit under a policy write still run: rewriting an argument
+        // drops its confirmation, rewording a question restarts its record.
+        // Writing the row directly would be the one path that skips both.
+        const r = await callTool(supabase, actor, 'set_workspace_policy', { policy: staged.next_policy });
+        if (!r.ok) return r;
+        return {
+          ok: true,
+          event_id: r.event_id,
+          target_id: actor.workspace_id,
+          data: { section: staged.section, before: staged.before, after: staged.after, reasoning: a.reasoning },
+        };
+      }
+
       case 'set_workspace_policy': {
         // Every write to policy.drafter.arguments comes through here — the
         // settings page, the narrow arguments route, a script, and any agent
@@ -140,14 +168,33 @@ export async function callTool(
         // The settings page also clears proven_at in the browser. That stays,
         // because it makes the badge change under the customer's cursor rather
         // than after a round trip. It is no longer what enforces anything.
-        const incoming = (args.policy as { drafter?: { arguments?: unknown } } | undefined)?.drafter?.arguments;
-        if (Array.isArray(incoming)) {
+        const incomingArgs = (args.policy as { drafter?: { arguments?: unknown } } | undefined)?.drafter?.arguments;
+        const incomingBrief = (args.policy as { research?: { brief?: unknown } } | undefined)?.research?.brief;
+        if (Array.isArray(incomingArgs) || Array.isArray(incomingBrief)) {
           const current = await getPolicy(supabase, actor.workspace_id).catch(() => ({} as WorkspacePolicy));
-          const policy = args.policy as { drafter?: { arguments?: DrafterArgument[] } };
-          policy.drafter!.arguments = stampArgumentChanges(
-            incoming as DrafterArgument[],
-            current.drafter?.arguments ?? [],
-          );
+          const policy = args.policy as {
+            drafter?: { arguments?: DrafterArgument[] };
+            research?: { brief?: BriefQuestion[] };
+          };
+          if (Array.isArray(incomingArgs)) {
+            policy.drafter!.arguments = stampArgumentChanges(
+              incomingArgs as DrafterArgument[],
+              current.drafter?.arguments ?? [],
+            );
+          }
+          // Same rule, same reason. A reworded question keeps its id so the facts
+          // filed under it survive, which means the RECORD has to be told where
+          // the new wording starts or the new question is judged on the numbers
+          // of the one it replaced — and the record is what decides whether a
+          // question gets rewritten again or dropped. persistResearchBrief
+          // already does this on the planner's path; without it here, editing a
+          // question through a tool would be the one way in that skips it.
+          if (Array.isArray(incomingBrief)) {
+            policy.research!.brief = stampQuestionChanges(
+              incomingBrief as BriefQuestion[],
+              current.research?.brief ?? [],
+            );
+          }
         }
         const r = await act(supabase, actor, { tool, args, ...meta });
         // record_event materializes the write into workspaces.policy
@@ -515,6 +562,8 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     token_summary: 'Aggregate token usage across recent agent runs. Returns totals + per-model + per-behavior breakdown. Reads from agent_run_metrics events. Tokens only, no pricing.',
     update_source: 'Mutate a source row (active flag, config). Caller must pass prior_state so the resulting event row is undo-ready. Used by the source curator to deactivate dead sources and rewrite queries.',
     set_entity_aliases: 'Set the other names an account is covered under, so research stops dropping articles that never use its registered name (Crazy Maple Studio is written about as "ReelShort"). Replaces the whole list, so pass every alias to keep and an empty list to clear one that was letting junk through. Each must be at least 4 characters. Pass prior_state so the event row is undo-ready.',
+    read_workspace_config: 'Read what this workspace is configured to do: the arguments it makes, the questions research goes looking for, the searches behind them, the scoring bars, and which model runs each job. Omit `section` to get all of it. The research questions in particular exist nowhere else a person can see, so this is the only way to answer "what is the agent actually looking for".',
+    update_workspace_config: 'Change one part of that config. Pass the finished value, not an instruction. Returns what it was and what it now is, and the change undoes from its event row. Rewriting an argument drops its confirmation so it writes three messages and waits to be read; rewording a research question restarts its track record. Call read_workspace_config first — the value replaces the section outright, so an edit to one item in a list must send the whole list.',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({

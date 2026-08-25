@@ -824,6 +824,20 @@ export interface ResearchAngle {
    * which is right for angles that predate this.
    */
   record_since?: string;
+  /**
+   * Keep this search across a regeneration, exactly as written.
+   *
+   * The planner rewrites the whole angle set every couple of weeks, and the only
+   * human decision that survived was switching one OFF. There was no way to
+   * switch one ON: a search written by hand — for a question the planner had
+   * decided nothing could answer — was deleted by the next regeneration, and the
+   * question went back to having nothing buying pages for it. That is how a rare
+   * but valuable trigger disappears without anyone deciding to drop it.
+   *
+   * A pinned angle is carried through verbatim and does not count against the
+   * planner's angle cap, because the customer already spent the cap decision.
+   */
+  pinned?: boolean;
 }
 
 /**
@@ -855,6 +869,24 @@ export interface BriefQuestion {
    */
   serves?: string;
   enabled?: boolean;
+  /**
+   * When this question's wording last changed, so its track record is read
+   * against the question that actually ran.
+   *
+   * Same fix `ResearchAngle.record_since` is for a rewritten search, and it was
+   * missing here for the same reason it was missing on arguments: the id is kept
+   * across a rewrite so the stored facts survive, which means the RECORD has to
+   * be told where the new version starts or it inherits the old one's.
+   *
+   * It matters most for the question that has just been widened. The record is
+   * what decides whether a question gets rewritten again or dropped, so a fresh
+   * question judged on the numbers of the wording it replaced reads as a failure
+   * and gets thrown away before it has been asked once.
+   *
+   * Unset means count everything, which is right for a question whose words have
+   * never changed.
+   */
+  words_changed_at?: string;
 }
 
 /**

@@ -12,6 +12,9 @@ import { getSourceMetrics } from './source_metrics.ts';
 import { fetchAll } from './paginate.ts';
 import { ACTIVITY_MARKERS } from './activity_markers.ts';
 import { ADMIN_PREDICATES } from './scoring.ts';
+import { getPolicy } from './policy.ts';
+import { uncoveredQuestions } from './research_strategy.ts';
+import { resolveBrief } from './research_brief.ts';
 
 export type Severity = 'red' | 'yellow' | 'green';
 export type CheckResult = {
@@ -688,6 +691,35 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     }
   } catch (e) {
     console.error('research health check failed:', (e as Error)?.message ?? e);
+  }
+
+  // A question nothing is buying pages for. Amber, not red: research is working,
+  // it is just not looking for one of the things the workspace said it needed.
+  //
+  // This is here rather than on a screen because it is the failure that hides
+  // best. The question stays in the brief, the page filter still offers it, the
+  // extractor is still told to look for it, and its scorecard reads near-zero —
+  // which the maintenance loop then reads as a question no search can answer and
+  // rewrites or drops, when in fact nothing ever searched for it. On the live
+  // workspace that was the question about what an executive had said regarding
+  // delivery costs, which is the trigger the customer most wanted.
+  try {
+    const policy = await getPolicy(sb, workspace_id);
+    const uncovered = uncoveredQuestions(policy);
+    if (uncovered.length) {
+      const labels = resolveBrief(policy)
+        .filter((q) => uncovered.includes(q.id))
+        .map((q) => q.label || q.id);
+      out.push({
+        id: 'question_uncovered',
+        severity: 'yellow',
+        metric: `${uncovered.length} research question${uncovered.length === 1 ? '' : 's'} with no search behind ${uncovered.length === 1 ? 'it' : 'them'}: ${labels.join(', ')}`,
+        threshold: 'every question the brief asks has at least one search buying pages for it',
+        action: `the planner left ${uncovered.join(', ')} uncovered, so anything found for ${uncovered.length === 1 ? 'it' : 'them'} is luck. Its record will read as a failing question either way. Pin a search to it, or switch the question off if it is not worth answering.`,
+      });
+    }
+  } catch (e) {
+    console.error('question coverage check failed:', (e as Error)?.message ?? e);
   }
 
   return out;

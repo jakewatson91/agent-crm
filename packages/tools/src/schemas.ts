@@ -220,6 +220,29 @@ export const SetEntityAliasesSchema = z.object({
   reasoning: z.string().min(1),
 });
 
+// Read what the workspace is configured to do. No section = everything on the
+// allowlist, which is the answer to "what is my agent actually set up to do" —
+// a question nothing could answer before, because the research questions in
+// particular have no screen anywhere in the app.
+export const ReadWorkspaceConfigSchema = z.object({
+  section: z.string().optional(),
+});
+
+// Change one part of it. `value` is the finished value, not an instruction:
+// the caller is already a model holding the conversation, so turning "widen
+// that question" into a concrete value is its job, and doing it again in the
+// tool would mean a second prompt and a second bill for the same sentence.
+//
+// No prior_state argument, unlike update_source and set_entity_aliases. Those
+// take it because reading and writing are not atomic and the caller has already
+// read. Here the tool does its own read a line before the write, so asking the
+// caller for it would only invite a wrong one.
+export const UpdateWorkspaceConfigSchema = z.object({
+  section: z.string().min(1),
+  value: z.unknown(),
+  reasoning: z.string().min(1),
+});
+
 export const TOOL_SCHEMAS = {
   create_workspace: CreateWorkspaceSchema,
   set_workspace_policy: SetWorkspacePolicySchema,
@@ -248,6 +271,8 @@ export const TOOL_SCHEMAS = {
   token_summary: TokenSummarySchema,
   update_source: UpdateSourceSchema,
   set_entity_aliases: SetEntityAliasesSchema,
+  read_workspace_config: ReadWorkspaceConfigSchema,
+  update_workspace_config: UpdateWorkspaceConfigSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

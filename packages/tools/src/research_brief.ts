@@ -806,17 +806,40 @@ export function foldFetchedByQuestion(
   markers: RunMarker[],
   angles: Array<{ id: string; answers?: string }>,
   briefFloor: number,
+  /**
+   * Per-question floor: when a question's wording changed, in epoch ms. Pages
+   * bought before that belonged to the wording it replaced.
+   *
+   * Required rather than optional, because getting it wrong is worse than not
+   * having it. The answers a question keeps are already reset on a rewrite, so a
+   * caller that skips this leaves the OLD pages-fetched against the NEW
+   * pages-kept — high cost, zero return, which is exactly the shape the loop
+   * reads as "this search cannot work" and rewrites again. An empty Map is the
+   * honest way to say a caller has no rewrite history to apply.
+   */
+  startedAt: Map<string, number>,
 ): Record<string, number> {
   const byQuestion: Record<string, number> = {};
   const byAngle: Record<string, number> = {};
+  const counts = (q: string, atISO: string): boolean => {
+    const from = startedAt.get(q);
+    return from === undefined || Date.parse(atISO) >= from;
+  };
   for (const e of markers) {
     const perQuestion = e.payload?.per_question_fetched;
     if (perQuestion) {
-      for (const [k, v] of Object.entries(perQuestion)) byQuestion[k] = (byQuestion[k] ?? 0) + (Number(v) || 0);
+      for (const [k, v] of Object.entries(perQuestion)) {
+        if (!counts(k, e.created_at)) continue;
+        byQuestion[k] = (byQuestion[k] ?? 0) + (Number(v) || 0);
+      }
       continue;
     }
     if (Date.parse(e.created_at) < briefFloor) continue;
     for (const [k, v] of Object.entries(e.payload?.per_angle_fetched ?? {})) {
+      // Held per angle here and attributed to its question below, so the
+      // question's floor is applied at the point the angle is resolved.
+      const q = angles.find((a) => a.id === k)?.answers;
+      if (q && !counts(q, e.created_at)) continue;
       byAngle[k] = (byAngle[k] ?? 0) + (Number(v) || 0);
     }
   }
@@ -850,10 +873,22 @@ async function scanQuestionSearch(
     supabase.from('events').select('payload, created_at')
       .eq('workspace_id', workspace_id).eq('action', 'research_completed')
       .gte('created_at', since).order('created_at').order('id').range(from, to));
+  // Per-question rewrite floors, used by BOTH halves of the record below.
+  const startedAt = new Map<string, number>();
+  for (const q of resolveBrief(policy)) {
+    const t = Date.parse(q.words_changed_at ?? '');
+    if (Number.isFinite(t)) startedAt.set(q.id, t);
+  }
+  const countsFor = (q: string, atISO: string): boolean => {
+    const from = startedAt.get(q);
+    return from === undefined || Date.parse(atISO) >= from;
+  };
+
   const fetchedByQuestion = foldFetchedByQuestion(
     ev as RunMarker[],
     angles,
     Date.parse(policy.research?.brief_generated_at ?? '') || 0,
+    startedAt,
   );
 
   // fetchAll, because the hand-rolled page loop this replaces threw away the
@@ -868,8 +903,8 @@ async function scanQuestionSearch(
   // Ordered by observed_at then id: a total order, and one that appends, so a
   // signal written while the scan is running lands after the current page
   // instead of shifting a row across the boundary.
-  const sigs = await fetchAll<{ id: string; structured_tags: Record<string, string> | null }>((from, to) =>
-    supabase.from('signals').select('id, structured_tags')
+  const sigs = await fetchAll<{ id: string; observed_at: string; structured_tags: Record<string, string> | null }>((from, to) =>
+    supabase.from('signals').select('id, observed_at, structured_tags')
       .eq('workspace_id', workspace_id).eq('type', 'research_result')
       .gte('observed_at', since).order('observed_at').order('id').range(from, to));
 
@@ -878,6 +913,7 @@ async function scanQuestionSearch(
   for (const s of sigs) {
     const q = s.structured_tags?.answers_question;
     if (!q) continue;
+    if (!countsFor(q, s.observed_at)) continue;
     sigQ.set(s.id, q);
     keptByQuestion[q] = (keptByQuestion[q] ?? 0) + 1;
   }
@@ -995,6 +1031,35 @@ export function carryQuestionOffSwitch(next: BriefQuestion[], previous: BriefQue
   return next.map((q) => (off.has(q.id) ? { ...q, enabled: false } : q));
 }
 
+/**
+ * Stamp a question whose wording changed, and carry the stamp on one that did
+ * not. The record is then read against the question that actually ran.
+ *
+ * Without this a reworded question inherits the numbers of the wording it
+ * replaced. That is not cosmetic: the record decides whether a question gets
+ * rewritten again or dropped, so widening a question that had been failing
+ * hands the new version the old version's failure and it is thrown away before
+ * it has been asked once. The searches already had this fix (`record_since`);
+ * questions never got it.
+ *
+ * Only the question text counts. `label` and `why` are description, and `serves`
+ * is a link to an argument — changing any of those does not change what is being
+ * asked, and restarting a record for a tidy-up is how a record never accumulates.
+ */
+export function stampQuestionChanges(
+  next: BriefQuestion[],
+  previous: BriefQuestion[],
+  now = new Date().toISOString(),
+): BriefQuestion[] {
+  const before = new Map(previous.filter((q) => q?.id).map((q) => [q.id, q]));
+  return next.map((q) => {
+    const prev = before.get(q.id);
+    if (!prev) return { ...q, words_changed_at: now };
+    if ((prev.question ?? '') !== (q.question ?? '')) return { ...q, words_changed_at: now };
+    return prev.words_changed_at ? { ...q, words_changed_at: prev.words_changed_at } : q;
+  });
+}
+
 /** Merge a brief onto workspaces.policy.research.brief (cache write, not user config). */
 export async function persistResearchBrief(
   supabase: SupabaseClient,
@@ -1008,7 +1073,10 @@ export async function persistResearchBrief(
     ...policy,
     research: {
       ...(policy.research ?? {}),
-      brief: carryQuestionOffSwitch(questions, policy.research?.brief ?? []),
+      brief: stampQuestionChanges(
+        carryQuestionOffSwitch(questions, policy.research?.brief ?? []),
+        policy.research?.brief ?? [],
+      ),
       brief_generated_at: new Date().toISOString(),
       ...(input_hash ? { brief_input_hash: input_hash } : {}),
     },

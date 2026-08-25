@@ -11,7 +11,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  callTool, scoreAndAssert, selectAction, buildThresholds, loadActionContext, loadBestContactScore,
+  callTool, readWorkspaceConfig, scoreAndAssert, selectAction, buildThresholds, loadActionContext, loadBestContactScore,
   lookupEntity, getPolicy, resolveEnvVar,
   chatCompleteForWorkspace, getSourceMetrics,
   findContacts, linkContactToAccount,
@@ -973,6 +973,42 @@ vs propose_action: propose_action only reads existing scores (instant, no resear
 // Registry
 // ---------------------------------------------------------------
 
+// ---------------------------------------------------------------
+// Config: read and change what the agent is set up to do
+// ---------------------------------------------------------------
+
+const readConfigTool: ToolHandler = {
+  spec: {
+    name: 'read_workspace_config',
+    description: 'Read what this workspace is set up to do: the arguments it makes, the questions research looks for, the searches behind them, the scoring bars, and which model runs each job. Omit `section` for all of it. The research questions exist nowhere a person can see, so this is the only way to answer "what is the agent actually looking for".',
+    parameters: {
+      type: 'object',
+      properties: { section: { type: 'string', description: 'e.g. "research.brief", "drafter.arguments". Omit for everything.' } },
+    },
+  },
+  run: async (ctx, args: { section?: string }) => readWorkspaceConfig(ctx.supabase, ctx.workspace_id, args.section),
+};
+
+const updateConfigTool: ToolHandler = {
+  spec: {
+    name: 'update_workspace_config',
+    description: 'Change one part of that config. Pass the finished value, not an instruction. ALWAYS call read_workspace_config first: the value replaces the whole section, so editing one item in a list means sending the list back complete. Returns what it was and what it now is. Rewriting an argument drops its confirmation so it writes three messages and waits to be read; rewording a research question restarts its track record.',
+    parameters: {
+      type: 'object',
+      properties: {
+        section: { type: 'string' },
+        value: {},
+        reasoning: { type: 'string', description: 'One line on why, in the user\'s own terms. Recorded on the event.' },
+      },
+      required: ['section', 'value', 'reasoning'],
+    },
+  },
+  run: async (ctx, args: { section: string; value: unknown; reasoning: string }) => {
+    const r = await callTool(ctx.supabase, { ...ctx.actor, actor_kind: 'user' }, 'update_workspace_config', args);
+    return r.ok ? { ok: true, ...(r.data as object), undo_event_id: r.event_id } : { error: r.error };
+  },
+};
+
 export const INTAKE_TOOLS: Record<string, ToolHandler> = {
   query: queryTool,
   create_account: createAccountTool,
@@ -985,6 +1021,8 @@ export const INTAKE_TOOLS: Record<string, ToolHandler> = {
   trigger_drafter: triggerDrafterTool,
   composio_list_tools: composioListToolsTool,
   composio_execute: composioExecuteTool,
+  read_workspace_config: readConfigTool,
+  update_workspace_config: updateConfigTool,
 };
 
 export function intakeToolSpecs(): ToolSpec[] {

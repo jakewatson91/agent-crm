@@ -71,7 +71,7 @@ const WS = process.env.GQ_WS ?? 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
     : `  GAP of ${sumAngle - sumQ} page(s) — expected only from the angles listed above`);
 
   // And the fold reads it back rather than reconstructing through the angle.
-  const folded = foldFetchedByQuestion(ev as any, angles, Date.now());
+  const folded = foldFetchedByQuestion(ev as any, angles, Date.now(), new Map());
   console.log(`\n  folded (brief floor set to NOW, so reconstruction is impossible) = ${JSON.stringify(folded)}`);
   console.log(Object.keys(folded).length
     ? '  READ BACK — the question keeps this spend however its search is rewritten'

@@ -200,29 +200,29 @@ console.log('\npages bought are counted against the question that was actually b
   const FLOOR = Date.parse('2026-08-10T00:00:00Z');
 
   eq('a marker that names the question is believed',
-    foldFetchedByQuestion([m('2026-08-11T00:00:00Z', { per_question_fetched: { technical_leader: 40 } })], angles, FLOOR),
+    foldFetchedByQuestion([m('2026-08-11T00:00:00Z', { per_question_fetched: { technical_leader: 40 } })], angles, FLOOR, new Map()),
     { technical_leader: 40 });
   // Both fields are written on every new marker; counting both would double it.
   eq('and its per-angle copy is not counted twice',
     foldFetchedByQuestion([m('2026-08-11T00:00:00Z', {
       per_question_fetched: { technical_leader: 40 }, per_angle_fetched: { leader_search: 40 },
-    })], angles, FLOOR),
+    })], angles, FLOOR, new Map()),
     { technical_leader: 40 });
   eq('an old marker is reconstructed through the angle',
-    foldFetchedByQuestion([m('2026-08-10T06:00:00Z', { per_angle_fetched: { leader_search: 9 } })], angles, FLOOR),
+    foldFetchedByQuestion([m('2026-08-10T06:00:00Z', { per_angle_fetched: { leader_search: 9 } })], angles, FLOOR, new Map()),
     { technical_leader: 9 });
   eq('but not from before the question existed',
-    foldFetchedByQuestion([m('2026-07-20T00:00:00Z', { per_angle_fetched: { leader_search: 216 } })], angles, FLOOR),
+    foldFetchedByQuestion([m('2026-07-20T00:00:00Z', { per_angle_fetched: { leader_search: 216 } })], angles, FLOOR, new Map()),
     {});
   eq('spend by an angle serving nothing is not attributed to anything',
-    foldFetchedByQuestion([m('2026-08-11T00:00:00Z', { per_angle_fetched: { orphan: 50 } })], angles, FLOOR),
+    foldFetchedByQuestion([m('2026-08-11T00:00:00Z', { per_angle_fetched: { orphan: 50 } })], angles, FLOOR, new Map()),
     {});
   // The whole point of writing it at the point of spend: it survives the rewrite.
   eq('a question keeps its history when its search is replaced',
     foldFetchedByQuestion([
       m('2026-08-11T00:00:00Z', { per_question_fetched: { technical_leader: 90 } }),
       m('2026-08-12T00:00:00Z', { per_question_fetched: { technical_leader: 70 } }),
-    ], [{ id: 'a_completely_different_angle', answers: 'technical_leader' }], FLOOR),
+    ], [{ id: 'a_completely_different_angle', answers: 'technical_leader' }], FLOOR, new Map()),
     { technical_leader: 160 });
 }
 
