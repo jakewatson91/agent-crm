@@ -17,7 +17,7 @@ import { scoreEntity, scoreAndAssert, combineSubScores, scoreContact } from './s
 import { selectAction, loadActionContext } from './action_selector.ts';
 import { graphProximity } from './graph.ts';
 import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.ts';
-import { getPolicy, DEFAULT_POLICY, resolveEnvVar } from './policy.ts';
+import { getPolicy, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache } from './policy.ts';
 import { ALIAS_MIN_CHARS } from './aliases.ts';
 
 export { TOOL_SCHEMAS, type ToolName };
@@ -32,7 +32,7 @@ export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
 export { runRetention, type RetentionResult, pruneHttpResponses, type HttpResponsePruneResult } from './retention.ts';
-export { getPolicy, DEFAULT_POLICY, resolveEnvVar };
+export { getPolicy, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache };
 export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, DEFAULT_TIER_CADENCE_HOURS, resolveTierCadenceHours, DEFAULT_EMPTY_RUN_BACKOFF_MAX, EMPTY_RUN_BACKOFF_TRIGGER, emptyRunBackoff, DEFAULT_MAX_OUTPUT_TOKENS, resolveMaxOutputTokens, MODEL_BEHAVIORS, resolveBehaviorModel, TIER_ANGLE_COUNT, RESEARCH_DISPATCH_CRON, DEFAULT_QUALIFICATION, resolveQualification } from './policy.ts';
 export { getPipelineStatus, setPipelineStatus, getPipelineActivity, PIPELINE_ACTIVITY_ACTIONS, ensureScoringConfigState } from './policy.ts';
 export type { PipelineActivity } from './policy.ts';
@@ -136,6 +136,11 @@ export async function callTool(
       case 'create_entity':
       case 'request_gate': {
         const r = await act(supabase, actor, { tool, args, ...meta });
+        // record_event materializes these two tools' writes into
+        // workspaces.policy server-side (no TS call site to hook otherwise),
+        // and r.target_id is the workspace_id for both per act.ts's
+        // TOOL_TARGET_KIND map.
+        if (tool === 'create_workspace' || tool === 'set_workspace_policy') invalidatePolicyCache(r.target_id);
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
       }
 

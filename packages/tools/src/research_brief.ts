@@ -40,7 +40,7 @@
  * which asks only things every seller wants and names no industry.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getPolicy } from './policy.ts';
+import { getPolicy, invalidatePolicyCache } from './policy.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
 import { fetchAll } from './paginate.ts';
 import type { BriefQuestion, WorkspacePolicy, DrafterArgument } from './policy.ts';
@@ -1014,6 +1014,7 @@ export async function persistResearchBrief(
     },
   };
   await supabase.from('workspaces').update({ policy: next }).eq('id', workspace_id);
+  invalidatePolicyCache(workspace_id);
 }
 
 /**

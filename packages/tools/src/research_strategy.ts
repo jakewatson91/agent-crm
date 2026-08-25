@@ -17,7 +17,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed } from '@agent-crm/primitives';
-import { getPolicy } from './policy.ts';
+import { getPolicy, invalidatePolicyCache } from './policy.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
 import { runExaSearch } from './exa_search.ts';
 import { cosine } from './icp_embeddings.ts';
@@ -1234,6 +1234,7 @@ export async function persistResearchStrategy(
     },
   };
   await supabase.from('workspaces').update({ policy: next }).eq('id', workspace_id);
+  invalidatePolicyCache(workspace_id);
 }
 
 /**
@@ -1262,6 +1263,7 @@ export async function recordStrategyAttempt(
     },
   };
   await supabase.from('workspaces').update({ policy: next }).eq('id', workspace_id);
+  invalidatePolicyCache(workspace_id);
 }
 
 /**

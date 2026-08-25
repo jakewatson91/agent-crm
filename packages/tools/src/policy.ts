@@ -1330,15 +1330,41 @@ export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrich
   scoring: {},
 };
 
+// getPolicy has no caller-side memoization anywhere — 41 call sites across
+// scoring, drafting, research and chat, each doing its own fresh fetch.
+// Egress investigation 2026-08-25: the bare `select policy` shape alone ran
+// 153,247 times against pg_stat_statements since the last reset, and every
+// variant that reads `policy` combined totals over 300,000 calls — the
+// single largest identified contributor to a Supabase egress overage, ahead
+// of the workspaces.embedding_cache leak that caused the June 29 incident
+// this same table already had. A workspace's policy changes on a rare,
+// deliberate write (a settings save, a research-strategy tune); reading it
+// fresh on literally every scoring/drafting/research call was never
+// necessary. TTL is short (not the 5-minute window used for the embedding
+// caches in icp_embeddings.ts/score_facts.ts) specifically so a missed
+// invalidation site self-heals in seconds rather than minutes — this cache
+// is shared by many more writers than a self-contained read-modify-write
+// cache is.
+const POLICY_CACHE_TTL_MS = 15_000;
+const policyCache = new Map<string, { policy: WorkspacePolicy; fetchedAt: number }>();
+
+/** Call after any write to workspaces.policy so the next read in this process is fresh. */
+export function invalidatePolicyCache(workspace_id: string): void {
+  policyCache.delete(workspace_id);
+}
+
 /**
  * Read workspaces.policy and shallow-merge each section with DEFAULT_POLICY.
  * Returns DEFAULT_POLICY (no errors thrown) if the workspace is missing — callers
  * decide whether that's a fatal condition.
  */
 export async function getPolicy(supabase: SupabaseClient, workspace_id: string): Promise<WorkspacePolicy> {
+  const cached = policyCache.get(workspace_id);
+  if (cached && Date.now() - cached.fetchedAt < POLICY_CACHE_TTL_MS) return cached.policy;
+
   const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
   const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
-  return {
+  const merged: WorkspacePolicy = {
     ...raw,
     outreach: { ...DEFAULT_POLICY.outreach, ...(raw.outreach ?? {}) },
     enrichment: { ...DEFAULT_POLICY.enrichment, ...(raw.enrichment ?? {}) },
@@ -1349,6 +1375,8 @@ export async function getPolicy(supabase: SupabaseClient, workspace_id: string):
     research: { ...(raw.research ?? {}) },
     env: { ...(raw.env ?? {}) },
   };
+  policyCache.set(workspace_id, { policy: merged, fetchedAt: Date.now() });
+  return merged;
 }
 
 /**
@@ -1431,6 +1459,7 @@ export async function setPipelineStatus(supabase: SupabaseClient, workspace_id: 
   const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
   const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
   await supabase.from('workspaces').update({ policy: { ...raw, pipeline: status } }).eq('id', workspace_id);
+  invalidatePolicyCache(workspace_id);
   if (status.state === 'paused' && raw.pipeline?.state !== 'paused') {
     try {
       // Lazy import keeps policy.ts free of a static cycle with notify.ts.
@@ -1480,6 +1509,7 @@ export async function ensureScoringConfigState(
   await supabase.from('workspaces').update({
     policy: { ...pol, scoring_config_state: { hash, changed_at } },
   }).eq('id', workspace_id);
+  invalidatePolicyCache(workspace_id);
   return changed_at;
 }
 
