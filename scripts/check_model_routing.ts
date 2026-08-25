@@ -138,14 +138,16 @@ ok('every entry has a label and a plain-English hint',
  * list with a reason.
  */
 const DIRECT_CALL_EXEMPT: Array<{ file: string; why: string }> = [
-  // These four run during setup, before there is a workspace row to read a
-  // policy from. deriveDefaults and deriveArguments are called by
-  // /api/workspaces/create with nothing saved yet; generate-spec and
-  // sources/parse take no workspace_id at all. They are one call each per
-  // workspace, on the cheap model, so the bill is not the issue — the
-  // constraint is that the config genuinely does not exist yet.
-  { file: 'apps/web/app/api/workspaces/_derive_defaults.ts', why: 'runs before the workspace exists' },
-  { file: 'apps/web/app/api/workspaces/_derive_arguments.ts', why: 'runs before the workspace exists' },
+  // These run during setup, before there is a workspace row to read a policy
+  // from. The constraint is real, not laziness: /api/workspaces/create derives
+  // the fields it needs in order to CREATE the row, so there is nothing to read.
+  //
+  // _derive_defaults keeps a direct call for that path only. It now takes a
+  // nullable workspace context, and Settings → Regenerate passes a real one, so
+  // the same derivation run against an existing workspace uses that workspace's
+  // model and key. Both paths live in one file, which is why it is still listed.
+  { file: 'apps/web/app/api/workspaces/_derive_defaults.ts', why: 'the wizard path only; Regenerate passes a workspace' },
+  { file: 'apps/web/app/api/workspaces/_derive_arguments.ts', why: 'only ever called by the wizard, before the workspace exists' },
   { file: 'apps/web/app/api/connectors/generate-spec/route.ts', why: 'setup helper, takes no workspace_id' },
   { file: 'apps/web/app/api/sources/parse/route.ts', why: 'setup helper, workspace_id is optional' },
 ];
@@ -198,7 +200,7 @@ const BEHAVIOR_CALL_SITES: Record<ModelBehavior, string[]> = {
   enricher: ['inngest/functions/agent_logic.ts'],
   claim_poster: ['inngest/functions/agent_logic.ts'],
   scoring: ['packages/tools/src/scoring.ts'],
-  wizard: ['packages/tools/src/suggest_mapping.ts'],
+  wizard: ['packages/tools/src/suggest_mapping.ts', 'apps/web/app/api/workspaces/_derive_defaults.ts'],
   // The chat route resolves through resolveChatModel rather than a `behavior:`
   // literal, so it is named here but will not appear in the grep below.
   intake: ['apps/web/app/api/agent/intake/tools.ts'],
@@ -244,6 +246,22 @@ for (const f of [
     src.includes("resolveBehaviorModel(") && !src.includes("behavior: 'connector_extract'"),
     'passing a behavior here puts the workspace entry ABOVE the model the source configured, inverting the precedence');
 }
+
+// deriveDefaults is the one function with a foot in both worlds. The exemption
+// above covers the wizard call; nothing but this stops the Settings call from
+// quietly rejoining it.
+console.log('\nRegenerate derives on the workspace it is regenerating:');
+const deriveSrc = execSync('cat apps/web/app/api/workspaces/_derive_defaults.ts', { encoding: 'utf8' });
+const regenSrc = execSync('cat apps/web/app/api/workspaces/regenerate/route.ts', { encoding: 'utf8' });
+const createSrc = execSync('cat apps/web/app/api/workspaces/create/route.ts', { encoding: 'utf8' });
+ok('deriveDefaults can route through the workspace at all', deriveSrc.includes('chatCompleteForWorkspace('),
+  'it went back to a bare chatComplete, so Regenerate ignores the workspace model and key again');
+ok('the workspace context is required, not optional', /ws: \{ supabase: SupabaseClient; workspace_id: string \} \| null/.test(deriveSrc),
+  'made optional again — a caller that should pass a workspace can now forget to, silently');
+ok('Regenerate passes a real workspace', /deriveDefaults\(\s*\{\s*supabase:/.test(regenSrc),
+  'Settings → Regenerate is back to deriving on the deployment default');
+ok('the wizard passes null, and has to say so', /deriveDefaults\(null,/.test(createSrc),
+  'the create path must state that there is no workspace yet rather than omitting the argument');
 
 console.log(fail ? `\n${fail} FAILED\n` : '\nAll model-routing assertions pass.\n');
 process.exit(fail ? 1 : 0);

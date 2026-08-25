@@ -59,7 +59,10 @@ export async function POST(req: Request) {
         // roughly double the wait on the slowest screen in the product.
         emit({ step: 'deriving' });
         const [derived, argumentsDerived] = await Promise.all([
-          deriveDefaults(body.about),
+          // null: the workspace row does not exist yet, so there is no policy to
+          // read a model or an API key from. Settings → Regenerate runs the same
+          // derivation against a real workspace and does pass one.
+          deriveDefaults(null, body.about),
           deriveArguments(body.about),
         ]);
         emit({ step: 'derived' });

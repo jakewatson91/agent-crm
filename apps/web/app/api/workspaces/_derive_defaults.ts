@@ -13,7 +13,9 @@
  * guess silently deletes prospects, and a silent deletion nobody can find in the
  * UI is worse than no guess at all.
  */
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { chatComplete } from '@agent-crm/primitives';
+import { chatCompleteForWorkspace } from '@agent-crm/tools';
 
 export interface DerivedDefaults {
   icp: Record<string, unknown>;
@@ -104,17 +106,38 @@ export function sanitizeDerived(raw: unknown): DerivedDefaults {
   };
 }
 
-export async function deriveDefaults(about: string): Promise<DerivedDefaults> {
+/**
+ * `ws` is required and nullable rather than optional, because the two callers
+ * genuinely differ and the difference should not be forgettable.
+ *
+ * The wizard runs this before the workspace row exists, so it has nothing to
+ * pass and says so with `null`. Settings runs it against a workspace that has
+ * been around long enough to have a model and an API key configured, and
+ * passing those is the whole point — otherwise a customer who has pointed the
+ * setup behavior at their own model watches Regenerate ignore it and bill the
+ * deployment's key instead.
+ *
+ * An optional parameter would have let the Settings caller stay wrong by
+ * accident, which is how the research planner spent months reading no config at
+ * all. Making it explicit means a third caller has to decide.
+ */
+export async function deriveDefaults(
+  ws: { supabase: SupabaseClient; workspace_id: string } | null,
+  about: string,
+): Promise<DerivedDefaults> {
+  const args = {
+    model: 'deepseek-v4-flash',
+    messages: [
+      { role: 'system' as const, content: SYSTEM_PROMPT },
+      { role: 'user' as const, content: `Customer description:\n${about}` },
+    ],
+    response_format: { type: 'json_object' as const },
+    max_tokens: 1400,
+  };
   try {
-    const r = await chatComplete({
-      model: 'deepseek-v4-flash',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: `Customer description:\n${about}` },
-      ],
-      response_format: { type: 'json_object' },
-      max_tokens: 1400,
-    });
+    const r = ws
+      ? await chatCompleteForWorkspace(ws.supabase, ws.workspace_id, { ...args, behavior: 'wizard' })
+      : await chatComplete(args);
     return sanitizeDerived(JSON.parse(r.text));
   } catch {
     return EMPTY;
