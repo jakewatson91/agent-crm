@@ -18,6 +18,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSWR, DEFAULT_SWR } from '../../_lib/swr';
 import { DraftActions } from '../../_components/DraftActions';
+import { Timestamp } from '../../_components/Timestamp';
 import { CitedText } from '../../_components/CitedText';
 import { CiteChain } from '../../_components/CiteChain';
 import { WhyThis } from '../../_components/WhyThis';
@@ -1069,6 +1070,9 @@ function ApprovalCard({ item, ws, onDecided }: { item: FeedItem; ws: string; onD
             {BAND_HEADLINE[bandOf(item.icp_fit)].toLowerCase()}
           </span>
         )}
+        <span className="muted mono" style={{ fontSize: '.7rem', marginLeft: 'auto' }}>
+          <Timestamp value={item.created_at} />
+        </span>
       </div>
       <div
         style={{

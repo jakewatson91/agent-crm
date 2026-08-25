@@ -1,8 +1,16 @@
 # Project State
 
-Last Update: 2026-08-20
+Last Update: 2026-08-25
 
 > Open items + reference only. Dated session history → `progress_log.md`. Current system map → `architecture.md`. Cross-project lessons → agent_memory daily log.
+
+## Session startup checklist — do this before anything else
+
+**Check if the dev server is running on port 3000. If it isn't, start it. Don't wait to be asked.**
+- Check: `lsof -i :3000 -sTCP:LISTEN` (empty output = not running).
+- Start: `pnpm dev` (repo root; runs `pnpm --filter web dev` → `next dev --turbopack`, defaults to port 3000). Run it with `run_in_background: true` — it's a long-running process, not a one-shot command.
+- It reads prod Supabase through `apps/web/.env.local`, so it's real data, not a mock. This is the standard way to check any UI or logic change against the real app (see CLAUDE.md: "Use local dev, not push-to-prod, for UI and logic changes").
+- Jake had to ask for this every session. Corrected 2026-08-25 — stop waiting for the request, just do it at session start.
 
 ## The three pillars (Jake, 2026-08-20)
 
