@@ -946,18 +946,50 @@ export async function runAgent(
   // this cost" and the question that matters is "how many people got sent the
   // wrong message before anyone looked".
   if (behavior === 'drafter' && angle?.argument && !angle.argument.proven_at) {
-    const { count } = await supabase
+    // Two things this count must NOT do, both found the hard way.
+    //
+    // It must not count messages written under wording that has since been
+    // replaced. The id survives a rewrite, so without the cutoff an edited
+    // argument found its predecessor's three drafts already sitting under its
+    // own id and wrote nothing at all — while the alert told the customer to go
+    // and read three messages about something the argument no longer said.
+    // Unset means the wording has never changed, so everything counts, which is
+    // what every argument did before the stamp existed.
+    //
+    // And it must not count messages the customer rejected. The limit exists to
+    // force a human to look before an argument runs everywhere; a rejection IS
+    // that human looking, and saying no. Counting it meant rejecting all three
+    // left the argument permanently stuck at three with no way forward except
+    // confirming wording the customer had just turned down.
+    let q = supabase
       .from('channel_posts')
       // Scoped to this workspace through the join. Argument ids are short
       // per-workspace slugs and the setup wizard derives them from the model's
       // own labels, falling back to argument_1, so two customers WILL collide —
       // and an unscoped count means one customer's drafts silently spend
       // another's budget of three.
-      .select('id, channels!inner(workspace_id)', { count: 'exact', head: true })
+      .select('id, channels!inner(workspace_id)')
       .eq('channels.workspace_id', payload.workspace_id)
       .eq('argument_id', angle.argument.id)
       .is('withdrawn_at', null);
-    if ((count ?? 0) >= UNPROVEN_ARGUMENT_DRAFT_LIMIT) {
+    if (angle.argument.words_changed_at) q = q.gte('created_at', angle.argument.words_changed_at);
+    const posts = (await q).data ?? [];
+
+    // Rejections are read off the approval rather than the post, because
+    // rejecting deliberately leaves the draft and its cited facts alone — the
+    // message was wrong, the event it was built on still happened.
+    let rejected = 0;
+    if (posts.length) {
+      const { data: decided } = await supabase
+        .from('gates')
+        .select('channel_post_id, decision')
+        .eq('workspace_id', payload.workspace_id)
+        .eq('decision', 'reject')
+        .in('channel_post_id', posts.map((p) => p.id as string));
+      rejected = (decided ?? []).length;
+    }
+    const count = posts.length - rejected;
+    if (count >= UNPROVEN_ARGUMENT_DRAFT_LIMIT) {
       const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
         `[argument_unproven] "${angle.argument.label ?? angle.argument.id}" has written ${count} drafts and has not been confirmed yet. Read those and confirm the argument to let it run on the book.`, []);
       return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'argument_unproven', behavior };

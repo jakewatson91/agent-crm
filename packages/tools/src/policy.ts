@@ -203,6 +203,22 @@ export interface DrafterArgument {
    * time, at 26 in a week.
    */
   proven_at?: string;
+  /**
+   * When the wording last changed. The trial counts only messages written after
+   * this, so a rewritten argument gets its own three rather than inheriting the
+   * count of the words it replaced.
+   *
+   * Same job `ResearchAngle.record_since` does for a rewritten search, and the
+   * same reason: the id survives a rewrite so the record has to be told where
+   * the new version starts. Without it, editing an argument cleared `proven_at`
+   * and then found three drafts already sitting under the id, so the edit wrote
+   * nothing at all and the alert told the customer to go and read three messages
+   * written under wording that no longer existed.
+   *
+   * Unset means "count everything", which is the behaviour every argument had
+   * before this field, and is correct for one whose words have never changed.
+   */
+  words_changed_at?: string;
   /** Default true. */
   enabled?: boolean;
 }
@@ -216,6 +232,55 @@ export interface DrafterArgument {
  * matters is that it is small and fixed: the failure being prevented is a wrong
  * argument running unattended across a whole book.
  */
+/**
+ * The four lines that decide what a message argues. Change any of them and the
+ * argument is a different argument, whatever it is still called.
+ *
+ * `label` is not here on purpose. Renaming "catalogue lift" to "back catalogue"
+ * changes nothing about what gets said, and forcing three fresh samples for a
+ * typo fix would teach people not to tidy their own settings.
+ */
+const ARGUMENT_WORDING: ReadonlyArray<keyof DrafterArgument> = ['when', 'only_if', 'so', 'ask'];
+
+/**
+ * Apply the confirmation rule to an incoming set of arguments.
+ *
+ * Edit the wording and the confirmation stops applying, because it was a
+ * statement about the words that were read, not about the id they were filed
+ * under. A new argument arrives unconfirmed for the same reason.
+ *
+ * This has to run on the SERVER. The settings page did it in the browser, which
+ * was fine while the settings page was the only way to edit an argument. It is
+ * about to stop being: an agent editing config through a tool would have sent
+ * the old `proven_at` back with new words, and a rewritten argument would have
+ * gone straight to every account with no samples and nobody reading them. The
+ * whole point of the three-message limit is that a wrong argument costs three
+ * messages, and a client-side check is not a limit, it is a suggestion.
+ */
+export function stampArgumentChanges(
+  next: DrafterArgument[],
+  previous: DrafterArgument[],
+  now = new Date().toISOString(),
+): DrafterArgument[] {
+  const before = new Map(previous.filter((a) => a?.id).map((a) => [a.id, a]));
+  return next.map((a) => {
+    const prev = before.get(a.id);
+    const changed = !prev || ARGUMENT_WORDING.some((f) => (a[f] ?? '') !== (prev[f] ?? ''));
+    if (!changed) {
+      // Untouched: keep the confirmation, and carry the stamp forward so an
+      // unrelated edit elsewhere in the policy does not restart its trial.
+      const { proven_at, ...rest } = a;
+      return {
+        ...rest,
+        ...(proven_at ? { proven_at } : {}),
+        ...(prev.words_changed_at ? { words_changed_at: prev.words_changed_at } : {}),
+      };
+    }
+    const { proven_at: _dropped, ...rest } = a;
+    return { ...rest, words_changed_at: now };
+  });
+}
+
 export const UNPROVEN_ARGUMENT_DRAFT_LIMIT = 3;
 
 export interface DrafterPolicy {

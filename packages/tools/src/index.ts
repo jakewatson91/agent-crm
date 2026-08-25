@@ -17,7 +17,7 @@ import { scoreEntity, scoreAndAssert, combineSubScores, scoreContact } from './s
 import { selectAction, loadActionContext } from './action_selector.ts';
 import { graphProximity } from './graph.ts';
 import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.ts';
-import { getPolicy, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache } from './policy.ts';
+import { getPolicy, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache, stampArgumentChanges, type DrafterArgument, type WorkspacePolicy } from './policy.ts';
 import { ALIAS_MIN_CHARS } from './aliases.ts';
 
 export { TOOL_SCHEMAS, type ToolName };
@@ -37,7 +37,7 @@ export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, DEFAULT_TIER_
 export { getPipelineStatus, setPipelineStatus, getPipelineActivity, PIPELINE_ACTIVITY_ACTIONS, ensureScoringConfigState } from './policy.ts';
 export type { PipelineActivity } from './policy.ts';
 export { sendOwnerAlert, resolveOwnerEmail, notifyPipelinePaused, type AlertResult } from './notify.ts';
-export { UNPROVEN_ARGUMENT_DRAFT_LIMIT } from './policy.ts';
+export { UNPROVEN_ARGUMENT_DRAFT_LIMIT, stampArgumentChanges } from './policy.ts';
 export type { DrafterArgument } from './policy.ts';
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy, ResearchPolicy, ResearchAngle, BriefQuestion, QualificationPolicy, PipelineStatus, ModelBehavior } from './policy.ts';
 export { cronToMinIntervalMinutes } from './cron.ts';
@@ -129,8 +129,34 @@ export async function callTool(
 
   try {
     switch (tool) {
+      case 'set_workspace_policy': {
+        // Every write to policy.drafter.arguments comes through here — the
+        // settings page, the narrow arguments route, a script, and any agent
+        // tool built later. So the confirmation rule is applied here rather
+        // than at a call site, where the next new caller would silently miss
+        // it. Changing an argument's wording drops its confirmation and starts
+        // its three-message trial over; leaving it alone keeps both.
+        //
+        // The settings page also clears proven_at in the browser. That stays,
+        // because it makes the badge change under the customer's cursor rather
+        // than after a round trip. It is no longer what enforces anything.
+        const incoming = (args.policy as { drafter?: { arguments?: unknown } } | undefined)?.drafter?.arguments;
+        if (Array.isArray(incoming)) {
+          const current = await getPolicy(supabase, actor.workspace_id).catch(() => ({} as WorkspacePolicy));
+          const policy = args.policy as { drafter?: { arguments?: DrafterArgument[] } };
+          policy.drafter!.arguments = stampArgumentChanges(
+            incoming as DrafterArgument[],
+            current.drafter?.arguments ?? [],
+          );
+        }
+        const r = await act(supabase, actor, { tool, args, ...meta });
+        // record_event materializes the write into workspaces.policy
+        // server-side, so the cached copy has to be dropped by hand.
+        invalidatePolicyCache(r.target_id);
+        return { ok: true, event_id: r.event_id, target_id: r.target_id };
+      }
+
       case 'create_workspace':
-      case 'set_workspace_policy':
       case 'create_account':
       case 'create_contact':
       case 'create_entity':
@@ -140,7 +166,7 @@ export async function callTool(
         // workspaces.policy server-side (no TS call site to hook otherwise),
         // and r.target_id is the workspace_id for both per act.ts's
         // TOOL_TARGET_KIND map.
-        if (tool === 'create_workspace' || tool === 'set_workspace_policy') invalidatePolicyCache(r.target_id);
+        if (tool === 'create_workspace') invalidatePolicyCache(r.target_id);
         return { ok: true, event_id: r.event_id, target_id: r.target_id };
       }
 
