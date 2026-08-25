@@ -51,7 +51,7 @@ const RUNS = Number(process.argv[2] ?? 3);
 
   let survived = 0, failingRewritten = 0;
   for (let i = 1; i <= RUNS; i++) {
-    const { angles, source } = await planResearchAngles(base);
+    const { angles, source } = await planResearchAngles(sb, WS, base);
     const now = angles.find((a) => a.id === healthy?.id);
     const same = !!now && now.query_template === healthy?.query_template && now.domain_scope === healthy?.domain_scope;
     if (same) survived++;

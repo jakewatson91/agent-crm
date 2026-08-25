@@ -30,8 +30,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, entityIdsOfType, fetchSeenSignalTags, runExaSearch, type ExaResult } from '@agent-crm/tools';
-import { chatComplete } from '@agent-crm/primitives';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { callTool, chatCompleteForWorkspace, entityIdsOfType, fetchSeenSignalTags, getPolicy, resolveBehaviorModel, runExaSearch, type ExaResult } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.ts';
 
@@ -131,7 +131,12 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   let companyByExaId = new Map<string, { name: string; domain: string | null }>();
   if (intent === 'discover') {
     try {
-      const detailed = await batchExtractCompaniesDetailed(fresh, { roles, keywords, publicationBlocklist }, ((ctx.config.model as string) ?? EXTRACT_MODEL));
+      const detailed = await batchExtractCompaniesDetailed(
+        ctx.supabase, ctx.workspace_id, fresh, { roles, keywords, publicationBlocklist },
+        // Same precedence as the web connector: the source's own model wins over
+        // the workspace's extraction model, which wins over the code default.
+        ((ctx.config.model as string)
+          ?? resolveBehaviorModel(await getPolicy(ctx.supabase, ctx.workspace_id), 'connector_extract', EXTRACT_MODEL)));
       companyByExaId = detailed.companies;
       if (detailed.silently_dropped.length) {
         result.errors.push(`LLM omitted ${detailed.silently_dropped.length} ids from response (spec violation)`);
@@ -240,11 +245,13 @@ const exa: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
 };
 
 export async function batchExtractCompanies(
+  supabase: SupabaseClient,
+  workspace_id: string,
   results: ExaResult[],
   hints: { roles: string[]; keywords: string[]; publicationBlocklist?: string[] },
   model: string,
 ): Promise<Map<string, { name: string; domain: string | null }>> {
-  const { companies } = await batchExtractCompaniesDetailed(results, hints, model);
+  const { companies } = await batchExtractCompaniesDetailed(supabase, workspace_id, results, hints, model);
   return companies;
 }
 
@@ -274,6 +281,8 @@ const EXTRACT_BATCH = 10;
  *  silently dropped ids (LLM violated the "every id must appear" rule). Used by
  *  the connector to log spec violations and by debug scripts. */
 export async function batchExtractCompaniesDetailed(
+  supabase: SupabaseClient,
+  workspace_id: string,
   results: ExaResult[],
   hints: { roles: string[]; keywords: string[]; publicationBlocklist?: string[] },
   model: string,
@@ -294,7 +303,7 @@ export async function batchExtractCompaniesDetailed(
     // silently_dropped and are skipped downstream exactly as an unclassified
     // result already is.
     const parts = await Promise.all(chunks.map((c) =>
-      batchExtractCompaniesDetailed(c, hints, model)
+      batchExtractCompaniesDetailed(supabase, workspace_id, c, hints, model)
         .catch(() => ({ companies: new Map<string, { name: string; domain: string | null }>(), rejected: new Map<string, string>(), silently_dropped: c.map((r) => r.id) })),
     ));
     const companies = new Map<string, { name: string; domain: string | null }>();
@@ -356,7 +365,7 @@ reason_code is one of:
     text: (r.text ?? '').slice(0, 800),
   })));
 
-  const llm = await chatComplete({
+  const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
     model,
     max_tokens: 2500,
     // Labels each search result against a fixed set. Same job as the research

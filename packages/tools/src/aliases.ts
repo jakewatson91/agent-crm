@@ -31,7 +31,7 @@
  *                 page in the vertical. See {@link usedAsProperNoun}.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chatComplete } from '@agent-crm/primitives';
+import { chatCompleteForWorkspace } from './chat_workspace.ts';
 import { runExaSearch } from './exa_search.ts';
 import { recordActivityMarker, ACTIVITY_MARKERS } from './activity_markers.ts';
 import { readEntityAliases } from './research_strategy.ts';
@@ -209,7 +209,7 @@ async function fetchOwnSiteText(
   };
 }
 
-async function extractAliasCandidates(name: string, domain: string, ownSiteText: string): Promise<string[]> {
+async function extractAliasCandidates(supabase: SupabaseClient, workspace_id: string, name: string, domain: string, ownSiteText: string): Promise<string[]> {
   const sys = `You read a company's OWN website text and list the other names its coverage is published under.
 
 COMPANY: ${name}
@@ -228,7 +228,7 @@ Most companies have none. An empty list is the correct and common answer.
 
 Return JSON only: {"aliases":["Name One","Name Two"]}`;
 
-  const llm = await chatComplete({
+  const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
     model: ALIAS_MODEL,
     max_tokens: 200,
     // A list of names read off a page. Measured on rumble.com: with thinking on
@@ -298,7 +298,7 @@ export async function resolveAliasesViaSearch(
 
   let candidates: string[];
   try {
-    candidates = await extractAliasCandidates(entity_name, domain, site.text);
+    candidates = await extractAliasCandidates(supabase, opts.workspace_id, entity_name, domain, site.text);
   } catch (e) {
     // A model or parse failure is a transport problem, not evidence the account
     // has no alias. No marker, so the sweep retries it rather than cooling down.

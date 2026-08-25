@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import {
-  CONNECTORS, CONNECTOR_CATEGORIES, resolveConnectorState,
+  CONNECTORS, CONNECTOR_CATEGORIES, MODEL_BEHAVIORS, resolveConnectorState,
   type ResolveStateInput,
 } from '@agent-crm/tools';
 
@@ -87,6 +87,7 @@ export async function GET(req: Request) {
   }));
 
   const llm = (policy.llm ?? {}) as Record<string, unknown>;
+  const llmModels = (llm.models ?? {}) as Record<string, string | undefined>;
   return NextResponse.json({
     categories: CONNECTOR_CATEGORIES,
     connectors,
@@ -95,11 +96,24 @@ export async function GET(req: Request) {
       fallback: enrichment.contact_provider_fallback ?? 'none',
       daily_cap: (enrichment.max_contact_pulls_per_run as number | undefined) ?? 8,
     },
-    // Which model id runs each job. Stored as env vars (read first by the loop);
-    // fall back to the legacy policy.llm.* fields for display.
+    // The behavior list ships from here rather than being imported by the
+    // settings component, because that component is a client component and
+    // MODEL_BEHAVIORS lives in policy.ts, which imports node:crypto. webpack
+    // cannot resolve a node: scheme in a browser bundle and tsc cannot see the
+    // problem, which is the exact shape that broke every Render deploy for six
+    // days in August. Sending it as data keeps the boundary intact.
+    model_behaviors: MODEL_BEHAVIORS,
+    // Which model id runs each behavior. `default` is the blanket setting; the
+    // two legacy fields each name one behavior and are shown under that
+    // behavior's own row, not as a global.
     models: {
-      default_chat_model: (env.DEFAULT_CHAT_MODEL ?? llm.default_chat_model ?? '') as string,
-      drafter_model: (env.DRAFTER_MODEL ?? llm.drafter_model ?? '') as string,
+      default: (llmModels.default ?? '') as string,
+      ...Object.fromEntries(MODEL_BEHAVIORS.map((b) => {
+        const legacy = b.key === 'drafter' ? (env.DRAFTER_MODEL ?? llm.drafter_model)
+          : b.key === 'intake' ? (env.DEFAULT_CHAT_MODEL ?? llm.default_chat_model)
+            : undefined;
+        return [b.key, (llmModels[b.key] ?? legacy ?? '') as string];
+      })),
     },
   });
 }

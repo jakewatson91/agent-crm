@@ -1,10 +1,17 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
+import { createServerClient } from '../packages/db/src/index.ts';
 import { filterResultsByEntity } from '../packages/tools/src/research_strategy.ts';
 
+// The gate reads workspace policy for its model + API key, so it needs a
+// workspace. These are made-up pages, so any workspace does.
+const WS = process.env.GQ_WS ?? 'e7052848-2270-41ac-90b6-d9b75c87f6d3';
+
 async function main() {
+  const sb = createServerClient();
   // Case 1: thin entity — no domain, no context. Same-name collisions should be REJECTED now.
   const thin = await filterResultsByEntity(
+    sb, WS,
     { name: 'PathPilot', domain: '', context: '' },
     [
       { id: 'a', title: 'PathPilot — Tormach CNC control software', url: 'https://tormach.com/pathpilot', text: 'PathPilot is the control software for Tormach CNC machines. Download the latest version for your mill or lathe.' },
@@ -18,6 +25,7 @@ async function main() {
 
   // Case 2: grounded entity — real context. Aggregator junk should be REJECTED, real news kept.
   const grounded = await filterResultsByEntity(
+    sb, WS,
     { name: 'PathPilot', domain: 'getpathpilot.com', context: 'PathPilot Blog — PathPilot helps BNPL, embedded lending, and credit card fintechs automate operations so they can grow || offers_product: AI agents for fintech collections; target_market: BNPL and embedded lending fintechs' },
     [
       { id: 'd', title: 'PathPilot - aVenture Company Research', url: 'https://aventure.vc/companies/pathpilot-san-francisco-ca-us', text: 'PathPilot - aVenture Company Research. PathPilot. San Francisco, CA. AI Automation. Founded 2023. Employees: 11-50.' },

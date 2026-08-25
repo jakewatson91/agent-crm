@@ -19,10 +19,14 @@ export interface ConnectorEntry {
   saved: Record<string, boolean>;
 }
 interface Category { id: 'model' | 'contact' | 'research' | 'email'; label: string; hint: string }
+/** One row in the model table. Shipped by the catalog API rather than imported,
+ *  because the list lives in policy.ts and that file reaches node:crypto. */
+export interface ModelBehaviorRow { key: string; label: string; hint: string }
 interface Catalog {
   categories: Category[];
   connectors: ConnectorEntry[];
-  models: { default_chat_model: string; drafter_model: string };
+  model_behaviors: ModelBehaviorRow[];
+  models: Record<string, string>;
   contact: { primary: string; fallback: string; daily_cap: number };
 }
 
@@ -74,7 +78,7 @@ export function ConnectorHub({ workspace_id }: { workspace_id: string }) {
               ))}
             </div>
             {category.id === 'model' && (
-              <DefaultModels workspace_id={workspace_id} models={cat.models} connectors={modelConnectors} onSaved={load} />
+              <DefaultModels workspace_id={workspace_id} behaviors={cat.model_behaviors ?? []} models={cat.models} connectors={modelConnectors} onSaved={load} />
             )}
             {category.id === 'contact' && (
               <ContactBudget workspace_id={workspace_id} dailyCap={cat.contact.daily_cap} onSaved={load} />
@@ -105,28 +109,46 @@ export function ConnectorHub({ workspace_id }: { workspace_id: string }) {
   );
 }
 
-/** Which model id runs chat/scoring vs the customer-facing drafts. Free text. */
+/**
+ * Which model runs each behavior. Free text, one row per behavior, plus a
+ * blanket row at the top.
+ *
+ * It was two boxes before, and the first was labelled "Default (scoring,
+ * research, chat)". That label was wrong in both directions: the field reached
+ * six more behaviors than it named, including the enricher, which is the
+ * largest line on the bill — and it never reached research at all, because
+ * those calls did not read workspace config. Naming every behavior is the fix,
+ * so nobody has to guess what a box moves.
+ */
 function DefaultModels({
-  workspace_id, models, connectors, onSaved,
+  workspace_id, behaviors, models, connectors, onSaved,
 }: {
   workspace_id: string;
-  models: { default_chat_model: string; drafter_model: string };
+  behaviors: ModelBehaviorRow[];
+  models: Record<string, string>;
   connectors: ConnectorEntry[];
   onSaved: () => void;
 }) {
-  const [def, setDef] = useState(models.default_chat_model);
-  const [drafter, setDrafter] = useState(models.drafter_model);
+  const [vals, setVals] = useState<Record<string, string>>(models);
+  const [focused, setFocused] = useState<string>('default');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   const suggestions = Array.from(new Set(connectors.flatMap((c) => c.model_hint ?? [])));
+  const set = (k: string, v: string) => setVals((p) => ({ ...p, [k]: v }));
+  const blanket = vals.default ?? '';
 
   async function save() {
     setSaving(true); setMsg(null);
     try {
       const r = await fetch('/api/connectors/models', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id, default_chat_model: def, drafter_model: drafter }),
+        // Every key goes up, including the blank ones — a blank is how you
+        // clear a row back to the built-in default, so it has to be sent.
+        body: JSON.stringify({
+          workspace_id,
+          models: Object.fromEntries([['default', blanket], ...behaviors.map((b) => [b.key, vals[b.key] ?? ''])]),
+        }),
       });
       const j = await r.json();
       setMsg(r.ok ? 'saved' : (j.error ?? 'save failed'));
@@ -134,26 +156,37 @@ function DefaultModels({
     } finally { setSaving(false); }
   }
 
+  const row = (key: string, label: string, hint: string, placeholder: string) => (
+    <label key={key} style={{ display: 'grid', gridTemplateColumns: 'minmax(9rem, 15rem) 1fr', gap: '.75rem', alignItems: 'baseline', padding: '.45rem 0', borderTop: key === 'default' ? 'none' : '1px solid var(--border)' }}>
+      <span>
+        <span style={{ display: 'block', fontSize: '.78rem', fontWeight: 500 }}>{label}</span>
+        <span style={{ display: 'block', fontSize: '.7rem', color: 'var(--text-3)', lineHeight: 1.35 }}>{hint}</span>
+      </span>
+      <input
+        value={vals[key] ?? ''}
+        onChange={(e) => set(key, e.target.value)}
+        onFocus={() => setFocused(key)}
+        placeholder={placeholder}
+        style={modelInput}
+      />
+    </label>
+  );
+
   return (
     <div style={{ marginTop: '1rem', padding: '.9rem 1rem', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)' }}>
-      <div style={{ fontSize: '.85rem', fontWeight: 600 }}>Default models</div>
+      <div style={{ fontSize: '.85rem', fontWeight: 600 }}>Models</div>
       <div style={{ fontSize: '.74rem', color: 'var(--text-3)', margin: '.15rem 0 .75rem' }}>
-        Which model runs each job. Leave blank to use the built-in default. Any id above works.
+        Pick a model per job. Leave a row blank and it follows the setting at the top; leave that blank too and it uses the built-in default. Any id from a connected provider works.
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '.7rem' }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
-          <span style={{ fontSize: '.78rem', fontWeight: 500 }}>Default (scoring, research, chat)</span>
-          <input value={def} onChange={(e) => setDef(e.target.value)} placeholder="deepseek/deepseek-v4-pro" style={modelInput} />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
-          <span style={{ fontSize: '.78rem', fontWeight: 500 }}>Drafter (writes your outbound)</span>
-          <input value={drafter} onChange={(e) => setDrafter(e.target.value)} placeholder="same as default" style={modelInput} />
-        </label>
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {row('default', 'Everything', 'Applies to every job below that you leave blank.', 'deepseek/deepseek-v4-pro')}
+        {behaviors.map((b) => row(b.key, b.label, b.hint, blanket || 'built-in default'))}
       </div>
       {suggestions.length > 0 && (
-        <div style={{ display: 'flex', gap: '.3rem', flexWrap: 'wrap', marginTop: '.6rem' }}>
+        <div style={{ display: 'flex', gap: '.3rem', flexWrap: 'wrap', marginTop: '.6rem', alignItems: 'center' }}>
+          <span style={{ fontSize: '.7rem', color: 'var(--text-3)' }}>paste into {focused === 'default' ? 'Everything' : (behaviors.find((b) => b.key === focused)?.label ?? focused)}:</span>
           {suggestions.map((s) => (
-            <button key={s} onClick={() => setDef(s)} style={chip}>{s}</button>
+            <button key={s} onClick={() => set(focused, s)} style={chip}>{s}</button>
           ))}
         </div>
       )}

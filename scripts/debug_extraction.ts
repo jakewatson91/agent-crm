@@ -12,7 +12,7 @@
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { parseRssOrAtom, enrichItemsWithCompanyName } from '../inngest/functions/sources/connectors/web.js';
 import { batchExtractCompanies } from '../inngest/functions/sources/connectors/exa.js';
 
@@ -26,7 +26,7 @@ interface SourceRow {
   workspace_id: string;
 }
 
-async function debugWeb(s: SourceRow) {
+async function debugWeb(sb: SupabaseClient, s: SourceRow) {
   const url = (s.config.url as string)?.trim();
   if (!url) { console.log(`  (no url)`); return; }
   const keywords = (s.config.keywords as string[] ?? []).filter(Boolean);
@@ -50,7 +50,7 @@ async function debugWeb(s: SourceRow) {
 
   if (!items.length) return;
 
-  const enriched = await enrichItemsWithCompanyName(items, { hint, roles, keywords }, EXTRACT_MODEL);
+  const enriched = await enrichItemsWithCompanyName(sb, s.workspace_id, items, { hint, roles, keywords }, EXTRACT_MODEL);
   const extracted = enriched.items.filter((it) => it.company_name);
   console.log(`  extracted_companies: ${extracted.length} / ${items.length}`);
   for (const it of extracted.slice(0, 10)) {
@@ -66,7 +66,7 @@ async function debugWeb(s: SourceRow) {
   }
 }
 
-async function debugExa(s: SourceRow) {
+async function debugExa(sb: SupabaseClient, s: SourceRow) {
   const apiKey = process.env.EXA_API_KEY;
   if (!apiKey) { console.log('  EXA_API_KEY missing'); return; }
   const query = (s.config.query as string)?.trim();
@@ -103,7 +103,7 @@ async function debugExa(s: SourceRow) {
   }
   if (!results.length) return;
 
-  const companies = await batchExtractCompanies(results, { roles, keywords }, EXTRACT_MODEL);
+  const companies = await batchExtractCompanies(sb, s.workspace_id, results, { roles, keywords }, EXTRACT_MODEL);
   console.log(`  extracted_companies: ${companies.size} / ${results.length}`);
   for (const [, c] of [...companies].slice(0, 10)) {
     console.log(`    OK  ${c.name.padEnd(28)} (${c.domain ?? '-'})`);
@@ -133,8 +133,8 @@ async function main() {
   for (const s of sources) {
     console.log(`\n=== ${s.connector_type}/${s.name} ===`);
     try {
-      if (s.connector_type === 'web') await debugWeb(s);
-      else if (s.connector_type === 'exa') await debugExa(s);
+      if (s.connector_type === 'web') await debugWeb(sb, s);
+      else if (s.connector_type === 'exa') await debugExa(sb, s);
       else console.log(`  (no debug handler for connector_type=${s.connector_type})`);
     } catch (e) {
       console.log(`  failed: ${e instanceof Error ? e.message : String(e)}`);

@@ -416,6 +416,51 @@ export interface DrafterPolicy {
 }
 
 /**
+ * Every LLM call in the system belongs to exactly one of these, and the name is
+ * what a customer picks a model for.
+ *
+ * The first eight already existed as `ChatForWorkspaceArgs.behavior` and were
+ * used only for telemetry and output ceilings. The three research entries are
+ * new here because those calls did not go through the workspace wrapper at all:
+ * the planner, the brief writer and the page relevance filter each called
+ * chatComplete directly, so their model was fixed in code with no override, and
+ * they did not pass the workspace's own API key either — a customer who pasted
+ * a DeepSeek key into settings still had research running on the deployment's
+ * env key. See MODEL_BEHAVIORS below for what each one does.
+ */
+export type ModelBehavior =
+  | 'drafter'
+  | 'enricher'
+  | 'claim_poster'
+  | 'scoring'
+  | 'wizard'
+  | 'intake'
+  | 'connector_extract'
+  | 'curator'
+  | 'research_planner'
+  | 'research_brief'
+  | 'research_relevance';
+
+/**
+ * Ordered for display, with the plain-English job of each. The settings page
+ * renders straight from this, so a new behavior shows up in the UI by being
+ * added here rather than by editing a component.
+ */
+export const MODEL_BEHAVIORS: ReadonlyArray<{ key: ModelBehavior; label: string; hint: string }> = [
+  { key: 'drafter', label: 'Drafter', hint: 'Writes the outreach message. The one a reader sees.' },
+  { key: 'enricher', label: 'Enricher', hint: 'Reads a page and writes down what it says about an account. Highest volume, largest share of the bill.' },
+  { key: 'scoring', label: 'Scoring', hint: 'Rates how well an account fits. Runs over the whole book when config changes.' },
+  { key: 'research_relevance', label: 'Research page filter', hint: 'Decides whether a fetched page is about the right company and answers a question worth asking. One call per batch of pages.' },
+  { key: 'research_planner', label: 'Research planner', hint: 'Writes the searches. Runs a few times a week per workspace.' },
+  { key: 'research_brief', label: 'Research questions', hint: 'Writes the list of questions research is trying to answer.' },
+  { key: 'intake', label: 'Chat', hint: 'Answers you in chat and pulls facts out of what you paste.' },
+  { key: 'claim_poster', label: 'Claim poster', hint: 'Posts what the agent concluded to an account thread.' },
+  { key: 'connector_extract', label: 'Connector extraction', hint: 'Pulls structured records out of a connected source.' },
+  { key: 'curator', label: 'Source curator', hint: 'Judges whether a source is still earning its place.' },
+  { key: 'wizard', label: 'Setup', hint: 'Runs during setup and CSV import.' },
+];
+
+/**
  * LLM keys + model preferences scoped to the workspace.
  *
  * Stopgap until a real per-workspace secrets table exists — keys live on
@@ -432,10 +477,41 @@ export interface LLMPolicy {
   openrouter_api_key?: string;
   /** Direct DeepSeek API key. Used by the chat intake route via the AI SDK. */
   deepseek_api_key?: string;
-  /** Optional override of the workspace-wide cheap default. Unset = code default. */
+  /**
+   * Which model runs the chat, and NOTHING else.
+   *
+   * It used to reach further than its name says. The old resolver read it as a
+   * workspace-wide override and applied it to every behavior that came through
+   * chatCompleteForWorkspace — the scorer, the angle picker, the role
+   * classifier, the source curator, the CSV mapping helper, the qualification
+   * agent and the enricher. The guard meant to stop that tested whether the
+   * caller had chosen its own model, written as `model === args.model`, and
+   * `model` was assigned from `args.model` two lines above, so it was always
+   * true. Pointing chat at Claude to try it out silently moved the enricher
+   * there too, and the enricher is roughly two thirds of the model bill.
+   *
+   * Per-behavior choice lives in `models` below. To move everything at once,
+   * set `models.default` — that is a thing you have to type on purpose.
+   */
   default_chat_model?: string;
   /** Optional override of the drafter model specifically (the customer-facing one). */
   drafter_model?: string;
+  /**
+   * Which model runs each behavior. Any key omitted falls back to `default`,
+   * then to the model the calling code passes.
+   *
+   * Same shape as max_output_tokens below, and config for the same reason: the
+   * right model is a per-customer cost/quality trade, not a property of the
+   * code. The three that move the bill are `enricher` (the largest single line
+   * item), `research_relevance` (one call per batch of fetched pages, on every
+   * research run) and `scoring` (a full-book pass on every config change).
+   *
+   * Values follow the model_registry convention: "deepseek/<model>" or a bare
+   * id goes direct to DeepSeek, "<vendor>/<model>" rides the AI Gateway. So a
+   * customer can paste "anthropic/claude-opus-4-7" for the drafter and leave
+   * the high-volume behaviors on DeepSeek, which is the point of splitting it.
+   */
+  models?: Partial<Record<ModelBehavior | 'default', string>>;
   /**
    * Ceiling on output tokens per LLM call, by behavior. Any key omitted falls
    * back to DEFAULT_MAX_OUTPUT_TOKENS.
@@ -1130,6 +1206,53 @@ export function resolveMaxOutputTokens(
 ): number {
   const v = (policy.llm?.max_output_tokens ?? {})[behavior];
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_OUTPUT_TOKENS[behavior];
+}
+
+function cleanModelId(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
+
+/**
+ * Which model runs this behavior, for this workspace.
+ *
+ * Order, most specific first:
+ *   1. llm.models[behavior]      — the per-behavior choice
+ *   2. the named legacy field    — env.DRAFTER_MODEL / llm.drafter_model for the
+ *                                  drafter, env.DEFAULT_CHAT_MODEL /
+ *                                  llm.default_chat_model for chat. Both name a
+ *                                  single behavior, so both still win over a
+ *                                  blanket default.
+ *   3. llm.models.default        — move everything at once, on purpose
+ *   4. `fallback`                — the model the calling code chose
+ *
+ * `fallback` is required rather than defaulted here because each call site's
+ * choice carries a reason with it, usually written in a comment above the
+ * constant (the relevance filter is on a cheap model because it classifies, the
+ * planner is on a strong one because it writes JSON under a token ceiling).
+ * Collapsing those into one constant in this file would throw the reasons away.
+ *
+ * Nothing validates the id against a list of known models, deliberately: a
+ * customer pastes whatever id their provider uses, and a whitelist here means a
+ * code change every time a vendor ships a model.
+ */
+export function resolveBehaviorModel(
+  policy: WorkspacePolicy,
+  behavior: ModelBehavior,
+  fallback: string,
+): string {
+  const llm = policy.llm ?? {};
+  const models = llm.models ?? {};
+
+  const legacy = behavior === 'drafter'
+    ? cleanModelId(policy.env?.DRAFTER_MODEL) ?? cleanModelId(llm.drafter_model)
+    : behavior === 'intake'
+      ? cleanModelId(policy.env?.DEFAULT_CHAT_MODEL) ?? cleanModelId(llm.default_chat_model)
+      : undefined;
+
+  return cleanModelId(models[behavior])
+    ?? legacy
+    ?? cleanModelId(models.default)
+    ?? fallback;
 }
 
 /**

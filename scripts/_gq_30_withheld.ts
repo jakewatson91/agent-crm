@@ -50,7 +50,7 @@ const RUNS = Number(process.argv[2] ?? 3);
   let unattributed = 0;
   let fellToBaseline = 0;
   for (let i = 1; i <= RUNS; i++) {
-    const { angles, source, error } = await planResearchAngles({ ...base, brief: shown });
+    const { angles, source, error } = await planResearchAngles(sb, WS, { ...base, brief: shown });
     if (source === 'baseline') { fellToBaseline++; console.log(`run ${i} FELL BACK: ${error}`); }
     const forWithheld = angles.filter((a) => a.answers === withheld.id);
     const noQuestion = angles.filter((a) => !a.answers);

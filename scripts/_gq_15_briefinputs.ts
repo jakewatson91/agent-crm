@@ -38,7 +38,7 @@ const RUNS = Number(process.argv[2] ?? 3);
     console.log(`\n${'='.repeat(78)}\n${label}\n${'='.repeat(78)}`);
     const idSets: string[][] = [];
     for (let r = 0; r < RUNS; r++) {
-      const { questions, source } = await planResearchBrief(ctx);
+      const { questions, source } = await planResearchBrief(sb, WS, ctx);
       idSets.push(questions.map((q) => q.id));
       console.log(`\n  run ${r + 1} (${source}) — ${questions.length} questions`);
       for (const q of questions) console.log(`    [${q.id}] ${q.question.slice(0, 118)}`);

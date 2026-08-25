@@ -40,8 +40,8 @@
  * which asks only things every seller wants and names no industry.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chatComplete } from '@agent-crm/primitives';
 import { getPolicy } from './policy.ts';
+import { chatCompleteForWorkspace } from './chat_workspace.ts';
 import { fetchAll } from './paginate.ts';
 import type { BriefQuestion, WorkspacePolicy, DrafterArgument } from './policy.ts';
 
@@ -623,8 +623,16 @@ An argument whose trigger no question can find never fires at all. An argument w
   return parts.join('\n\n') || '(nothing provided — produce a neutral, universal brief)';
 }
 
-/** Plan a brief from an already-built context. No DB read, no write. */
+/**
+ * Plan a brief from an already-built context. No write.
+ *
+ * Takes the workspace for the same reason planResearchAngles does: the call runs
+ * through chatCompleteForWorkspace so the model is settable per workspace and
+ * the customer's own DeepSeek key is the one that pays for it.
+ */
 export async function planResearchBrief(
+  supabase: SupabaseClient,
+  workspace_id: string,
   ctx: BriefContext,
   opts?: { model?: string; previous?: BriefQuestion[]; records?: QuestionRecord[] },
 ): Promise<{ questions: BriefQuestion[]; source: 'ai' | 'baseline'; error?: string }> {
@@ -648,7 +656,8 @@ Read the record before you change anything. A question that has found little is 
 ${previous.map((q) => `  ${q.id} — ${q.question}\n${recordLine(q)}`).join('\n')}`
     : '';
   try {
-    const llm = await chatComplete({
+    const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
+      behavior: 'research_brief',
       model: opts?.model ?? BRIEF_MODEL,
       max_tokens: 1600,
       response_format: { type: 'json_object' },
@@ -703,7 +712,7 @@ export async function generateResearchBrief(
     return { questions: BASELINE_BRIEF, source: 'baseline', error: e instanceof Error ? e.message : String(e) };
   }
   const policy = await getPolicy(supabase, workspace_id).catch(() => ({} as WorkspacePolicy));
-  return planResearchBrief(ctx, { ...opts, previous: policy.research?.brief ?? [] });
+  return planResearchBrief(supabase, workspace_id, ctx, { ...opts, previous: policy.research?.brief ?? [] });
 }
 
 /** The input hash for a workspace, so a caller that persists can store it. */
@@ -1085,7 +1094,7 @@ export async function ensureResearchBrief(supabase: SupabaseClient, workspace_id
     const judged = records ?? await loadQuestionRecords(supabase, workspace_id).catch(() => []);
     const failing = questionsNotEarningTheirPages(judged);
     if (!failing.length) return resolveBrief(policy);
-    const rewritten = await planResearchBrief(ctx, { previous: policy.research?.brief ?? [], records: judged });
+    const rewritten = await planResearchBrief(supabase, workspace_id, ctx, { previous: policy.research?.brief ?? [], records: judged });
     if (rewritten.source === 'baseline') return resolveBrief(policy);   // never trade tuned questions for the generic set
     await persistResearchBrief(supabase, workspace_id, rewritten.questions, briefInputHash(ctx));
     await supabase.from('events').insert({
@@ -1112,7 +1121,7 @@ export async function ensureResearchBrief(supabase: SupabaseClient, workspace_id
   // 25 pages seen, which the fair-trial guard exists to protect.
   const withRecords = records ?? await loadQuestionRecords(supabase, workspace_id).catch(() => []);
   const stored = policy.research?.brief ?? [];
-  const { questions, source } = await planResearchBrief(ctx, { previous: stored, records: withRecords });
+  const { questions, source } = await planResearchBrief(supabase, workspace_id, ctx, { previous: stored, records: withRecords });
   // Same trap as the strategy planner, and worse here. A transient planner error
   // returns BASELINE_BRIEF, and persisting it would replace a workspace's tuned
   // questions with the generic five, orphan every angle pointed at the old ids,

@@ -11,6 +11,7 @@ Last Update: 2026-08-25
 - Start: `pnpm dev` (repo root; runs `pnpm --filter web dev` → `next dev --turbopack`, defaults to port 3000). Run it with `run_in_background: true` — it's a long-running process, not a one-shot command.
 - It reads prod Supabase through `apps/web/.env.local`, so it's real data, not a mock. This is the standard way to check any UI or logic change against the real app (see CLAUDE.md: "Use local dev, not push-to-prod, for UI and logic changes").
 - Jake had to ask for this every session. Corrected 2026-08-25 — stop waiting for the request, just do it at session start.
+- **`pnpm verify` runs a production `next build`, and that writes into the same `apps/web/.next` directory the dev server's `next dev --turbopack` is using.** Running verify while dev is up corrupts the dev server's build cache — every page starts 500ing with `ENOENT ... app-build-manifest.json` / `_buildManifest.js.tmp.*`, and the dev process itself doesn't crash or log anything pointing at the cause. Happened live 2026-08-25 right after a `pnpm verify` + commit, with dev already running from session start per this checklist. Fix: kill the dev process, `rm -rf apps/web/.next`, restart `pnpm dev`. Prevention: don't run `pnpm verify` (or anything that builds) while dev is up in the same session without expecting to restart dev afterward — there's no flag to point the build at a different output dir short of `next.config`, so just always restart dev after a verify run.
 
 ## The three pillars (Jake, 2026-08-20)
 

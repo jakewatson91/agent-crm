@@ -53,7 +53,7 @@ const RUNS = Number(process.argv[2] ?? 2);
 
   let aSurvived = 0, bDropped = 0, cSurvived = 0;
   for (let r = 0; r < RUNS; r++) {
-    const { questions } = await planResearchBrief(ctx, { previous: brief, records });
+    const { questions } = await planResearchBrief(sb, WS, ctx, { previous: brief, records });
     const ids = new Set(questions.map((q) => q.id));
     const a = ids.has(badSearch!.id), b = ids.has(dead!.id), c = ids.has(unproven!.id);
     if (a) aSurvived++;

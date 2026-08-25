@@ -549,6 +549,7 @@ export async function runEntityResearch(
         // asked whether each page was about a COMPANY of that name and threw
         // away the real ones.
         const rel = await filterResultsByEntity(
+          supabase, workspace_id,
           { name: entity_name, domain, context, brief, subject: kind === 'contact' ? 'person' : 'company' },
           allForGate,
         );

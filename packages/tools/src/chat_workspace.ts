@@ -5,23 +5,27 @@
  * delegates to the primitives chatComplete. Keeps the DB dep out of
  * @agent-crm/primitives.
  *
- * Resolution order for model:
- *   1. args.model (caller's explicit choice — usually a sensible per-call
- *      default like 'deepseek-v4-pro' for the drafter)
- *   2. policy.llm.drafter_model (when caller passes `behavior: 'drafter'`)
- *   3. policy.llm.default_chat_model (workspace override)
- *   4. args.model fallback (= the original)
+ * Model choice is resolveBehaviorModel(policy, behavior, args.model) — see the
+ * order documented there. A call that passes no `behavior` keeps the model its
+ * caller chose and cannot be overridden by workspace config, which is the safe
+ * reading of "we don't know what this call is for".
+ *
+ * That last part used to be the opposite. `default_chat_model` was applied to
+ * every call whose model matched `args.model`, and since `model` was assigned
+ * from `args.model` immediately above, the test was always true: one field
+ * named for chat silently repointed the enricher, the scorer, the angle picker
+ * and five others. Pinned now by scripts/check_model_routing.ts.
  *
  * Resolution for keys: policy.llm.* wins over env. Env stays as the
  * single-tenant fallback.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { chatComplete, chatCompleteStream, type ChatCompleteArgs, type ChatCompleteResult, type ChatStreamDelta } from '@agent-crm/primitives';
-import { getPolicy } from './policy.ts';
+import { getPolicy, resolveBehaviorModel, type ModelBehavior } from './policy.ts';
 
 export interface ChatForWorkspaceArgs extends ChatCompleteArgs {
-  /** Lets the helper pick policy.llm.drafter_model when behavior === 'drafter'. */
-  behavior?: 'drafter' | 'enricher' | 'claim_poster' | 'scoring' | 'wizard' | 'intake' | 'connector_extract' | 'curator';
+  /** Which behavior this call is, so policy.llm.models can name a model for it. */
+  behavior?: ModelBehavior;
 }
 
 async function resolveArgs(
@@ -32,22 +36,16 @@ async function resolveArgs(
   const policy = await getPolicy(supabase, workspace_id);
   const llm = policy.llm ?? {};
 
-  const envDeepseek     = policy.env?.DEEPSEEK_API_KEY;
-  const envDefaultModel = policy.env?.DEFAULT_CHAT_MODEL;
-  const envDrafterModel = policy.env?.DRAFTER_MODEL;
-
-  let model = args.model;
-  const drafterModel = envDrafterModel || llm.drafter_model;
-  const defaultModel = envDefaultModel || llm.default_chat_model;
-  if (args.behavior === 'drafter' && drafterModel) model = drafterModel;
-  else if (defaultModel && model === args.model) model = defaultModel;
+  const model = args.behavior
+    ? resolveBehaviorModel(policy, args.behavior, args.model)
+    : args.model;
 
   // Only the deepseek-direct key flows per-call; gateway-routed vendors
   // (anthropic/openai/...) authenticate via AI_GATEWAY_API_KEY in the env.
   return {
     ...args,
     model,
-    api_keys: { deepseek: envDeepseek || llm.deepseek_api_key },
+    api_keys: { deepseek: policy.env?.DEEPSEEK_API_KEY || llm.deepseek_api_key },
   };
 }
 
@@ -67,14 +65,15 @@ export async function resolveDeepseekKey(
 /**
  * Resolve the chat-intake model + deepseek key for a workspace in one policy
  * read. Model defaults to deepseek-v4-pro direct; a workspace can point chat at
- * any model via policy.llm.default_chat_model (e.g. "anthropic/claude-opus-4-7").
+ * any model via policy.llm.models.intake (e.g. "anthropic/claude-opus-4-7"), and
+ * the older default_chat_model still works and still means exactly this.
  */
 export async function resolveChatModel(
   supabase: SupabaseClient,
   workspace_id: string,
 ): Promise<{ model: string; deepseekKey: string | null }> {
   const policy = await getPolicy(supabase, workspace_id);
-  const model = policy.env?.DEFAULT_CHAT_MODEL || policy.llm?.default_chat_model || 'deepseek/deepseek-v4-pro';
+  const model = resolveBehaviorModel(policy, 'intake', 'deepseek/deepseek-v4-pro');
   const deepseekKey = policy.env?.DEEPSEEK_API_KEY || policy.llm?.deepseek_api_key || null;
   return { model, deepseekKey };
 }

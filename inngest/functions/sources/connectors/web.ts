@@ -19,8 +19,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { callTool, compress, entityIdsOfType, fetchSeenSignalTags, resolvePublishedDate } from '@agent-crm/tools';
-import { chatComplete } from '@agent-crm/primitives';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { callTool, chatCompleteForWorkspace, compress, entityIdsOfType, fetchSeenSignalTags, getPolicy, resolveBehaviorModel, resolvePublishedDate } from '@agent-crm/tools';
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 import { validateCompanyName, getWatchedAccounts, matchAlias, buildAliases } from '../utils.ts';
 
@@ -101,6 +101,8 @@ export function parseRssOrAtom(xml: string, sourceUrl: string): ExtractedItem[] 
 }
 
 async function extractWithLLM(
+  supabase: SupabaseClient,
+  workspace_id: string,
   html: string,
   sourceUrl: string,
   opts: { hint: string; intent: 'watch' | 'discover'; roles: string[]; keywords: string[] },
@@ -134,7 +136,7 @@ ${opts.hint ? `User hint: ${opts.hint}\n` : ''}${intentNote}${filterBlock}
 Output strictly: {"items":[${itemFields}]}.
 Resolve relative URLs against ${sourceUrl}. Skip nav/footer/cookie banners. Max 30 items.`;
 
-  const llm = await chatComplete({
+  const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
     model,
     max_tokens: 2000,
     // Copying items out of HTML into a fixed shape. Up to 30 of them, so
@@ -195,6 +197,8 @@ const IDENTIFY_BATCH = 10;
  *  and company_domain populated when extractable. Captures rejection reasons for
  *  the audit trail. */
 export async function enrichItemsWithCompanyName(
+  supabase: SupabaseClient,
+  workspace_id: string,
   items: ExtractedItem[],
   opts: { hint: string; roles: string[]; keywords: string[] },
   model: string,
@@ -212,7 +216,7 @@ export async function enrichItemsWithCompanyName(
     // A failed batch gives up only its own items, rather than the caller
     // abandoning every item on the feed.
     const parts = await Promise.all(chunks.map((c) =>
-      enrichItemsWithCompanyName(c, opts, model)
+      enrichItemsWithCompanyName(supabase, workspace_id, c, opts, model)
         .catch(() => ({ items: c.map((it) => ({ ...it, company_name: undefined })), notes: new Map<string, string>(), silently_dropped: c.length })),
     ));
     const notes = new Map<string, string>();
@@ -263,7 +267,7 @@ reason_code is one of:
     body: (it.body ?? '').slice(0, 400),
   })));
 
-  const llm = await chatComplete({
+  const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
     model,
     max_tokens: 2500,
     // One company name per item. Fixed shape, one field each.
@@ -354,17 +358,23 @@ const web: Connector = async (ctx: ConnectorContext): Promise<ConnectorResult> =
   let items: ExtractedItem[] = [];
   let extractionNotes = new Map<string, string>();
   try {
-    const extractModel = ((ctx.config.model as string) ?? EXTRACT_MODEL);
+    // Precedence, most specific first: the model named on this source, then the
+    // workspace's choice for extraction, then the code default. Resolved here
+    // rather than inside the call so a source that names a model keeps it — the
+    // workspace setting is a fallback for sources that name none, not an
+    // override of one that does.
+    const extractModel = ((ctx.config.model as string)
+      ?? resolveBehaviorModel(await getPolicy(ctx.supabase, ctx.workspace_id), 'connector_extract', EXTRACT_MODEL));
     items = isFeed
       ? parseRssOrAtom(body, url)
-      : await extractWithLLM(body, url, { hint: extraction_hint, intent, roles, keywords }, extractModel);
+      : await extractWithLLM(ctx.supabase, ctx.workspace_id, body, url, { hint: extraction_hint, intent, roles, keywords }, extractModel);
 
     // RSS-derived items don't carry company_name. In discover mode, do a small LLM
     // pass to extract it per item — otherwise every RSS item gets skipped because
     // there's no entity to attach to. One model call covers the whole batch.
     if (isFeed && intent === 'discover' && items.length > 0) {
       try {
-        const enriched = await enrichItemsWithCompanyName(items, { hint: extraction_hint, roles, keywords }, extractModel);
+        const enriched = await enrichItemsWithCompanyName(ctx.supabase, ctx.workspace_id, items, { hint: extraction_hint, roles, keywords }, extractModel);
         items = enriched.items;
         extractionNotes = enriched.notes;
         if (enriched.silently_dropped > 0) {

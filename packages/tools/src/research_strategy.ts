@@ -16,8 +16,9 @@
  * names, no vertical assumptions. The query CONTENTS are AI-generated or human-entered.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chatComplete, embed } from '@agent-crm/primitives';
+import { embed } from '@agent-crm/primitives';
 import { getPolicy } from './policy.ts';
+import { chatCompleteForWorkspace } from './chat_workspace.ts';
 import { runExaSearch } from './exa_search.ts';
 import { cosine } from './icp_embeddings.ts';
 import {
@@ -501,11 +502,18 @@ function buildUserPayload(ctx: PlannerContext): string {
 }
 
 /**
- * Plan angles from an already-built context (no DB read). Used by the regenerate
- * endpoint, which builds context from freshly-derived About fields. Falls back to
+ * Plan angles from an already-built context. Used by the regenerate endpoint,
+ * which builds context from freshly-derived About fields. Falls back to
  * BASELINE_ANGLES on any error or empty result.
+ *
+ * Takes the workspace because the call goes through chatCompleteForWorkspace:
+ * that is what lets a customer name the planner's model in settings, and what
+ * makes the call use the customer's own DeepSeek key instead of the
+ * deployment's. Before that it called chatComplete directly and did neither.
  */
 export async function planResearchAngles(
+  supabase: SupabaseClient,
+  workspace_id: string,
   ctx: PlannerContext,
   opts?: { model?: string },
 ): Promise<{ angles: ResearchAngle[]; source: 'ai' | 'baseline'; error?: string }> {
@@ -514,7 +522,8 @@ export async function planResearchAngles(
     return { angles: BASELINE_ANGLES, source: 'baseline' };
   }
   try {
-    const llm = await chatComplete({
+    const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
+      behavior: 'research_planner',
       model: opts?.model ?? PLANNER_MODEL,
       // The same fix the relevance gate got on 2026-08-14, in the one
       // fixed-shape JSON call that was missed by that sweep. DeepSeek counts
@@ -580,7 +589,7 @@ export async function generateResearchStrategy(
   } catch (e) {
     return { angles: BASELINE_ANGLES, source: 'baseline', error: e instanceof Error ? e.message : String(e) };
   }
-  return planResearchAngles(ctx, opts);
+  return planResearchAngles(supabase, workspace_id, ctx, opts);
 }
 
 const RELEVANCE_MODEL = 'deepseek-v4-flash';
@@ -849,6 +858,8 @@ export interface RelevanceTarget {
  * already-settled for those pages so it only has to judge the useful part.
  */
 export async function filterResultsByEntity(
+  supabase: SupabaseClient,
+  workspace_id: string,
   target: RelevanceTarget,
   results: Array<{ id: string; title: string | null; url: string; text?: string }>,
   opts?: { model?: string; batch_size?: number },
@@ -971,7 +982,8 @@ For every entry in "keep", "c" is required. If you are keeping a page you must s
     let text = '';
     let finish = '';
     try {
-      const llm = await chatComplete({
+      const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
+        behavior: 'research_relevance',
         model: opts?.model ?? RELEVANCE_MODEL,
         // Classification, not writing. Two runs over the same 23 stored ViX pages
         // at the default temperature kept 10 and then 7, disagreeing on a

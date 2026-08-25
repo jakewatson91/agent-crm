@@ -30,7 +30,7 @@ const RUNS = Number(process.argv[2] ?? 6);
   };
   const errors: string[] = [];
   for (let i = 1; i <= RUNS; i++) {
-    const { angles, source, error } = await planResearchAngles(base);
+    const { angles, source, error } = await planResearchAngles(sb, WS, base);
     console.log(`run ${i}: ${source} ${angles.length} angles${error ? `  ERROR: ${error}` : ''}`);
     if (error) errors.push(error);
   }
