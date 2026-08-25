@@ -420,7 +420,7 @@ Return the JSON verdict.`;
   try {
     const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
       model: 'deepseek-v4-flash',
-      behavior: 'intake',
+      behavior: 'qualification',
       max_tokens: 400,
       // A verdict, a confidence, a role, an angle and one sentence. The prompt
       // above already says "be decisive"; thinking here just bills for the

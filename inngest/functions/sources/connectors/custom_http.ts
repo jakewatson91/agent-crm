@@ -50,10 +50,10 @@
  * mean — that's the spec's job. Vertical-neutral.
  */
 
-import { callTool, chatCompleteForWorkspace, entityIdsOfType, normalizeDomain, hashItem, fetchSeenSignalTags } from '@agent-crm/tools';
-// custom_http is per-workspace by construction (sources.workspace_id), so it
-// uses chatCompleteForWorkspace. exa/web/api_call do bulk discovery via env
-// keys and stay on raw chatComplete for now.
+import { callTool, chatCompleteForWorkspace, getPolicy, resolveBehaviorModel, entityIdsOfType, normalizeDomain, hashItem, fetchSeenSignalTags } from '@agent-crm/tools';
+// Every connector that runs an LLM now goes through chatCompleteForWorkspace, so
+// extraction is billed to the workspace's own key rather than the deployment's.
+// exa and web joined it; api_call has no LLM call of its own.
 import type { Connector, ConnectorContext, ConnectorResult } from '../types.ts';
 
 interface CustomHttpSpec {
@@ -212,7 +212,14 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
   };
 
   const batchSize = Math.max(1, extractSpec.batch_size ?? 10);
-  const model = extractSpec.model ?? 'deepseek-v4-flash';
+  // Same precedence as the web and exa connectors: the model named on THIS
+  // source wins, then the workspace's extraction model, then the code default.
+  // Resolved here rather than by passing `behavior` to the call, because that
+  // would invert it — resolveBehaviorModel puts the workspace entry above the
+  // model the caller passed, so a source that names its own model would lose to
+  // a workspace-wide setting it was configured to override.
+  const model = extractSpec.model
+    ?? resolveBehaviorModel(await getPolicy(ctx.supabase, ctx.workspace_id), 'connector_extract', 'deepseek-v4-flash');
   const magnitude = signalSpec.magnitude ?? 0.55;
 
   for (let i = 0; i < fresh.length; i += batchSize) {
@@ -222,9 +229,10 @@ const customHttp: Connector = async (ctx: ConnectorContext): Promise<ConnectorRe
 
     let extracted: ExtractedBatch;
     try {
+      // No `behavior` — the model is already resolved above with the source's own
+      // choice winning. The wrapper is here for the workspace's API key.
       const llm = await chatCompleteForWorkspace(ctx.supabase, ctx.workspace_id, {
         model,
-        behavior: 'connector_extract',
         max_tokens: 1500,
         // Pulls named fields out of items that are already structured. Thinking
         // adds tokens and seconds per batch and cannot make a field appear that

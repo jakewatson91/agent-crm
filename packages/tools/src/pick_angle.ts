@@ -319,7 +319,8 @@ export async function pickDraftAngle(
     if (call) return call(user, job);
     const llm = await chatCompleteForWorkspace(supabase, workspace_id, {
       model: args.model,
-      behavior: 'connector_extract',
+      // The drafter's own argument picker, so it follows the drafter's model.
+      behavior: 'drafter',
       max_tokens,
       // Both jobs answer with numbers, and at the default temperature both
       // answered differently on identical input: NHL.TV's 34 facts sorted to 16

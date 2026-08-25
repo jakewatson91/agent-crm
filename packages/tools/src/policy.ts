@@ -437,6 +437,7 @@ export type ModelBehavior =
   | 'intake'
   | 'connector_extract'
   | 'curator'
+  | 'qualification'
   | 'research_planner'
   | 'research_brief'
   | 'research_relevance';
@@ -447,16 +448,17 @@ export type ModelBehavior =
  * added here rather than by editing a component.
  */
 export const MODEL_BEHAVIORS: ReadonlyArray<{ key: ModelBehavior; label: string; hint: string }> = [
-  { key: 'drafter', label: 'Drafter', hint: 'Writes the outreach message. The one a reader sees.' },
+  { key: 'drafter', label: 'Drafter', hint: 'Writes the outreach message, and picks which argument it makes. The one a reader sees.' },
   { key: 'enricher', label: 'Enricher', hint: 'Reads a page and writes down what it says about an account. Highest volume, largest share of the bill.' },
   { key: 'scoring', label: 'Scoring', hint: 'Rates how well an account fits. Runs over the whole book when config changes.' },
   { key: 'research_relevance', label: 'Research page filter', hint: 'Decides whether a fetched page is about the right company and answers a question worth asking. One call per batch of pages.' },
   { key: 'research_planner', label: 'Research planner', hint: 'Writes the searches. Runs a few times a week per workspace.' },
   { key: 'research_brief', label: 'Research questions', hint: 'Writes the list of questions research is trying to answer.' },
-  { key: 'intake', label: 'Chat', hint: 'Answers you in chat and pulls facts out of what you paste.' },
+  { key: 'intake', label: 'Chat', hint: 'Answers you in chat, and pulls facts out of text you paste into it. Nothing outside chat.' },
   { key: 'claim_poster', label: 'Claim poster', hint: 'Posts what the agent concluded to an account thread.' },
   { key: 'connector_extract', label: 'Connector extraction', hint: 'Pulls structured records out of a connected source.' },
   { key: 'curator', label: 'Source curator', hint: 'Judges whether a source is still earning its place.' },
+  { key: 'qualification', label: 'Account qualification', hint: 'The multi-step loop that digs into one account before deciding it is worth writing to. Off by default.' },
   { key: 'wizard', label: 'Setup', hint: 'Runs during setup and CSV import.' },
 ];
 
@@ -664,7 +666,7 @@ export interface LifecyclePolicy {
 }
 
 /**
- * Retention — bounds the two tables that grow unbounded (signals, events).
+ * Retention — bounds the tables that grow unbounded (signals, events, facts).
  * Vertical-neutral and OFF by default: a fresh workspace keeps everything
  * forever until an operator opts in. All deletion is provenance-safe.
  *
@@ -679,11 +681,25 @@ export interface LifecyclePolicy {
  *   'subscription.matched', 'agent_run_metrics'). prune_events refuses to
  *   delete any event a fact points at, so provenance is safe regardless of
  *   the list. Empty list / unset = delete nothing.
+ *
+ * fact_history_ttl_days + prunable_fact_predicates: a rollup, not a delete.
+ *   A fact's CURRENT value is never touched by this — only replaced
+ *   (superseded) values whose predicate is in the list, and only once
+ *   there's a newer reading for the same entity+predicate on a LATER
+ *   calendar day. One reading per entity per predicate per day survives
+ *   forever; same-day re-reads older than the window are what gets dropped.
+ *   A metric built from this (e.g. a score trend chart) still spans the
+ *   account's full history — it just loses intra-day resolution past the
+ *   window instead of losing the metric. Empty list / unset = delete
+ *   nothing. Meant for predicates the scorer recomputes on every pass
+ *   (score_total and its inputs), not for one-off facts about the account.
  */
 export interface RetentionPolicy {
   signal_embedding_ttl_days?: number;
   event_ttl_days?: number;
   prunable_event_actions?: string[];
+  fact_history_ttl_days?: number;
+  prunable_fact_predicates?: string[];
 }
 
 /**

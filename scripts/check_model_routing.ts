@@ -173,5 +173,77 @@ for (const e of DIRECT_CALL_EXEMPT) {
     'this file no longer calls the model directly — drop it from DIRECT_CALL_EXEMPT');
 }
 
+/**
+ * A behavior name is a promise about which calls it moves, and the promise is
+ * kept at the CALL SITE, not here. Three were broken when this file was written,
+ * all of them harmless until the names became customer-facing config:
+ *
+ *   qualify.ts        claimed `intake`             — the qualification loop is not chat
+ *   pick_angle.ts     claimed `connector_extract`  — it is the drafter's argument picker
+ *   custom_http.ts    passed `connector_extract` alongside a source-configured
+ *                     model, which inverted the precedence the other two
+ *                     connectors use: the workspace setting beat the source's
+ *                     own choice instead of standing behind it
+ *
+ * The first one mattered immediately. Setting a model for chat would also have
+ * moved the qualification agent, which is exactly the bug the file above exists
+ * to prevent, reintroduced one layer down.
+ *
+ * So the map is written out and checked. Adding a call site, or moving one to a
+ * different behavior, has to be done here too — which is the point, because that
+ * is the moment to ask whether the name still describes what it moves.
+ */
+const BEHAVIOR_CALL_SITES: Record<ModelBehavior, string[]> = {
+  drafter: ['inngest/functions/agent_logic.ts', 'packages/tools/src/pick_angle.ts'],
+  enricher: ['inngest/functions/agent_logic.ts'],
+  claim_poster: ['inngest/functions/agent_logic.ts'],
+  scoring: ['packages/tools/src/scoring.ts'],
+  wizard: ['packages/tools/src/suggest_mapping.ts'],
+  // The chat route resolves through resolveChatModel rather than a `behavior:`
+  // literal, so it is named here but will not appear in the grep below.
+  intake: ['apps/web/app/api/agent/intake/tools.ts'],
+  connector_extract: ['packages/tools/src/classify_role.ts', 'inngest/functions/sources/connectors/custom_http.ts'],
+  curator: ['packages/tools/src/source_curator.ts'],
+  qualification: ['packages/agents/src/qualify.ts'],
+  research_planner: ['packages/tools/src/research_strategy.ts'],
+  research_brief: ['packages/tools/src/research_brief.ts'],
+  research_relevance: ['packages/tools/src/research_strategy.ts'],
+};
+
+console.log('\nEach behavior moves the calls its name claims, and no others:');
+for (const b of ALL) {
+  let hits: string[] = [];
+  try {
+    // \b, not a bare substring: `subscriptions.agent_behavior` holds the same
+    // words for a different concept (which agent a subscription runs), and a
+    // loose match reports every workspace-create call as an LLM call site.
+    hits = execSync(
+      `grep -rlE "\\bbehavior: '${b}'" --include="*.ts" packages inngest apps --exclude-dir=node_modules`,
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).split('\n').filter((f) => f && !f.includes('/.next/'));
+  } catch {
+    // grep exits 1 on no match.
+  }
+  const expected = new Set(BEHAVIOR_CALL_SITES[b]);
+  const surprise = hits.filter((f) => !expected.has(f));
+  ok(`${b} is claimed only where BEHAVIOR_CALL_SITES says`, surprise.length === 0,
+    `also claimed by:\n        ${surprise.join('\n        ')}\n        Either the call belongs under a different behavior, or add it above — but read the name first and ask whether it still describes what it moves.`);
+}
+
+// The web and exa connectors resolve the model at the call site so a source's
+// own `config.model` wins, and therefore pass no `behavior` at all. If either
+// ever starts passing one, the source setting silently loses to the workspace.
+console.log('\nA source that names its own model still beats the workspace setting:');
+for (const f of [
+  'inngest/functions/sources/connectors/web.ts',
+  'inngest/functions/sources/connectors/exa.ts',
+  'inngest/functions/sources/connectors/custom_http.ts',
+]) {
+  const src = execSync(`cat ${f}`, { encoding: 'utf8' });
+  ok(`${f.split('/').pop()} resolves the model itself rather than passing a behavior`,
+    src.includes("resolveBehaviorModel(") && !src.includes("behavior: 'connector_extract'"),
+    'passing a behavior here puts the workspace entry ABOVE the model the source configured, inverting the precedence');
+}
+
 console.log(fail ? `\n${fail} FAILED\n` : '\nAll model-routing assertions pass.\n');
 process.exit(fail ? 1 : 0);
