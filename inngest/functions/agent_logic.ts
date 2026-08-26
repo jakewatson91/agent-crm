@@ -93,6 +93,13 @@ export interface AgentRunResult {
   gate_id?: string;
   facts_asserted?: number;          // enricher: how many facts created
   reason?: string;
+  /**
+   * Raw provider error text, when a provider is what failed. `reason` is a
+   * stable code and belongs in tallies; this is the message, and it is the only
+   * thing isHaltingError can read. Same field and same purpose as the one on
+   * the contact pull (packages/tools/src/contacts.ts).
+   */
+  error_detail?: string;
   llm_input_tokens?: number;
   llm_output_tokens?: number;
   llm_cached_input_tokens?: number;
@@ -926,10 +933,28 @@ export async function runAgent(
   // and a false claim about someone's business is not. The reason is recorded on
   // every skip and sweep.ts alarms when the picker is failing rather than
   // honestly answering no, so failing closed is loud instead of silent.
+  //
+  // A call that never happened is not a refusal, and the note has to say so.
+  // Failing closed is right; recording the wrong reason for it is not. The one
+  // sentence below ran on 43 accounts in the 2026-08-23 pass and told each of
+  // them their facts had been read and no argument fitted, while DeepSeek was
+  // out of credit and no argument had been read at all. It also sent whoever
+  // read it to go find more research, when the fix was to top up an account.
+  // llm_error and unparseable are the two outcomes where nothing was judged.
   if (behavior === 'drafter' && (policy.drafter?.arguments ?? []).length && !angle?.argument) {
-    const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-      `[no_argument:${angleDecision.reason}] No configured argument both fits this account and has its condition shown by its facts, so there is nothing we can honestly say about their business yet. Left alone until research turns that fact up.`, []);
-    return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: `no_argument:${angleDecision.reason}`, behavior };
+    const unasked = angleDecision.reason === 'llm_error' || angleDecision.reason === 'unparseable';
+    const note = unasked
+      ? `[no_argument:${angleDecision.reason}] The model that picks the argument did not answer, so this account's facts were never judged. Nothing is known about whether an argument fits. Retried on the next pass once the provider is answering${angleDecision.error_detail ? `. Provider said: ${angleDecision.error_detail}` : ''}`
+      : `[no_argument:${angleDecision.reason}] No configured argument both fits this account and has its condition shown by its facts, so there is nothing we can honestly say about their business yet. Left alone until research turns that fact up.`;
+    const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id, note, []);
+    return {
+      ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id,
+      reason: `no_argument:${angleDecision.reason}`, behavior,
+      // Raw provider text, so the advance pass can tell an out-of-credit wall
+      // from a one-off blip. The reason CODE can never carry that, and reading
+      // the code alone is what let one dead provider burn a whole book.
+      error_detail: angleDecision.error_detail,
+    };
   }
 
   // An UNPROVEN argument writes a few drafts and then waits for a human.

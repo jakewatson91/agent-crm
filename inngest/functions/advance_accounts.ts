@@ -107,6 +107,33 @@ export function isPersistentWall(msg: string | undefined): boolean {
   return isHaltingError(msg);
 }
 
+/**
+ * The provider error text on an agent run, or undefined if nothing failed.
+ *
+ * Its own function because the obvious version of this line was wrong twice over
+ * and both mistakes were invisible from the call site.
+ *
+ * `ok` is about whether the agent finished its work, not about whether a
+ * provider answered. The drafter's argument picker fails closed: the provider is
+ * down, no argument comes back, the run writes a note explaining the skip, and
+ * that note is written successfully — so `ok` is TRUE on exactly the runs where
+ * the LLM is dead. Guarding on `!ok` therefore skipped the check precisely when
+ * it was needed.
+ *
+ * And `reason` is a stable code that belongs in a tally, so it must never be the
+ * first thing read here: isHaltingError matches words like "insufficient
+ * balance" and "402", and no code contains those. Only error_detail carries what
+ * the provider actually said. `reason` is the fallback for the older paths that
+ * put raw text there, and only when the run failed outright.
+ *
+ * Both bugs together on 2026-08-23: DeepSeek was out of credit, the pass never
+ * stopped, and 43 accounts each got a note saying their facts had been read and
+ * no argument fitted.
+ */
+export function haltingErrorText(r: { ok: boolean; reason?: string; error_detail?: string }): string | undefined {
+  return r.error_detail ?? (r.ok ? undefined : r.reason);
+}
+
 /** Which provider a halting error came from, for the paused message. */
 function providerFromError(msg: string): string | undefined {
   const m = msg.toLowerCase();
@@ -423,12 +450,16 @@ export async function advanceAccounts(
       workspace_id, agent: drafterSub!.owner_id, subscription_id: drafterSub!.id, fact_id: factId,
     });
     const reason = (r as { reason?: string }).reason;
-    if (!r.ok && isHaltingError(reason)) {
+    // Reads the provider's own words, and reads them whether or not the run
+    // reported itself ok. See haltingErrorText for why both halves of that
+    // matter and what each one cost.
+    const errText = haltingErrorText(r);
+    if (isHaltingError(errText)) {
       // Stop the run either way (hammering a rate-limited provider helps nobody),
       // but only latch a pause for a wall that will still be there next tick.
       halted = true;
-      if (isPersistentWall(reason)) {
-        out.paused = await pause(supabase, workspace_id, providerFromError(reason ?? ''), reason ?? 'llm error', 'all');
+      if (isPersistentWall(errText)) {
+        out.paused = await pause(supabase, workspace_id, providerFromError(errText ?? ''), errText ?? 'llm error', 'all');
         return 'paused';
       }
       tally('rate_limited', name);

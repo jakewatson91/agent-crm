@@ -29,6 +29,7 @@
  * that dropping it does not knock the numbering out from under the pick.
  */
 import { pickDraftAngle } from '../packages/tools/src/pick_angle.ts';
+import { isHaltingError, isPersistentWall, haltingErrorText } from '../inngest/functions/advance_accounts.ts';
 
 let fail = 0;
 function ok(name: string, cond: boolean, detail = '') {
@@ -86,6 +87,40 @@ async function main() {
     (await pickDraftAngle(sb, WS, base, async () => 'not json')).reason === 'unparseable');
   ok('a call that throws is its own reason',
     (await pickDraftAngle(sb, WS, base, async () => { throw new Error('down'); })).reason === 'llm_error');
+
+  // The reason CODE is all this used to return, and the advance pass decides
+  // whether to stop the whole run by matching words like "insufficient balance"
+  // and "402" against error TEXT. With the text discarded, an out-of-credit
+  // provider looked exactly like an account nothing could be said about: on
+  // 2026-08-23 that walked 43 more accounts into the same dead call and wrote a
+  // note on each one claiming its facts had been read.
+  d = await pickDraftAngle(sb, WS, base, async () => { throw new Error('402 Insufficient Balance'); });
+  ok('and it carries what the provider said, not just the code',
+    d.reason === 'llm_error' && (d.error_detail ?? '').includes('Insufficient Balance'), JSON.stringify(d));
+  ok('so the advance pass can see a wall it has to stop on',
+    isHaltingError(d.error_detail) && isPersistentWall(d.error_detail), JSON.stringify(d.error_detail));
+
+  // The skip that fails closed WRITES ITS NOTE SUCCESSFULLY, so the run reports
+  // ok:true on exactly the passes where the provider is dead. Guarding the halt
+  // on !ok is what made the check unreachable on this path.
+  const deadProviderSkip = { ok: true, reason: 'no_argument:llm_error', error_detail: d.error_detail };
+  ok('a skip that wrote its note is still read for the provider error',
+    isHaltingError(haltingErrorText(deadProviderSkip)));
+  ok('and an ordinary refusal with no provider error halts nothing',
+    !isHaltingError(haltingErrorText({ ok: true, reason: 'no_argument:no_problem_fits' })));
+  ok('a run that failed outright still falls back to its reason text',
+    isHaltingError(haltingErrorText({ ok: false, reason: '402 Insufficient Balance' })));
+
+  // The other direction. A blip is not a wall, and latching a pipeline pause on
+  // one turned a burst limit into a three-day outage once already.
+  const blip = await pickDraftAngle(sb, WS, base, async () => { throw new Error('socket hang up'); });
+  ok('a one-off failure stops nothing', !isHaltingError(blip.error_detail), JSON.stringify(blip.error_detail));
+
+  // Nothing was judged on either of these, so the note must not say an argument
+  // was looked for and not found. Reasons, not prose, is what agent_logic keys
+  // its two sentences off.
+  ok('a call that never answered is one of the two unjudged reasons',
+    ['llm_error', 'unparseable'].includes(d.reason as string));
 
   console.log('\nA fact about a part we cannot serve never reaches the pick:');
   // The ruled-out fact is deliberately first. Dropping it renumbers everything

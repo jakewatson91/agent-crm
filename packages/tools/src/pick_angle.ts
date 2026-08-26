@@ -25,6 +25,7 @@
  * picker that is down must not stop drafts.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { apiCallErrorDetail } from '@agent-crm/primitives';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
 import type { DrafterArgument } from './policy.ts';
 
@@ -67,6 +68,20 @@ export interface AngleDecision {
    * freshest thing about the account.
    */
   out_of_scope_fact_ids: string[];
+  /**
+   * What the provider actually said, set only when `reason` is 'llm_error'.
+   *
+   * The bare `catch` that used to sit on the pick call threw this away, and the
+   * reason code that came out in its place said nothing about whether the
+   * provider was rate limited, out of money or fine. The advance pass decides
+   * whether to stop the whole run by reading error TEXT (isHaltingError looks
+   * for "insufficient balance", "402", "unauthorized"), so a code with no text
+   * behind it can never halt anything: on 2026-08-23 DeepSeek was out of credit
+   * and the pass walked 43 more accounts into the same dead call, writing on
+   * each one that no argument fitted it. Carry the text so that decision can be
+   * made.
+   */
+  error_detail?: string;
 }
 
 export interface AngleChoice {
@@ -418,8 +433,13 @@ export async function pickDraftAngle(
   try {
     // Two evidence numbers and a longer reason when arguments are in play.
     text = await ask('pick', argued.length ? ARGUMENT_SYSTEM : SYSTEM_PROMPT, userPrompt, argued.length ? 260 : 200);
-  } catch {
-    return { choice: null, reason: 'llm_error', out_of_scope_fact_ids };
+  } catch (e) {
+    // Keep what the provider said. See error_detail on AngleDecision for why a
+    // bare catch here cost 43 accounts a wrong answer in one pass.
+    const d = apiCallErrorDetail(e);
+    const detail = [d?.status_code, (e as Error)?.message ?? String(e), d?.response_body]
+      .filter(Boolean).join(' ').slice(0, 400);
+    return { choice: null, reason: 'llm_error', out_of_scope_fact_ids, error_detail: detail };
   }
 
   let parsed: {
