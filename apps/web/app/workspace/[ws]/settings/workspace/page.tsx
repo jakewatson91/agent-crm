@@ -23,6 +23,12 @@ interface Workspace {
 
 type Tab = 'about' | 'writing' | 'research' | 'thresholds';
 
+// Today links here with a URL hash naming the section it wants ("#arguments"),
+// but the section lives inside one specific tab and the page always opens on
+// "About" — so the link landed on the wrong tab with the target section not
+// even in the DOM yet. This maps the hash to the tab that holds it.
+const HASH_TAB: Record<string, Tab> = { arguments: 'writing' };
+
 interface Angle {
   id: string;
   label: string;
@@ -171,6 +177,16 @@ export default function SettingsWorkspacePage() {
     setBudget(w.budget_cents ?? 0);
   }
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [params.ws]);
+
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    if (hash && HASH_TAB[hash]) setTab(HASH_TAB[hash]);
+  }, []);
+
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    if (hash && HASH_TAB[hash] === tab) document.getElementById(hash)?.scrollIntoView({ block: 'center' });
+  }, [tab]);
 
   const composedPolicy = useMemo(() => {
     const base = (ws?.policy ?? {}) as Record<string, any>;
