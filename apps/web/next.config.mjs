@@ -1,5 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // `pnpm verify` runs a production `next build` into the same `.next` dir
+  // `next dev --turbopack` writes to, and building while dev is up corrupts
+  // dev's cache — every page starts 500ing with ENOENT on `_buildManifest.js.tmp.*`,
+  // and dev doesn't crash or log anything pointing at the cause. Hit live
+  // 2026-08-25 and again 2026-08-29 (two concurrent Claude Code sessions in
+  // this repo, one running verify while the other's dev server was up).
+  // VERIFY_BUILD=1 (set by the root `verify` script) routes the build to its
+  // own directory instead, so the two can never collide again.
+  distDir: process.env.VERIFY_BUILD === '1' ? '.next-verify' : '.next',
   typedRoutes: false,
   // The production build does not run tsc type-checking or eslint. Workspace
   // packages import siblings with explicit `./foo.ts` specifiers, which tsc

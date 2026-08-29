@@ -71,10 +71,18 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
   // their types/scores) vanished from the page and its client-side search. Page them all.
   const [policyRow, entityRows, typeFactRows, fitFactRows] = await Promise.all([
     supabase.from('workspaces').select('policy').eq('id', ws).maybeSingle(),
-    fetchAll<{ id: string; name: string; attributes: Record<string, unknown>; updated_at: string }>((from, to) =>
+    // The list view only ever reads these 6 attribute keys (EntitiesClient.tsx);
+    // `attributes` on some entities carries several KB of connector bookkeeping
+    // (ats_seen_jobs, tags, yc_url, ...) that isn't used here. Pulling the whole
+    // JSONB blob for every row inflated a 196-row page to 760KB and added real
+    // React-serialization time on top of the ~15ms the queries actually take.
+    fetchAll<{ id: string; name: string; updated_at: string; domain: string | null; company: string | null; account: string | null; title: string | null; seniority: string | null; version: string | null; pricing: string | null; price: string | null }>((from, to) =>
       supabase.from('entities')
-        .select('id, name, attributes, updated_at, archived_at')
-        .eq('workspace_id', ws).is('archived_at', null).order('name').range(from, to)),
+        .select("id, name, updated_at, archived_at, domain:attributes->domain, company:attributes->company, account:attributes->account, title:attributes->title, seniority:attributes->seniority, version:attributes->version, pricing:attributes->pricing, price:attributes->price")
+        .eq('workspace_id', ws).is('archived_at', null).order('name').range(from, to) as unknown as PromiseLike<{
+          data: Array<{ id: string; name: string; updated_at: string; domain: string | null; company: string | null; account: string | null; title: string | null; seniority: string | null; version: string | null; pricing: string | null; price: string | null }> | null;
+          error: { message: string } | null;
+        }>),
     fetchAll<{ subject_entity: string; object_text: string | null }>((from, to) =>
       supabase.from('facts').select('subject_entity, object_text')
         .eq('workspace_id', ws).eq('predicate', 'is_a').is('supersedes', null).range(from, to)),
@@ -85,7 +93,7 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
 
   const publicationBlocklist = (((policyRow.data?.policy as Record<string, unknown> | null)?.publication_blocklist) as string[] | undefined ?? []).filter(Boolean);
   const rawEntities = entityRows.filter((e) => {
-    const dom = (e.attributes?.['domain'] as string | undefined) ?? '';
+    const dom = e.domain ?? '';
     if (dom.endsWith('.example')) return false;
     if (isJunkName(e.name, dom, publicationBlocklist)) return false;
     return true;
@@ -101,8 +109,22 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
     typesByEntity.set(f.subject_entity, arr);
   }
   const entities: EntityRow[] = rawEntities.map((e) => ({
-    ...e,
+    id: e.id,
+    name: e.name,
+    updated_at: e.updated_at,
     types: typesByEntity.get(e.id) ?? [],
+    // Reconstructed from the slim per-key select above — EntitiesClient only
+    // ever reads these 6 keys off `attributes`, never the full JSONB blob.
+    attributes: {
+      domain: e.domain,
+      company: e.company,
+      account: e.account,
+      title: e.title,
+      seniority: e.seniority,
+      version: e.version,
+      pricing: e.pricing,
+      price: e.price,
+    },
   }));
 
   const accountIds = entities.filter((e) => e.types.includes('account')).map((e) => e.id);
@@ -140,14 +162,19 @@ const _getEntitiesPageData = async (ws: string): Promise<EntitiesPageData> => {
   for (const c of chans) channelToEntity.set(c.id, c.account_entity_id);
   const channelIds = [...channelToEntity.keys()];
   const CH_CHUNK = 200;
-  for (let i = 0; i < channelIds.length; i += CH_CHUNK) {
-    const chunk = channelIds.slice(i, i + CH_CHUNK);
-    const { data: posts } = await supabase
+  const chunks: string[][] = [];
+  for (let i = 0; i < channelIds.length; i += CH_CHUNK) chunks.push(channelIds.slice(i, i + CH_CHUNK));
+  // Each channel lives in exactly one chunk, so chunks touch disjoint entities —
+  // safe to fire in parallel instead of one round trip at a time. A 2000+ channel
+  // workspace was paying 11 sequential Supabase round trips here (~300ms serial).
+  const chunkResults = await Promise.all(chunks.map((chunk) =>
+    supabase
       .from('channel_posts')
       .select('channel_id, kind, created_at')
       .in('channel_id', chunk)
       .order('created_at', { ascending: false })
-      .limit(Math.max(200, chunk.length * 3));
+      .limit(Math.max(200, chunk.length * 3))));
+  for (const { data: posts } of chunkResults) {
     for (const p of (posts ?? []) as Array<{ channel_id: string; kind: string; created_at: string }>) {
       const entId = channelToEntity.get(p.channel_id);
       if (!entId || lastActivity.has(entId)) continue;
