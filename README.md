@@ -1,6 +1,7 @@
 # agent-crm
 
-Agent-first CRM. The agent is the primary user; humans intervene at exception gates only.
+Agent-first CRM. The agent is the primary user. A person is asked only to approve
+the one step that cannot be taken back: sending a message to someone outside.
 
 See:
 - `CLAUDE.md` for project context
@@ -107,7 +108,8 @@ already belong to.
 
 - `apps/web/` — Next.js 15 viewer UI
 - `packages/primitives/` — the 5 primitives (subscribe, act, gate, query, cite)
-- `packages/tools/` — 13 MCP tools, each emits one event
+- `packages/tools/` — the 33 MCP tools, each emitting one event
+- `packages/mcp-server/` — stdio bridge for Claude Code / Desktop / Cursor
 - `packages/agents/` — subscription bundles + prompts (lightweight v0 set)
 - `packages/db/` — Supabase client + generated types
 - `supabase/migrations/` — schema, triggers, RLS, replay function
