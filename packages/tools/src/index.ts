@@ -10,6 +10,8 @@ import {
   vectorLiteral,
   type Actor,
 } from '@agent-crm/primitives';
+import type { ZodTypeAny } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { TOOL_SCHEMAS, type ToolName } from './schemas.ts';
 import { listEntities, getEntity, outreachState, healthCheck, findSimilarEntities, lookupEntity, pastOutcomes, tokenSummary, fetchSeenSignalTags, type EntityStatus } from './reads.ts';
 import { findContacts, findContactsExplorium, linkContactToAccount, linkContactByProspectId, pullContactsForAccount, isRoleInboxEmail } from './contacts.ts';
@@ -17,7 +19,8 @@ import { scoreEntity, scoreAndAssert, combineSubScores, scoreContact } from './s
 import { selectAction, loadActionContext } from './action_selector.ts';
 import { graphProximity } from './graph.ts';
 import { sweepWorkspace, SWEEP_THRESHOLDS, type CheckResult, type Severity } from './sweep.ts';
-import { getPolicy, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache, stampArgumentChanges, type DrafterArgument, type WorkspacePolicy } from './policy.ts';
+import { getPolicy, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache, stampArgumentChanges, getPipelineStatus, type DrafterArgument, type WorkspacePolicy } from './policy.ts';
+import { recordActivityMarker, ACTIVITY_MARKERS } from './activity_markers.ts';
 import { ALIAS_MIN_CHARS } from './aliases.ts';
 import { stampQuestionChanges } from './research_brief.ts';
 import type { BriefQuestion } from './policy.ts';
@@ -114,7 +117,56 @@ export type ToolReturn = ToolResult | ToolError;
 const SIGNAL_DEDUP_WINDOW_MS = 30 * 86400 * 1000;
 
 /**
- * Single dispatch entrypoint for the 13 v0 tools. Each call:
+ * Fact name for a note a person wrote. Structural, not vertical — every
+ * workspace has people who know things — so it lives in code like the other
+ * shapes, not in policy.
+ *
+ * Deliberately NOT in ADMIN_PREDICATES: a note is evidence about the account,
+ * so it should raise evidence_depth and be readable by the drafter exactly like
+ * a fact research found. That is the whole point of writing it here.
+ */
+export const NOTE_PREDICATE = 'note_from_team';
+
+/** Signal type for a note, so the enricher can pull structured facts out of it. */
+export const NOTE_SIGNAL_TYPE = 'human_note';
+
+/**
+ * Capabilities this package cannot reach on its own, supplied by the caller.
+ *
+ * `research_account` has to put a `research.requested` event on the bus, and the
+ * bus lives in @agent-crm/inngest — which imports THIS package. Importing it
+ * back, even dynamically, is a cycle, and a dynamic cross-package import inside
+ * `packages/*` is the exact shape that let a broken bundle ship and fail every
+ * Render deploy for six days (see CLAUDE.md). So the direction stays one-way and
+ * the caller passes the function in instead.
+ *
+ * Everything is optional. A caller that supplies nothing keeps working exactly
+ * as before; the tools that need a capability say plainly that it is not wired
+ * here rather than failing in some other way.
+ */
+export interface ToolDeps {
+  /**
+   * Put an entity on the research queue. Resolves once the event is accepted.
+   *
+   * `tier` and `kind` are the unions the research.requested event actually
+   * declares, not `string` — the loose version typechecked inside this package
+   * and only failed at the web app, which is the stricter of the two projects
+   * that compile this file (see CLAUDE.md on why the per-package typecheck is
+   * never sufficient on its own).
+   */
+  requestResearch?: (event: {
+    workspace_id: string;
+    entity_id: string;
+    entity_name: string;
+    reason: string;
+    tier?: 'hot' | 'default' | 'cold' | 'contact';
+    angle_count?: number;
+    kind?: 'account' | 'contact';
+  }) => Promise<unknown>;
+}
+
+/**
+ * Single dispatch entrypoint for the tools. Each call:
  *   1. Validates args against the per-tool Zod schema.
  *   2. Routes to the right primitive (most go through `act` → `record_event`).
  *   3. Returns a uniform { event_id, target_id } shape so MCP / agents can chain.
@@ -125,6 +177,7 @@ export async function callTool(
   tool: ToolName,
   rawArgs: unknown,
   meta?: { prompt_hash?: string; parent_event_id?: string },
+  deps?: ToolDeps,
 ): Promise<ToolReturn> {
   const schema = TOOL_SCHEMAS[tool];
   const parse = schema.safeParse(rawArgs);
@@ -133,6 +186,202 @@ export async function callTool(
 
   try {
     switch (tool) {
+      case 'add_note': {
+        const a = args as { entity_id: string; note: string; happened_at?: string; source?: string };
+        const text = a.source ? `${a.note.trim()} (${a.source.trim()})` : a.note.trim();
+
+        // Two writes, both through existing tools so the note gets the same
+        // audit row, content-hash idempotency and cite chain as anything else.
+        //
+        // 1. The note verbatim, as a fact. This is the guarantee: a person typed
+        //    something, and it is readable by the drafter the moment the call
+        //    returns, whatever else does or does not happen afterwards.
+        const factRes = await callTool(supabase, actor, 'assert_fact', {
+          subject_entity: a.entity_id,
+          predicate: NOTE_PREDICATE,
+          object_text: text,
+          // A person stating what they know first-hand is the most reliable
+          // input the system takes. Same full value as an imported CRM field.
+          confidence: 1.0,
+          ...(a.happened_at ? { happened_at: a.happened_at } : {}),
+        }, meta);
+        if (!factRes.ok) return factRes;
+
+        // 2. The same text as a signal, so the enricher reads it and pulls
+        //    atomic facts out against the workspace's research questions, and
+        //    the score picks up the new evidence. The enricher is told not to
+        //    restate anything already in the account's active facts, so it
+        //    extracts the structure and leaves the verbatim note alone.
+        //
+        //    A failure here is not fatal. The note is already recorded above;
+        //    losing the extra extraction is worth far less than losing what the
+        //    person wrote, so the tool still reports success.
+        let signal_id: string | undefined;
+        let enrichment_error: string | undefined;
+        const sigRes = await callTool(supabase, actor, 'create_signal', {
+          entity_id: a.entity_id,
+          type: NOTE_SIGNAL_TYPE,
+          // Notes are hand-written and rare, so they are worth more than a
+          // scraped page by default and clear any subscription threshold.
+          magnitude: 0.9,
+          body_for_embedding: text,
+          structured_tags: {
+            kind: NOTE_SIGNAL_TYPE,
+            author_kind: actor.actor_kind,
+            author_id: actor.actor_id,
+            ...(a.source ? { source: a.source } : {}),
+            ...(a.happened_at ? { happened_at: a.happened_at } : {}),
+          },
+        }, meta);
+        if (sigRes.ok) signal_id = sigRes.target_id;
+        else enrichment_error = sigRes.error;
+
+        return {
+          ok: true,
+          event_id: factRes.event_id,
+          target_id: factRes.target_id,
+          data: {
+            fact_id: factRes.target_id,
+            signal_id: signal_id ?? null,
+            // True when this note can be the reason a message gets written.
+            // Undated notes are still evidence, they just cannot open one.
+            can_anchor_outreach: Boolean(a.happened_at),
+            ...(enrichment_error ? { enrichment_error } : {}),
+          },
+        };
+      }
+
+      case 'list_approvals': {
+        const a = args as { limit: number; policy?: string };
+        let q = supabase
+          .from('gates')
+          .select('id, policy, condition, requested_by_agent, requested_at, channel_post_id')
+          .eq('workspace_id', actor.workspace_id)
+          .is('decided_at', null)
+          .order('requested_at', { ascending: true })
+          .limit(a.limit);
+        if (a.policy) q = q.eq('policy', a.policy);
+        const { data, error } = await q;
+        if (error) return { ok: false, error: error.message };
+
+        // How many are ACTUALLY waiting, which is not the same as how many rows
+        // came back. `limit` pages the list; an agent asking "what needs me
+        // today" against a queue of 28 must not be told 5 because it asked for
+        // five rows. Counted separately, head-only, so it costs no payload.
+        let countQ = supabase
+          .from('gates')
+          .select('id', { count: 'exact', head: true })
+          .eq('workspace_id', actor.workspace_id)
+          .is('decided_at', null);
+        if (a.policy) countQ = countQ.eq('policy', a.policy);
+        const { count: pendingTotal } = await countQ;
+
+        const rows = (data ?? []) as Array<{
+          id: string; policy: string; condition: Record<string, unknown> | null;
+          requested_by_agent: string; requested_at: string; channel_post_id: string | null;
+        }>;
+        const now = Date.now();
+        // A token-efficient projection, not a row dump: enough for an agent to
+        // decide, without pasting a whole email body per pending item.
+        const pending = rows.map((g) => {
+          const c = (g.condition ?? {}) as Record<string, unknown>;
+          const body = typeof c.body === 'string' ? c.body : '';
+          return {
+            gate_id: g.id,
+            policy: g.policy,
+            requested_by: g.requested_by_agent,
+            waiting_days: Math.floor((now - Date.parse(g.requested_at)) / 86400000),
+            entity_id: (c.entity_id as string | undefined) ?? null,
+            account: (c.entity_name as string | undefined) ?? null,
+            channel: (c.channel_type as string | undefined) ?? null,
+            to: (c.to_email as string | undefined) ?? null,
+            subject: (c.subject as string | undefined) ?? null,
+            preview: body ? `${body.slice(0, 180)}${body.length > 180 ? '…' : ''}` : null,
+            channel_post_id: g.channel_post_id,
+          };
+        });
+        return {
+          ok: true, event_id: '', target_id: actor.workspace_id,
+          data: {
+            /** Everything waiting, whether or not it fitted in this page. */
+            pending: pendingTotal ?? pending.length,
+            /** How many are in `approvals` below. Raise `limit` to see more. */
+            returned: pending.length,
+            // The oldest thing waiting, because that is the one going stale.
+            oldest_waiting_days: pending.length ? pending[0]!.waiting_days : 0,
+            approvals: pending,
+          },
+        };
+      }
+
+      case 'research_account': {
+        const a = args as { entity_id: string; angle_count?: number; reason?: string };
+        if (!deps?.requestResearch) {
+          return { ok: false, error: 'research_account is not available here: this deployment did not wire a research dispatcher into callTool (see ToolDeps).' };
+        }
+        const ent = await supabase.from('entities')
+          .select('id, name, attributes').eq('id', a.entity_id)
+          .eq('workspace_id', actor.workspace_id).maybeSingle();
+        if (!ent.data) return { ok: false, error: `entity ${a.entity_id} not found in this workspace` };
+
+        // No domain means no own-site search and no contact pull afterwards, so
+        // a search here is spend with no possible payoff. The dispatcher applies
+        // the same rule; saying so is more useful than queueing a dead run.
+        const domain = (ent.data.attributes as { domain?: string } | null)?.domain;
+        if (!domain) {
+          return { ok: false, error: `${ent.data.name} has no resolved domain, so research would have nothing to search. The daily domain backfill resolves these on its own schedule.` };
+        }
+
+        // Don't queue work against a provider we already know is dead.
+        const status = await getPipelineStatus(supabase, actor.workspace_id);
+        if (status?.state === 'paused' && (status.scope ?? 'all') !== 'contacts') {
+          return { ok: false, error: `research is paused: ${status.reason ?? 'pipeline paused'}` };
+        }
+
+        const reason = a.reason?.trim() || `requested by ${actor.actor_kind}:${actor.actor_id}`;
+        // The health sweep reads this marker to know research was attempted;
+        // written before dispatch so a run that fails still shows it was asked for.
+        await recordActivityMarker(supabase, actor, ACTIVITY_MARKERS.RESEARCH_TRIGGERED, a.entity_id, { reason, on_demand: true });
+        await deps.requestResearch({
+          workspace_id: actor.workspace_id,
+          entity_id: a.entity_id,
+          entity_name: ent.data.name as string,
+          reason,
+          // On-demand means someone is waiting on it, so it gets the deepest
+          // tier's angle budget unless the caller asked for fewer.
+          tier: 'hot',
+          ...(a.angle_count ? { angle_count: a.angle_count } : {}),
+          kind: 'account',
+        });
+        return {
+          ok: true, event_id: '', target_id: a.entity_id,
+          data: {
+            queued: true,
+            account: ent.data.name,
+            // Say plainly that nothing is readable yet, so a caller does not
+            // immediately re-read the entity, find nothing new and conclude the
+            // call failed.
+            note: 'Searches run in the background. New facts land in a few minutes; read the entity again then.',
+          },
+        };
+      }
+
+      case 'pull_contacts': {
+        const a = args as { entity_id: string };
+        const r = await pullContactsForAccount(supabase, {
+          workspace_id: actor.workspace_id,
+          entity_id: a.entity_id,
+        });
+        // A pull that legitimately finds nobody is not a tool failure — the
+        // account simply has no reachable decision-maker at this provider, and
+        // the caller needs the reason, not an exception. Only report ok:false
+        // when the pull could not run at all.
+        return {
+          ok: true, event_id: '', target_id: a.entity_id,
+          data: { found: r.found, created: r.created, ran: r.ok, ...(r.reason ? { reason: r.reason } : {}) },
+        };
+      }
+
       case 'read_workspace_config': {
         const a = args as { section?: string };
         const data = await readWorkspaceConfig(supabase, actor.workspace_id, a.section);
@@ -563,20 +812,44 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     update_source: 'Mutate a source row (active flag, config). Caller must pass prior_state so the resulting event row is undo-ready. Used by the source curator to deactivate dead sources and rewrite queries.',
     set_entity_aliases: 'Set the other names an account is covered under, so research stops dropping articles that never use its registered name (Crazy Maple Studio is written about as "ReelShort"). Replaces the whole list, so pass every alias to keep and an empty list to clear one that was letting junk through. Each must be at least 4 characters. Pass prior_state so the event row is undo-ready.',
     read_workspace_config: 'Read what this workspace is configured to do: the arguments it makes, the questions research goes looking for, the searches behind them, the scoring bars, and which model runs each job. Omit `section` to get all of it. The research questions in particular exist nowhere else a person can see, so this is the only way to answer "what is the agent actually looking for".',
+    list_approvals: 'What is waiting on a human right now: every approval nobody has decided yet, oldest first, with the account, the channel, a preview of the message and how many days it has been sitting. Use this to answer "what needs me today" and to find the gate_id to pass to decide_gate. Sending is the one irreversible step, so this queue is the only place the pipeline stops for a person.',
+    research_account: 'Go and research one account now instead of waiting for its turn in the schedule. Queues the workspace\'s search angles against it; the searches run in the background and land as new facts a few minutes later, so read the entity again after that rather than immediately. Costs search credit. Refuses, with the reason, when the account has no resolved domain (nothing to search) or when research is paused on a dead provider. Use it when you are working one company and need current facts before writing to them.',
+    pull_contacts: 'Find decision-makers at an account through the workspace\'s configured contact provider and link them as contacts. Runs now and costs provider credit, within the workspace\'s monthly cap. Returns how many were found and how many were new. Finding nobody is a normal outcome and is reported as found:0, not an error — the account may have no reachable person at this provider. The daily pass already does this on its own schedule; call this when working one account on demand.',
+    add_note: 'Record something a person knows about an account that no search would find: what someone said on a call, at an event, in a meeting. Writes it as a fact the drafter reads, and hands it to the enricher to pull structured facts out of. Pass `happened_at` (ISO date) when the note describes something that HAPPENED on a day — that is what lets the note become the reason a message gets written. Leave it off for standing background, which still raises the account\'s score and informs the argument but cannot open a message on its own.',
     update_workspace_config: 'Change one part of that config. Pass the finished value, not an instruction. Returns what it was and what it now is, and the change undoes from its event row. Rewriting an argument drops its confirmation so it writes three messages and waits to be read; rewording a research question restarts its track record. Call read_workspace_config first — the value replaces the section outright, so an edit to one item in a list must send the whole list.',
   };
 
   return (Object.keys(TOOL_SCHEMAS) as ToolName[]).map((name) => ({
     name,
     description: DESC[name],
-    inputSchema: zodToJsonSchemaShallow(TOOL_SCHEMAS[name]),
+    inputSchema: toInputSchema(TOOL_SCHEMAS[name]),
   }));
 }
 
-// Minimal Zod -> JSON Schema converter for v0. We don't need full coverage; the tool
-// arg shapes are flat objects with primitives, records, enums, and arrays.
-function zodToJsonSchemaShallow(schema: unknown): object {
-  // The MCP SDK supports passing zod schemas directly via z.toJSONSchema in newer versions.
-  // For v0 we let MCP handle this via its own helpers in the route handler.
-  return { type: 'object', additionalProperties: true };
+/**
+ * The real Zod -> JSON Schema conversion, so an MCP client is told what each
+ * tool actually takes.
+ *
+ * What was here before returned `{type:'object', additionalProperties:true}` for
+ * every tool, on the theory that "MCP handles this via its own helpers in the
+ * route handler". Nothing does. So the catalog advertised 29 tools with no
+ * arguments at all, and a client had to guess every field name from the prose
+ * description while `callTool` rejected each wrong guess with a Zod error. That
+ * is the difference between an agent connecting to this CRM and an agent being
+ * able to use it.
+ *
+ * `$refStrategy: 'none'` matters. The default hoists shared sub-schemas into
+ * `$defs` and points at them with `$ref`, and our schemas share UuidSchema
+ * across nearly every tool. Several MCP clients do not resolve `$ref` inside a
+ * tool's inputSchema, so the shared fields would arrive as empty objects — the
+ * same failure in a subtler form. Inlining costs a few bytes per tool and is
+ * read once per session.
+ */
+function toInputSchema(schema: ZodTypeAny): object {
+  const json = zodToJsonSchema(schema, { $refStrategy: 'none', target: 'jsonSchema7' }) as Record<string, unknown>;
+  // zod-to-json-schema emits a top-level $schema key. Harmless, but it is not
+  // part of the tool's argument shape, so drop it rather than ship it to every
+  // client on every tool.
+  delete json.$schema;
+  return json;
 }

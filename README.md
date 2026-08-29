@@ -4,18 +4,67 @@ Agent-first CRM. The agent is the primary user; humans intervene at exception ga
 
 See:
 - `CLAUDE.md` for project context
-- `architecture/` for entity model and abstraction layer
+- `architecture/` for entity model and the layer above the database
 - `brainstorm/` for product thesis
-- `/Users/jakewatson/.claude/plans/happy-puzzling-pearl.md` for the v0 build plan
 
-## v0 setup
+## Setup
+
+You bring a Supabase project (the free tier is enough: Postgres, Auth and RLS in
+one) and run the web app yourself.
 
 ```bash
+# 1. Create a project at supabase.com, then copy its URL, anon key and service role key.
+
+# 2. Install and configure.
 pnpm install
-cp .env.example .env.local   # fill in Supabase, Inngest, Anthropic, OpenAI keys
-pnpm db:migrate              # run Supabase migrations
-pnpm dev                     # start Next.js + local Inngest dev server
+cp .env.example .env.local
+# Required: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
+#           SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY (embeddings).
+# Optional: INNGEST_* (background schedules), RESEND_API_KEY (email),
+#           EXA_API_KEY (web research). The app runs without them.
+# Model keys are NOT env vars — you paste those into Settings per workspace.
+
+# 3. Apply the schema, either way:
+supabase link --project-ref <ref> && supabase db push
+# or, one migration at a time:
+pnpm exec tsx scripts/apply_migration.ts supabase/migrations/0001_init.sql
+
+# 4. Run it.
+pnpm dev                     # web on localhost:3000
+# or the whole thing in containers:
+docker compose up --build    # web on :3000, Inngest dev UI on :8288
 ```
+
+Sign in with a magic link (Supabase Auth emails it). The first user to create a
+workspace owns it. Then paste in what you sell, and the system writes its own
+research questions and the searches behind them from that description.
+
+## Driving it from an agent
+
+The primary user is an agent, so everything the app does is a tool call. Issue a
+key in Settings → API keys and point any MCP client at the endpoint:
+
+```bash
+curl -H "Authorization: Bearer acrm_..." -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+     http://localhost:3000/api/mcp
+```
+
+For Claude Code, Claude Desktop or Cursor, use the stdio bridge in
+`packages/mcp-server/` — it proxies to that same endpoint, so the tool catalog
+always matches the deployment rather than a copy that drifts.
+
+Every tool publishes a full JSON Schema, so a client knows the arguments without
+guessing. Some worth knowing:
+
+| tool | what it does |
+| --- | --- |
+| `list_approvals` | what is waiting on a person right now, oldest first |
+| `add_note` | record what someone told you; with a date it can be the reason a message gets written |
+| `research_account` | go and research one company now instead of waiting its turn |
+| `pull_contacts` | find decision-makers at an account |
+| `read_workspace_config` | what this workspace is configured to look for and argue |
+| `cite` | walk a fact back to the page and prompt that produced it |
 
 ## Diagnostics (read-only CLI)
 
@@ -39,37 +88,7 @@ pnpm research:check          # the entity-research / Exa enrichment loop specifi
 pnpm hiring:run              # manually run all active ATS sources now (instant fresh data, bypasses the cron)
 ```
 
-You bring a Supabase Cloud project (free tier is enough — Postgres + Auth + RLS
-in one) and run the web app yourself.
-
-```bash
-# 1. Create a Supabase Cloud project at supabase.com — copy URL + anon key + service role key.
-# 2. Apply migrations (one of):
-#    - supabase link --project-ref <ref> && supabase db push
-#    - or: pnpm exec tsx scripts/apply_migration.ts supabase/migrations/0001_init.sql  # repeat for each
-# 3. Configure env:
-cp .env.example .env
-# Fill in NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
-# SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY at minimum.
-# Inngest and Resend are optional; the app degrades gracefully without them.
-
-# 4. Run via Docker:
-docker compose up --build
-# → web at localhost:3000, inngest dev UI at localhost:8288
-```
-
-Sign in on the home page with a magic link (Supabase Auth emails it). The
-first signed-in user creating a workspace becomes its owner. To onboard
-teammates, go to Settings → Members and invite them by email.
-
-For external agents / scripts, issue a key in Settings → API keys, then call:
-
-```bash
-curl -H "Authorization: Bearer acrm_..." \
-     -H "Content-Type: application/json" \
-     -d '{"method":"tools/list"}' \
-     http://localhost:3000/api/mcp
-```
+To onboard teammates, go to Settings → Members and invite them by email.
 
 ### Bootstrapping owners on an existing single-tenant deployment
 

@@ -34,7 +34,8 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@supabase/supabase-js": "^2.46.0",
     "openai": "^4.70.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

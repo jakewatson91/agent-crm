@@ -8,7 +8,7 @@
  */
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
-import { callTool, listToolDescriptors, TOOL_SCHEMAS, type ToolName } from '@agent-crm/tools';
+import { callTool, listToolDescriptors, TOOL_SCHEMAS, type ToolName, type ToolDeps } from '@agent-crm/tools';
 import { resolveActor } from '../_lib/resolve_api_key';
 
 export const runtime = 'nodejs';
@@ -43,7 +43,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ jsonrpc: '2.0', id: body.id, error: { code: -32602, message: 'unknown tool' } }, { status: 400 });
     }
     const supabase = createServerClient();
-    const result = await callTool(supabase, actor, name, args);
+    // Capabilities @agent-crm/tools cannot reach on its own. The event bus lives
+    // in @agent-crm/inngest, which imports tools — so tools never imports it
+    // back, and this layer (which already depends on both) passes the function
+    // down instead. Imported lazily for the same reason /api/research/run-now
+    // does it: keeps the inngest client off the module graph of every request
+    // that never touches it.
+    const deps = {
+      async requestResearch(event: Parameters<NonNullable<ToolDeps['requestResearch']>>[0]) {
+        const { inngest } = await import('@agent-crm/inngest');
+        return inngest.send({ name: 'research.requested', data: event });
+      },
+    } satisfies ToolDeps;
+    const result = await callTool(supabase, actor, name, args, undefined, deps);
     return NextResponse.json({ jsonrpc: '2.0', id: body.id, result });
   }
 

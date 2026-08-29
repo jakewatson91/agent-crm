@@ -51,10 +51,83 @@ export const AssertFactSchema = z.object({
   signal_id: UuidSchema.optional(),
   // When the thing this fact records actually happened (ISO). Omitted for the
   // majority of facts, which describe how a company stands rather than
-  // something it did. Set only by the enricher, which is the only stage that
-  // reads the page. Same idempotency as signal_id: on a content-hash dedup the
-  // date the fact first carried is kept.
+  // something it did. Written by the enricher, which is the only stage that
+  // reads the page, and by add_note when a person says when something happened.
+  // Same idempotency as signal_id: on a content-hash dedup the date the fact
+  // first carried is kept.
   happened_at: z.string().optional(),
+});
+
+/**
+ * What a person knows that no search can buy.
+ *
+ * Everything else in this system learns about a company by reading a page. The
+ * one input that beats every search is the founder saying "I met their VP Eng
+ * at the conference, they are re-tendering their CDN in Q1" — first-hand, not
+ * published anywhere, and the strongest reason to write to that account this
+ * month.
+ *
+ * `happened_at` is the field that matters. A message needs a dated event to
+ * open on, so a note WITH a date can become the reason we write, and a note
+ * without one is background that raises the score and informs the argument.
+ * Both are useful; only the first can anchor a message.
+ */
+export const AddNoteSchema = z.object({
+  entity_id: UuidSchema,
+  /** What the person knows, in their own words. */
+  note: z.string().min(1),
+  /** When the thing described happened (ISO). Omit for standing background. */
+  happened_at: z.string().optional(),
+  /** Where it came from: "call with their VP Eng", "NAB", "intro from Dave". */
+  source: z.string().optional(),
+});
+
+/**
+ * What is waiting on a person right now.
+ *
+ * An outside agent could approve or reject a pending decision (decide_gate) but
+ * had no way to find out one existed, so "what needs me today" was unanswerable
+ * without opening the web app. health_check returns a count, which tells you
+ * something is stuck and nothing about what.
+ */
+export const ListApprovalsSchema = z.object({
+  /** Cap the rows returned. */
+  limit: z.number().int().positive().max(200).default(50),
+  /** Only approvals of this kind, e.g. 'outreach_send'. Omit for all. */
+  policy: z.string().optional(),
+});
+
+/**
+ * Go and find decision-makers at an account, now, through whichever contact
+ * provider the workspace configured.
+ *
+ * Synchronous and metered: it spends provider credit and respects the
+ * workspace's monthly cap. The daily pass already does this on its own
+ * schedule; this is for an agent working one account on demand.
+ */
+export const PullContactsSchema = z.object({
+  entity_id: UuidSchema,
+});
+
+/**
+ * Go and research one account now, instead of waiting for its turn.
+ *
+ * The dispatcher already picks accounts on a cadence set by score, so this is
+ * for the case the cadence cannot serve: an agent working one company and
+ * wanting current facts about it before it writes.
+ *
+ * Asynchronous by nature. It queues the work and returns; the searches run in
+ * the background and land as facts a few minutes later. Costs search credit.
+ */
+export const ResearchAccountSchema = z.object({
+  entity_id: UuidSchema,
+  /**
+   * How many of the workspace's search angles to run. Each one is a paid
+   * search. Omit to let the workspace's own tier budget decide.
+   */
+  angle_count: z.number().int().positive().max(10).optional(),
+  /** Why this is being researched now — recorded on the run for the audit. */
+  reason: z.string().optional(),
 });
 
 export const SupersedeFactSchema = AssertFactSchema.extend({
@@ -273,6 +346,10 @@ export const TOOL_SCHEMAS = {
   set_entity_aliases: SetEntityAliasesSchema,
   read_workspace_config: ReadWorkspaceConfigSchema,
   update_workspace_config: UpdateWorkspaceConfigSchema,
+  add_note: AddNoteSchema,
+  list_approvals: ListApprovalsSchema,
+  pull_contacts: PullContactsSchema,
+  research_account: ResearchAccountSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;
