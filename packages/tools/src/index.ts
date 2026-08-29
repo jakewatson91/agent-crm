@@ -188,6 +188,12 @@ export async function callTool(
     switch (tool) {
       case 'add_note': {
         const a = args as { entity_id: string; note: string; happened_at?: string; source?: string };
+        // Scope check before any write. Without it a caller holding one
+        // workspace's key could file a note against another workspace's entity
+        // by id, and the fact would read as native to that account.
+        const noteEnt = await supabase.from('entities')
+          .select('id').eq('id', a.entity_id).eq('workspace_id', actor.workspace_id).maybeSingle();
+        if (!noteEnt.data) return { ok: false, error: `entity ${a.entity_id} not found in this workspace` };
         const text = a.source ? `${a.note.trim()} (${a.source.trim()})` : a.note.trim();
 
         // Two writes, both through existing tools so the note gets the same

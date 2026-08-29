@@ -119,6 +119,26 @@ async function main() {
   const bad = await mcp(ws.id, 'add_note', { entity_id: ent.id }).catch(() => null);
   check('a note with no text is rejected', bad === null || bad.ok === false);
 
+  // A note aimed at an entity in a DIFFERENT workspace must not land. Without
+  // this the fact would be written against that account and read as native to
+  // it, with no sign it came from outside.
+  const { data: other } = await sb.from('facts')
+    .select('subject_entity, workspace_id')
+    .eq('predicate', 'is_a').eq('object_text', 'account')
+    .neq('workspace_id', ws.id).is('supersedes', null).limit(1).maybeSingle();
+  if (other) {
+    const cross = await mcp(ws.id, 'add_note', { entity_id: other.subject_entity, note: 'should never land' });
+    check('a note aimed at another workspace is refused',
+      cross.ok === false && /not found in this workspace/.test(cross.error ?? ''),
+      String(cross.error).slice(0, 60));
+    const { count } = await sb.from('facts')
+      .select('id', { count: 'exact', head: true })
+      .eq('subject_entity', other.subject_entity).eq('object_text', 'should never land');
+    check('and nothing was written', (count ?? 0) === 0);
+  } else {
+    console.log('  SKIP  only one workspace present; cannot test the cross-workspace guard');
+  }
+
   console.log('\ncleanup:');
   const { error: df } = await sb.from('facts').delete().in('id', [r1.data.fact_id, r2.data.fact_id]);
   const ids = [r1.data.signal_id, r2.data.signal_id].filter(Boolean);

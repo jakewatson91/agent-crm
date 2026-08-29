@@ -14,6 +14,7 @@ import type { ScoreWeights } from '@agent-crm/tools';
 import { FAMILY_LABEL, predicateLabel, groupVisibleFacts, buildScoreCard } from '../../../../_lib/facts_view';
 import { ScoreTimeline } from './ScoreTimeline';
 import { AttributeGrid } from './AttributeGrid';
+import { NoteBox } from './NoteBox';
 import { RelationshipGraph } from './RelationshipGraph';
 import { useSetPageContext, type PageContext } from '../../../../_components/PageContext';
 
@@ -126,6 +127,10 @@ export function EntityDetail({
   // for other kinds (no channel exists).
   const [thinFacts, setThinFacts] = useState<Record<string, Fact[]> | null>(null);
 
+  // Bumped after a note is saved, so the fact lists below reload and the person
+  // sees what they just wrote instead of wondering whether it took.
+  const [factsVersion, setFactsVersion] = useState(0);
+
   const pageCtx = useMemo<PageContext>(() => ({
     tab: 'entity_detail',
     summary: `viewing entity ${entityName} (${entityKind})`,
@@ -144,7 +149,7 @@ export function EntityDetail({
       .then((r) => r.json())
       .then((j) => setData(j))
       .finally(() => setLoading(false));
-  }, [channelId]);
+  }, [channelId, factsVersion]);
 
   // The graph is the headline of this page, so load it on mount (not gated
   // behind the collapse). Reset + refetch when navigating between entities.
@@ -168,7 +173,7 @@ export function EntityDetail({
       .then((r) => (r.ok ? r.json() : { grouped: {} }))
       .then((j) => setThinFacts(j.grouped ?? {}))
       .catch(() => setThinFacts({}));
-  }, [entityId, channelId]);
+  }, [entityId, channelId, factsVersion]);
 
   useEffect(() => {
     if (!auditOpen || timeline || !channelId) return;
@@ -260,6 +265,12 @@ export function EntityDetail({
       )}
 
       <AttributeGrid attributes={entityAttributes} />
+
+      <NoteBox
+        entityId={entityId}
+        entityName={entityName}
+        onSaved={() => setFactsVersion((v) => v + 1)}
+      />
 
       {score !== null && (
         <div className="card" style={{ marginTop: '1rem', padding: '.8rem .9rem' }}>
