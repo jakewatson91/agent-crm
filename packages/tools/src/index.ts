@@ -46,6 +46,9 @@ export { sendOwnerAlert, resolveOwnerEmail, notifyPipelinePaused, type AlertResu
 export { UNPROVEN_ARGUMENT_DRAFT_LIMIT, stampArgumentChanges } from './policy.ts';
 export { readWorkspaceConfig, stageConfigChange, CONFIG_SECTIONS, isConfigSection, type ConfigSection, type ConfigRead, type ConfigChange } from './workspace_config.ts';
 export type { DrafterArgument } from './policy.ts';
+export { loadArgumentRecords, worthProposing, whyQuestioned, renderOutcomeBlock, MIN_WRONG_REASON, MIN_EDITS, type ArgumentRecord, type ArgumentOutcome } from './argument_review.ts';
+export { DRAFT_VERDICTS, DRAFT_VERDICT_LABEL, DRAFT_VERDICT_HELP, isDraftVerdict, type DraftVerdict } from './draft_verdict.ts';
+export { ARGUMENTS_PROMPT, sanitizeArguments } from './derive_arguments.ts';
 export type { WorkspacePolicy, OutreachPolicy, EnrichmentPolicy, DrafterPolicy, HiringFilterPolicy, ResearchPolicy, ResearchAngle, BriefQuestion, QualificationPolicy, PipelineStatus, ModelBehavior } from './policy.ts';
 export { cronToMinIntervalMinutes } from './cron.ts';
 export { compress, estimateTokens, type CompressOptions, type CompressResult, type UrlRef } from './compress.ts';
@@ -144,6 +147,39 @@ export const NOTE_SIGNAL_TYPE = 'human_note';
  * as before; the tools that need a capability say plainly that it is not wired
  * here rather than failing in some other way.
  */
+/**
+ * Turn a drafter skip code into the thing that would fix it.
+ *
+ * These codes are computed on every nightly run and then discarded, so "why did
+ * this account get nothing" has never had an answer outside the channel log.
+ * The on-demand path is where a person is actually waiting for one.
+ */
+function draftBlockerHint(reason: string, name: string): string {
+  switch (reason) {
+    case 'no_writable_anchor':
+      return `Every fresh thing known about ${name} is a subject this workspace never writes about. Research it again, or add what you know with add_note and a date.`;
+    case 'precondition_unmet':
+      return `Nothing on record shows the argument's "only if" is true of ${name}. Add the fact with add_note if you know it, or pick a different argument.`;
+    case 'no_evidence':
+      return `The argument fits, but no fact shows its event happened at ${name}. Research it, or add the event with add_note and a date.`;
+    case 'no_problem_fits':
+      return `None of this workspace's arguments reach ${name} on what is known so far.`;
+    case 'all_facts_out_of_scope':
+      return `Everything known about ${name} is about a part of their business this workspace cannot serve.`;
+    case 'facts_insufficient_for_draft':
+      return `Not enough known about ${name} to write anything true. Research it first.`;
+    case 'forced_argument_missing':
+      return 'That argument is not configured or not enabled on this workspace.';
+    case 'argument_unproven':
+      return 'That argument has written its trial messages and is waiting on a human to say they made sense.';
+    case 'no_suitable_recipient':
+    case 'no_matching_contact_role':
+      return `No contact at ${name} to write to. Pull contacts for them first.`;
+    default:
+      return '';
+  }
+}
+
 export interface ToolDeps {
   /**
    * Put an entity on the research queue. Resolves once the event is accepted.
@@ -163,6 +199,19 @@ export interface ToolDeps {
     angle_count?: number;
     kind?: 'account' | 'contact';
   }) => Promise<unknown>;
+  /**
+   * Run the drafter over one account now. Resolves with what happened, because
+   * unlike research this is one call and the caller is waiting on the answer.
+   *
+   * Injected rather than imported: the drafter lives in the inngest project and
+   * this package is upstream of it.
+   */
+  requestDraft?: (event: {
+    workspace_id: string;
+    entity_id: string;
+    reason: string;
+    force_argument_id?: string;
+  }) => Promise<{ ok: boolean; action?: string; reason?: string; channel_post_id?: string; gate_id?: string }>;
 }
 
 /**
@@ -320,6 +369,56 @@ export async function callTool(
         };
       }
 
+      case 'draft_account': {
+        const a = args as { entity_id: string; argument_id?: string; reason?: string };
+        if (!deps?.requestDraft) {
+          return { ok: false, error: 'draft_account is not available here: this deployment did not wire a drafter into callTool (see ToolDeps).' };
+        }
+        const ent = await supabase.from('entities')
+          .select('id, name').eq('id', a.entity_id)
+          .eq('workspace_id', actor.workspace_id).maybeSingle();
+        if (!ent.data) return { ok: false, error: `entity ${a.entity_id} not found in this workspace` };
+        const name = ent.data.name as string;
+
+        // Naming an argument that is not configured is a typo, not a request to
+        // let the picker choose. Answer it here, with the list, rather than
+        // spending a model call to arrive at the same place.
+        const policy = await getPolicy(supabase, actor.workspace_id);
+        const configured = (policy.drafter?.arguments ?? []).filter((x) => x?.id && x.enabled !== false);
+        if (a.argument_id && !configured.some((x) => x.id === a.argument_id)) {
+          return {
+            ok: false,
+            error: `no enabled argument called "${a.argument_id}". This workspace has: ${configured.map((x) => x.id).join(', ') || '(none)'}`,
+          };
+        }
+
+        const status = await getPipelineStatus(supabase, actor.workspace_id);
+        if (status?.state === 'paused' && (status.scope ?? 'all') === 'all') {
+          return { ok: false, error: `drafting is paused: ${status.reason ?? 'pipeline paused'}` };
+        }
+
+        const reason = a.reason?.trim() || `requested by ${actor.actor_kind}:${actor.actor_id}`;
+        const r = await deps.requestDraft({
+          workspace_id: actor.workspace_id,
+          entity_id: a.entity_id,
+          reason,
+          ...(a.argument_id ? { force_argument_id: a.argument_id } : {}),
+        });
+
+        // A refusal is the useful half of this tool. The nightly pass computes
+        // exactly these reasons and then swallows them, which is why "why did
+        // nothing get written for this account" was only answerable by reading
+        // the channel. Say it, and say what would fix it.
+        if (!r.ok || r.action !== 'post_touch_draft') {
+          const why = r.reason ?? r.action ?? 'unknown';
+          return { ok: false, error: `${name}: ${why}. ${draftBlockerHint(why, name)}` };
+        }
+        return {
+          ok: true, event_id: '', target_id: a.entity_id,
+          data: { drafted: true, account: name, channel_post_id: r.channel_post_id, gate_id: r.gate_id,
+                  note: 'The draft is waiting for approval. Nothing is sent until a human approves it.' },
+        };
+      }
       case 'research_account': {
         const a = args as { entity_id: string; angle_count?: number; reason?: string };
         if (!deps?.requestResearch) {
@@ -821,6 +920,7 @@ export function listToolDescriptors(): Array<{ name: string; description: string
     list_approvals: 'What is waiting on a human right now: every approval nobody has decided yet, oldest first, with the account, the channel, a preview of the message and how many days it has been sitting. Use this to answer "what needs me today" and to find the gate_id to pass to decide_gate. Sending is the one irreversible step, so this queue is the only place the pipeline stops for a person.',
     research_account: 'Go and research one account now instead of waiting for its turn in the schedule. Queues the workspace\'s search angles against it; the searches run in the background and land as new facts a few minutes later, so read the entity again after that rather than immediately. Costs search credit. Refuses, with the reason, when the account has no resolved domain (nothing to search) or when research is paused on a dead provider. Use it when you are working one company and need current facts before writing to them.',
     pull_contacts: 'Find decision-makers at an account through the workspace\'s configured contact provider and link them as contacts. Runs now and costs provider credit, within the workspace\'s monthly cap. Returns how many were found and how many were new. Finding nobody is a normal outcome and is reported as found:0, not an error — the account may have no reachable person at this provider. The daily pass already does this on its own schedule; call this when working one account on demand.',
+    draft_account: 'Write an outbound draft for one account right now, instead of waiting for the nightly pass. Pass `argument_id` to choose which argument it makes; omit it to let the picker choose as it normally would. Choosing an argument does not force it through: the account still has to have a fact showing the event happened and, where the argument states a precondition, a fact showing that holds, otherwise this refuses and says which one is missing. The draft always opens an approval; nothing is sent by this call.',
     add_note: 'Record something a person knows about an account that no search would find: what someone said on a call, at an event, in a meeting. Writes it as a fact the drafter reads, and hands it to the enricher to pull structured facts out of. Pass `happened_at` (ISO date) when the note describes something that HAPPENED on a day — that is what lets the note become the reason a message gets written. Leave it off for standing background, which still raises the account\'s score and informs the argument but cannot open a message on its own.',
     update_workspace_config: 'Change one part of that config. Pass the finished value, not an instruction. Returns what it was and what it now is, and the change undoes from its event row. Rewriting an argument drops its confirmation so it writes three messages and waits to be read; rewording a research question restarts its track record. Call read_workspace_config first — the value replaces the section outright, so an edit to one item in a list must send the whole list.',
   };

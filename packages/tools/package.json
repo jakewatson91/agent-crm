@@ -24,7 +24,9 @@
     "./prompt_builders": "./src/prompt_builders.ts",
     "./chat_workspace": "./src/chat_workspace.ts",
     "./icp_embeddings": "./src/icp_embeddings.ts",
-    "./score_explain": "./src/score_explain.ts"
+    "./score_explain": "./src/score_explain.ts",
+    "./draft_verdict": "./src/draft_verdict.ts",
+    "./derive_arguments": "./src/derive_arguments.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

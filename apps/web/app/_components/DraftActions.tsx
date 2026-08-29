@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { RichTextEditor } from './RichTextEditor';
+// Subpath import on purpose: the tools barrel reaches policy.ts and node:crypto,
+// which webpack cannot resolve in a browser bundle. See CLAUDE.md.
+import { DRAFT_VERDICTS, DRAFT_VERDICT_LABEL, DRAFT_VERDICT_HELP, type DraftVerdict } from '@agent-crm/tools/draft_verdict';
 
 // Escape plain text and turn newlines into <br> so the draft seeds the rich
 // editor as readable HTML (the drafter emits plain text; formatting is the
@@ -54,6 +57,7 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
   const [editedSubject, setEditedSubject] = useState('');
   const [editedHtml, setEditedHtml] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [verdict, setVerdict] = useState<DraftVerdict | null>(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +109,7 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
     </button>
   );
 
-  async function decide(decision: 'approve' | 'reject', overrides?: { edited_subject?: string; edited_html?: string; reason?: string }) {
+  async function decide(decision: 'approve' | 'reject', overrides?: { edited_subject?: string; edited_html?: string; reason?: string; verdict?: DraftVerdict }) {
     if (!gate) return;
     setBusy(true); setError(null);
     try {
@@ -192,7 +196,7 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
             {busy ? 'sending…' : 'send edited'}
           </button>
           <button
-            onClick={() => setMode('idle')}
+            onClick={() => { setVerdict(null); setMode('idle'); }}
             disabled={busy}
             style={{ ...PILL_BASE, background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--border)' }}
           >
@@ -207,22 +211,43 @@ export function DraftActions({ postId, workspaceId, initialGate, onDecided }: Pr
   if (mode === 'rejecting') {
     return (
       <div style={{ marginTop: '.5rem', padding: '.6rem .75rem', background: 'var(--panel-2)', borderRadius: 4 }}>
+        <div style={{ fontSize: '.8rem', fontWeight: 600, color: 'var(--text)', marginBottom: '.4rem' }}>
+          What was wrong with it?
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.3rem', marginBottom: '.5rem' }}>
+          {DRAFT_VERDICTS.map((v) => (
+            <button
+              key={v}
+              onClick={() => setVerdict(v)}
+              style={{
+                textAlign: 'left', padding: '.35rem .55rem', cursor: 'pointer', borderRadius: 5,
+                border: `1px solid ${verdict === v ? 'var(--accent-coral)' : 'var(--border)'}`,
+                background: verdict === v ? 'var(--accent-coral-soft, var(--panel))' : 'var(--panel)',
+                color: 'var(--text)',
+              }}
+            >
+              <div style={{ fontSize: '.8rem', fontWeight: 600 }}>{DRAFT_VERDICT_LABEL[v]}</div>
+              <div style={{ fontSize: '.7rem', color: 'var(--text-3)' }}>{DRAFT_VERDICT_HELP[v]}</div>
+            </button>
+          ))}
+        </div>
         <input
           value={rejectReason}
           onChange={(e) => setRejectReason(e.target.value)}
-          placeholder="reason (optional)"
+          placeholder="anything else worth saying (optional)"
           style={{ width: '100%', padding: '.4rem .55rem', fontSize: '.85rem', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginBottom: '.4rem' }}
         />
         <div style={{ display: 'flex', gap: '.5rem' }}>
           <button
-            onClick={() => decide('reject', { reason: rejectReason })}
-            disabled={busy}
-            style={{ ...PILL_BASE, background: 'var(--accent-coral)', color: '#fff', opacity: busy ? 0.4 : 1 }}
+            onClick={() => decide('reject', { reason: rejectReason, ...(verdict ? { verdict } : {}) })}
+            disabled={busy || !verdict}
+            title={verdict ? undefined : 'Pick what was wrong first'}
+            style={{ ...PILL_BASE, background: 'var(--accent-coral)', color: '#fff', opacity: (busy || !verdict) ? 0.4 : 1, cursor: verdict ? 'pointer' : 'not-allowed' }}
           >
             {busy ? '…' : 'confirm reject'}
           </button>
           <button
-            onClick={() => setMode('idle')}
+            onClick={() => { setVerdict(null); setMode('idle'); }}
             disabled={busy}
             style={{ ...PILL_BASE, background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--border)' }}
           >

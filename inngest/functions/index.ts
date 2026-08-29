@@ -14,3 +14,13 @@ export { sourceCurator } from './source_curator.ts';
 export { subscriptionDriftLearner } from './subscription_drift.ts';
 export { healthSweepCron } from './health_sweep.ts';
 export { dailyDigestCron } from './daily_digest.ts';
+
+/**
+ * The drafter itself, for callers that need one account drafted synchronously
+ * rather than on the nightly pass. The web app's `draft_account` tool wires
+ * this in as ToolDeps.requestDraft; everything else should keep going through
+ * the scheduled functions above.
+ */
+export { argumentProposalsCron, runArgumentProposals } from './argument_proposals.ts';
+export { runAgent } from './agent_logic.ts';
+export { pickTriggerFactId } from './advance_accounts.ts';

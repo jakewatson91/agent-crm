@@ -50,6 +50,7 @@ export type AngleSkipReason =
   | 'no_problem_fits'     // ran fine, and said none of the problems reach this account
   | 'no_evidence'         // picked a problem but could not point at a fact showing it
   | 'precondition_unmet'  // the argument fits, but nothing shows its only_if is true here
+  | 'forced_argument_missing' // a person named an argument that is not configured or not enabled
   | 'all_facts_out_of_scope'; // it has facts, and every one is about a part we cannot serve
 
 export interface AngleDecision {
@@ -119,6 +120,21 @@ export interface PickDraftAngleArgs {
   facts: Array<{ id?: string; predicate: string; object_text: string | null }>;
   /** policy.drafter.pain_points — the menu the drafter already renders. */
   pain_points: string[];
+  /**
+   * Use THIS argument and no other, when a person asked for one by name.
+   *
+   * It narrows the menu to one entry. It does not weaken anything: the model
+   * still has to point at a fact showing the event happened and, where the
+   * argument states one, a second fact showing the precondition holds, and the
+   * code below still refuses the pick when it cannot. Forcing an argument onto
+   * an account it does not fit is how you tell a company something false about
+   * itself, so the honest answer there is `precondition_unmet`, not a message.
+   *
+   * An id that matches nothing enabled comes back as `forced_argument_missing`
+   * rather than silently falling back to the full menu, because a person who
+   * named an argument did not ask for whichever one the model prefers.
+   */
+  force_argument_id?: string;
   /**
    * policy.drafter.arguments. When any are configured they REPLACE pain_points
    * as the menu, in the same call, at no extra cost.
@@ -318,7 +334,14 @@ export async function pickDraftAngle(
   // its own sake: a pain point cannot say which event makes it live or what to
   // ask for, so where both exist the argument is strictly the more complete
   // statement of the same thing.
-  const argued = (args.arguments ?? []).filter((a) => a?.id && a.enabled !== false && a.when?.trim() && a.so?.trim() && a.ask?.trim());
+  let argued = (args.arguments ?? []).filter((a) => a?.id && a.enabled !== false && a.when?.trim() && a.so?.trim() && a.ask?.trim());
+  // A named argument narrows the menu to one. Everything downstream is unchanged,
+  // which is the point: the evidence checks run exactly as they would have.
+  if (args.force_argument_id) {
+    const forced = argued.filter((a) => a.id === args.force_argument_id);
+    if (!forced.length) return { choice: null, reason: 'forced_argument_missing', out_of_scope_fact_ids: [] };
+    argued = forced;
+  }
   // ONE argument is a real choice — the question is whether it fires here at all,
   // and "no" is a useful answer. One PROBLEM is not a choice, and zero of either
   // is nothing to render, in which case the old path is already correct and the

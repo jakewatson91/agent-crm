@@ -136,6 +136,13 @@ export type Events = {
       workspace_id?: string;
     };
   };
+  /** Kick the weekly argument review without waiting for Monday. */
+  'argument_proposals.requested': {
+    data: {
+      reason?: string;
+      workspace_id?: string;
+    };
+  };
 };
 
 export const inngest = new Inngest({

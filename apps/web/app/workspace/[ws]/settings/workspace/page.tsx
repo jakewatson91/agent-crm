@@ -417,8 +417,8 @@ export default function SettingsWorkspacePage() {
             </div>
           </HelpRow>
 
-          <HelpRow id="arguments" label="Your arguments" help="Why someone should act, as opposed to the pieces a message is built from. Each one is a chain: when this happens at their company, and this other thing is true of them, here's what it costs them, so change this. Without one the agent works the connection out itself on every message, and it will reach the most obvious conclusion every time, which is usually the wrong one. Guessed from your About text when the workspace is created, and yours to rewrite.">
-            <ArgumentsEditor values={drafterArguments} onChange={setDrafterArguments} />
+          <HelpRow id="arguments" label="Your arguments" help="The reason a message gets sent at all. Each one reads as a sentence: when this happens at their company, and this is also true of them, here is what it costs them, so do this. Without one the agent invents a reason on every message and lands on the obvious one, which is usually wrong. These were guessed from your About text when the workspace was created. Rewrite them.">
+            <ArgumentsEditor values={drafterArguments} onChange={setDrafterArguments} workspaceId={ws.id} />
           </HelpRow>
 
           <HelpRow label="Never sell to" help="Accounts matching any of these are dropped entirely, whatever their fit score. Write one plain sentence each, checkable against facts about a company: 'They resell what we sell instead of buying it.' Leave empty unless you have a real limit — this deletes prospects, it doesn't rank them down. Re-derived from About whenever you edit About.">

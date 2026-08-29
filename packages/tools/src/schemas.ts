@@ -130,6 +130,36 @@ export const ResearchAccountSchema = z.object({
   reason: z.string().optional(),
 });
 
+/**
+ * Draft one account now, instead of waiting for the nightly pass.
+ *
+ * The sibling of ResearchAccountSchema, and for the same case: a person or an
+ * agent working one company who does not want to wait for the cadence. Two
+ * things it deliberately does NOT do.
+ *
+ * It does not skip the checks the nightly pass runs. It reports them. "No fresh
+ * event to open on" is the honest answer to a draft request against an account
+ * with nothing to say, and it is far more useful than a message improvised out
+ * of the company description, which is the failure that produced 26 drafts
+ * making the same wrong offer.
+ *
+ * And `argument_id` chooses WHICH argument, never whether it is allowed. The
+ * picker still has to point at a fact showing the event happened and, where the
+ * argument states a precondition, a second fact showing it holds. Forcing an
+ * argument past that would tell a company something false about itself, which
+ * is the exact thing the precondition exists to stop.
+ */
+export const DraftAccountSchema = z.object({
+  entity_id: UuidSchema,
+  /**
+   * Use this argument rather than letting the picker choose. Omit to let it
+   * pick, which is what the nightly pass does.
+   */
+  argument_id: z.string().min(1).optional(),
+  /** Why this is being drafted now. Recorded on the run for the audit. */
+  reason: z.string().optional(),
+});
+
 export const SupersedeFactSchema = AssertFactSchema.extend({
   supersedes: UuidSchema,
 });
@@ -350,6 +380,7 @@ export const TOOL_SCHEMAS = {
   list_approvals: ListApprovalsSchema,
   pull_contacts: PullContactsSchema,
   research_account: ResearchAccountSchema,
+  draft_account: DraftAccountSchema,
 } as const;
 
 export type ToolName = keyof typeof TOOL_SCHEMAS;

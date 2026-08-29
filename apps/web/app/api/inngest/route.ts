@@ -44,6 +44,7 @@ function getHandlers(): Promise<ServeReturn> {
         fns.subscriptionDriftLearner,
         fns.healthSweepCron,
         fns.dailyDigestCron,
+        fns.argumentProposalsCron,
       ],
     });
   })();

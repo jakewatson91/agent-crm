@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { createServerClient } from '@agent-crm/db';
 import { callTool, getPolicy, setOutreachStage, diffDraftBody } from '@agent-crm/tools';
+import { isDraftVerdict, type DraftVerdict } from '@agent-crm/tools/draft_verdict';
 import { sendEmail } from '../../_lib/send_email';
 import { sanitizeEmailHtml, htmlToPlainText } from '../../_lib/html_email';
 import { getUser } from '../../../_lib/auth';
@@ -19,6 +20,13 @@ interface DecideReq {
   edited_body?: string;
   edited_html?: string;
   reason?: string;
+  /**
+   * What KIND of wrong a rejection was. One click, and the only thing that
+   * makes a rejection readable by anything other than a person: the free-text
+   * notes on this workspace read "this is terrible", which cannot be told apart
+   * from a craft complaint. Ignored on approve.
+   */
+  verdict?: DraftVerdict;
 }
 
 export async function POST(req: Request) {
@@ -66,8 +74,12 @@ export async function POST(req: Request) {
   // on an edited approval, what actually changed. Persisted on the gate and
   // surfaced to future drafts on similar accounts via pastOutcomes.
   const note = body.reason?.trim() || undefined;
+  // Only meaningful on a rejection. An approval that carries one is a UI bug,
+  // and storing it would put "wrong_reason" next to a message that got sent.
+  const verdict = body.decision === 'reject' && isDraftVerdict(body.verdict) ? body.verdict : undefined;
   let resolution: Record<string, unknown> = {
     ...(note ? { note } : {}),
+    ...(verdict ? { verdict } : {}),
     // Readable alongside gates.decided_by, which stores only the uuid.
     ...(user?.email ? { decided_by_email: user.email } : {}),
   };

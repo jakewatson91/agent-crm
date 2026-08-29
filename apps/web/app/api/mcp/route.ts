@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { callTool, listToolDescriptors, TOOL_SCHEMAS, type ToolName, type ToolDeps } from '@agent-crm/tools';
 import { resolveActor } from '../_lib/resolve_api_key';
+import { makeRequestDraft } from '../../_lib/request_draft';
 
 export const runtime = 'nodejs';
 
@@ -54,6 +55,7 @@ export async function POST(req: Request) {
         const { inngest } = await import('@agent-crm/inngest');
         return inngest.send({ name: 'research.requested', data: event });
       },
+      requestDraft: makeRequestDraft(supabase),
     } satisfies ToolDeps;
     const result = await callTool(supabase, actor, name, args, undefined, deps);
     return NextResponse.json({ jsonrpc: '2.0', id: body.id, result });

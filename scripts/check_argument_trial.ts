@@ -115,8 +115,21 @@ console.log('\nThe drafter actually uses the stamp, and does not count rejection
     src.includes("q.gte('created_at', angle.argument.words_changed_at)"),
     'without the cutoff, editing an argument writes nothing at all');
   ok('rejected messages are subtracted from the trial count',
-    src.includes(".eq('decision', 'reject')") && src.includes('posts.length - rejected'),
+    src.includes("d.decision === 'reject') rejected++") && src.includes('posts.length - rejected'),
     'rejecting all three otherwise leaves the argument stuck at three forever');
+  // The confirmation itself. Approving the trial messages is the human looking,
+  // and it happens in the queue on better evidence than the settings screen can
+  // show. Before this, three approvals still left the argument blocked: measured
+  // at 103 refusals across 28 accounts over seven days on the live workspace.
+  ok('enough approvals confirm the argument on their own',
+    src.includes('approved >= UNPROVEN_ARGUMENT_DRAFT_LIMIT'),
+    'without it, approving every trial message still leaves the book blocked on a checkbox');
+  ok('an edited-then-sent message counts as an approval',
+    src.includes("d.decision === 'approve' || d.decision === 'modify'"),
+    'editing a draft before sending it is still sending it, and the argument is what is being judged');
+  ok('the confirmation is written through the audited config path',
+    src.includes("'update_workspace_config'") && src.includes('proven_at'),
+    'a raw policy write would skip the undo and the audit trail a person gets');
 }
 
 console.log(fail ? `\n${fail} FAILED\n` : '\nAll argument-trial assertions pass.\n');

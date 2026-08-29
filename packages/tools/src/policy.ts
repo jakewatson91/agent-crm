@@ -221,6 +221,26 @@ export interface DrafterArgument {
   words_changed_at?: string;
   /** Default true. */
   enabled?: boolean;
+  /**
+   * A rewrite the weekly job is suggesting, waiting for a person to accept or
+   * ignore. Not the argument: nothing reads this when drafting.
+   *
+   * Kept on the argument rather than in its own table so it travels with the
+   * thing it is about, and so accepting it is an ordinary config write. It is
+   * deliberately absent from ARGUMENT_WORDING, so a proposal arriving does not
+   * itself count as an edit and does not restart the trial. Accepting one does,
+   * because then the words really did change, and that is the safety net: an
+   * accepted rewrite writes three messages and stops before it reaches the book.
+   */
+  proposal?: {
+    when: string;
+    only_if?: string;
+    so: string;
+    ask: string;
+    /** What in the record prompted it, in plain words, for the person deciding. */
+    why: string;
+    proposed_at: string;
+  };
 }
 
 /**

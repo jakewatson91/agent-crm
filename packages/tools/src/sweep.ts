@@ -15,6 +15,7 @@ import { ADMIN_PREDICATES } from './scoring.ts';
 import { getPolicy } from './policy.ts';
 import { uncoveredQuestions } from './research_strategy.ts';
 import { resolveBrief } from './research_brief.ts';
+import { loadArgumentRecords, whyQuestioned, MIN_WRONG_REASON } from './argument_review.ts';
 
 export type Severity = 'red' | 'yellow' | 'green';
 export type CheckResult = {
@@ -720,6 +721,33 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     }
   } catch (e) {
     console.error('question coverage check failed:', (e as Error)?.message ?? e);
+  }
+
+  // An argument that keeps getting rejected as the WRONG REASON is the most
+  // expensive thing on this list, because it is not one bad message, it is every
+  // message the workspace will send until someone changes the words. The weekly
+  // review proposes a rewrite, but a week is a long time to keep making an
+  // argument a person has already said no to three times.
+  try {
+    const argPolicy = await getPolicy(sb, workspace_id);
+    const args = (argPolicy.drafter?.arguments ?? []).filter((a) => a?.id && a.enabled !== false);
+    if (args.length) {
+      const records = await loadArgumentRecords(sb, workspace_id, args, 30);
+      for (const r of records.filter((x) => x.wrong_reason >= MIN_WRONG_REASON)) {
+        const name = r.argument.label || r.argument.id;
+        out.push({
+          id: 'argument_rejected',
+          severity: r.wrong_reason >= 3 ? 'red' : 'yellow',
+          metric: `"${name}": ${whyQuestioned(r)} in the last 30 days`,
+          threshold: `fewer than ${MIN_WRONG_REASON} messages rejected as the wrong reason`,
+          action: r.argument.proposal
+            ? `a rewrite is already waiting on this argument in Settings. Accept it or write your own; until then it keeps making the same case.`
+            : `every message under this argument makes the same case, and it has been turned down as the wrong one. Rewrite it in Settings, or switch it off.`,
+        });
+      }
+    }
+  } catch (e) {
+    console.error('argument rejection check failed:', (e as Error)?.message ?? e);
   }
 
   return out;

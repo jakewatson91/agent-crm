@@ -331,7 +331,7 @@ async function loadAnchoredAccounts(
 /** Pick a current substantive fact to use as the drafter's "what changed" trigger.
  *  Prefers a real hook (buying_signal / recent_event / pain / hiring) over a
  *  generic attribute. Returns null when the account has no substantive fact. */
-async function pickTriggerFactId(supabase: SupabaseClient, workspace_id: string, entity_id: string): Promise<string | null> {
+export async function pickTriggerFactId(supabase: SupabaseClient, workspace_id: string, entity_id: string): Promise<string | null> {
   const { data } = await supabase
     .from('facts')
     .select('id, predicate, supersedes')

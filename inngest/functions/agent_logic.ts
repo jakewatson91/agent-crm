@@ -84,6 +84,13 @@ export interface AgentRunPayload {
   signal_id?: string;
   fact_id?: string;     // present for fact-triggered runs (parallel to signal_id)
   parent_event_id?: string;
+  /**
+   * Draft with THIS argument, because a person asked for it by name. Only the
+   * on-demand path sets it; the nightly pass never does. It narrows the picker's
+   * menu to one and changes nothing else, so the evidence checks still decide
+   * whether the message may be written.
+   */
+  force_argument_id?: string;
 }
 
 export interface AgentRunResult {
@@ -899,6 +906,7 @@ export async function runAgent(
       account_name: (ent.data.name as string) ?? '(unnamed)',
       facts: activeFacts.map((f) => ({ id: f.id, predicate: f.predicate, object_text: f.object_text })),
       pain_points: (policy.drafter?.pain_points ?? []) as string[],
+      ...(payload.force_argument_id ? { force_argument_id: payload.force_argument_id } : {}),
       // When the workspace has written its arguments down, these replace the
       // problem menu inside the same call. No extra spend.
       arguments: policy.drafter?.arguments ?? [],
@@ -1004,20 +1012,54 @@ export async function runAgent(
     // rejecting deliberately leaves the draft and its cited facts alone — the
     // message was wrong, the event it was built on still happened.
     let rejected = 0;
+    let approved = 0;
     if (posts.length) {
       const { data: decided } = await supabase
         .from('gates')
         .select('channel_post_id, decision')
         .eq('workspace_id', payload.workspace_id)
-        .eq('decision', 'reject')
         .in('channel_post_id', posts.map((p) => p.id as string));
-      rejected = (decided ?? []).length;
+      for (const d of (decided ?? []) as Array<{ decision: string | null }>) {
+        if (d.decision === 'reject') rejected++;
+        else if (d.decision === 'approve' || d.decision === 'modify') approved++;
+      }
     }
-    const count = posts.length - rejected;
-    if (count >= UNPROVEN_ARGUMENT_DRAFT_LIMIT) {
-      const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
-        `[argument_unproven] "${angle.argument.label ?? angle.argument.id}" has written ${count} drafts and has not been confirmed yet. Read those and confirm the argument to let it run on the book.`, []);
-      return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'argument_unproven', behavior };
+
+    // Approving the trial messages IS the confirmation. It was already a second
+    // ask: the human read each of these drafts in the approval queue, on better
+    // evidence than a settings screen can show, and said send. Requiring them to
+    // then tick a box in Settings asked for the same judgement twice, in a place
+    // they had no reason to open.
+    //
+    // Measured on the workspace this shipped for: three drafts written 22 Aug,
+    // all three approved 26 Aug, and the drafter refused to write anything for
+    // the next seven days — 103 refusals across 28 accounts, the single largest
+    // block on the book, waiting on a click nobody knew about.
+    //
+    // A `modify` counts with `approve`: editing a message before sending it is
+    // still sending it, and the thing being confirmed is the argument, not the
+    // wording of one draft.
+    if (approved >= UNPROVEN_ARGUMENT_DRAFT_LIMIT) {
+      const proven_at = new Date().toISOString();
+      const nextArgs = (policy.drafter?.arguments ?? []).map((a) =>
+        a.id === angle.argument!.id ? { ...a, proven_at } : a);
+      // Through the config tool so it lands as an audited, undoable write, the
+      // same as a person accepting it by hand.
+      await callTool(supabase, { ...actor, actor_kind: 'system' }, 'update_workspace_config', {
+        section: 'drafter.arguments',
+        value: nextArgs,
+        reasoning: `"${angle.argument.label ?? angle.argument.id}" had ${approved} of its trial messages approved, so it is confirmed and may run on the book.`,
+      });
+      // This run continues under the confirmed argument rather than being the
+      // one message that still pays for the old rule.
+      angle.argument.proven_at = proven_at;
+    } else {
+      const count = posts.length - rejected;
+      if (count >= UNPROVEN_ARGUMENT_DRAFT_LIMIT) {
+        const r = await noteDecision(supabase, actor, channel_id, payload.parent_event_id,
+          `[argument_unproven] "${angle.argument.label ?? angle.argument.id}" has written ${count} drafts and is waiting on them. Approve or reject those in the queue; approving ${UNPROVEN_ARGUMENT_DRAFT_LIMIT} lets it run on the book.`, []);
+        return { ok: r.ok, action: 'skip', channel_post_id: r.channel_post_id, reason: 'argument_unproven', behavior };
+      }
     }
   }
 

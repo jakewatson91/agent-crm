@@ -26,6 +26,7 @@ import {
   execute as composioExecute,
   findAction as findComposioAction,
 } from '@agent-crm/composio';
+import { makeRequestDraft } from '../../../_lib/request_draft';
 
 type Actor = { workspace_id: string; actor_kind: 'user'; actor_id: string };
 
@@ -1009,7 +1010,37 @@ const updateConfigTool: ToolHandler = {
   },
 };
 
+/**
+ * Draft one account on demand, optionally on an argument the person names.
+ *
+ * The chat half of the same tool MCP exposes, so "draft France TV on the
+ * catalogue angle" works here and in Cowork and Code with one implementation.
+ */
+const draftAccountTool: ToolHandler = {
+  spec: {
+    name: 'draft_account',
+    description: 'Write an outbound draft for one account right now instead of waiting for the nightly pass. Pass `argument_id` to say which argument to make; omit it and the picker chooses as it normally would. Naming an argument does not force it through: the account still needs a fact showing its event happened, and where the argument states an "only if", a fact showing that holds. When it refuses it says which is missing and what would fix it. The draft always opens an approval, so this never sends anything.',
+    parameters: {
+      type: 'object',
+      properties: {
+        entity_id: { type: 'string', description: 'The account to draft for.' },
+        argument_id: { type: 'string', description: 'Which argument to make. Call read_workspace_config with section "drafter.arguments" to see the ids.' },
+        reason: { type: 'string', description: 'Why now, in the user\'s own words. Recorded on the run.' },
+      },
+      required: ['entity_id'],
+    },
+  },
+  run: async (ctx, args: { entity_id: string; argument_id?: string; reason?: string }) => {
+    const r = await callTool(
+      ctx.supabase, { ...ctx.actor, actor_kind: 'user' }, 'draft_account', args,
+      undefined, { requestDraft: makeRequestDraft(ctx.supabase) },
+    );
+    return r.ok ? { ok: true, ...(r.data as object) } : { error: r.error };
+  },
+};
+
 export const INTAKE_TOOLS: Record<string, ToolHandler> = {
+  draft_account: draftAccountTool,
   query: queryTool,
   create_account: createAccountTool,
   enrich_contacts: enrichContactsTool,
