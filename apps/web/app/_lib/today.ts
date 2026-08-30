@@ -1405,16 +1405,24 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
   //
   // Read from the pass's own tally rather than recomputing the rule here, so
   // this can never disagree with what actually happened.
-  const tallies = ev('advance_completed').map((e) => (e.payload?.decisions ?? {}) as Record<string, number>);
-  const worstOf = (pick: (key: string) => boolean) => tallies.reduce((n, d) =>
-    Math.max(n, Object.entries(d).reduce((s, [k, v]) => (pick(k) ? s + Number(v ?? 0) : s), 0)), 0);
-  const heldBack = worstOf((k) => k === 'skip:argument_unproven');
+  // The LAST pass, not the worst pass in the window. Taking the maximum across
+  // 24 hours meant a block that had already been cleared kept its alert on
+  // screen for the rest of the day: on 2026-08-29 the 17:42 pass held 5
+  // accounts back, the argument was confirmed at 17:48, the 17:51 pass held
+  // none, and the page still said 5 were waiting. An alert is a claim about
+  // now, so it reads the most recent pass and nothing else.
+  const latestAdvance = ev('advance_completed')
+    .reduce<EventRow | null>((best, e) => (!best || e.created_at > best.created_at ? e : best), null);
+  const latestTally = (latestAdvance?.payload?.decisions ?? {}) as Record<string, number>;
+  const tallyOf = (pick: (key: string) => boolean) =>
+    Object.entries(latestTally).reduce((s, [k, v]) => (pick(k) ? s + Number(v ?? 0) : s), 0);
+  const heldBack = tallyOf((k) => k === 'skip:argument_unproven');
   // Accounts the arguments simply do not reach: the picker ran, found no argument
   // whose condition their facts show to be true, and stopped. The reason keys
   // moved from `skip:<reason>` to `skip:no_argument:<reason>` on 2026-08-22, so
   // both shapes are counted or the number silently halves across that boundary.
   const NO_FIT = new Set(['precondition_unmet', 'no_problem_fits', 'no_evidence']);
-  const uncovered = worstOf((k) => {
+  const uncovered = tallyOf((k) => {
     const r = k.startsWith('skip:no_argument:') ? k.slice('skip:no_argument:'.length)
       : k.startsWith('skip:') ? k.slice('skip:'.length) : '';
     return NO_FIT.has(r);
@@ -1491,10 +1499,37 @@ const _getTodayData = async (ws: string): Promise<TodayData> => {
   };
 };
 
-export const getTodayData = unstable_cache(_getTodayData, ['today-data'], {
+const getTodayDataCached = unstable_cache(_getTodayData, ['today-data'], {
   revalidate: 120,
   tags: ['feed', 'today'],
 });
+
+/**
+ * `unstable_cache` past its revalidate window does NOT recompute before
+ * answering: it hands back the stale entry and refreshes in the background, so
+ * the reader gets whatever the PREVIOUS visit computed. On a workspace one
+ * person opens once a day that means the recap is always a day behind, and the
+ * page has no way to tell.
+ *
+ * Measured 2026-08-30: the home page served a snapshot taken 2026-08-29 17:45
+ * UTC. It reported 1,690 companies re-scored and 0 messages written — true of
+ * the 24 hours ending then, and nothing like the 6 and 3 that were true at
+ * read time. It also carried two alerts about an argument waiting to be
+ * confirmed, three minutes before the run that confirmed it. Every number on
+ * the page was 23 hours old under a clock reading the current minute.
+ *
+ * So: serve the cache while it is worth serving, and pay for a real read when
+ * it is not. The background refresh still runs, so the next visit is cheap
+ * again.
+ */
+const MAX_SERVED_AGE_MS = 5 * 60e3;
+
+export async function getTodayData(ws: string): Promise<TodayData> {
+  const cached = await getTodayDataCached(ws);
+  const age = Date.now() - Date.parse(cached.generatedAt);
+  if (Number.isFinite(age) && age <= MAX_SERVED_AGE_MS) return cached;
+  return _getTodayData(ws);
+}
 
 // ---------------------------------------------------------------- trend
 

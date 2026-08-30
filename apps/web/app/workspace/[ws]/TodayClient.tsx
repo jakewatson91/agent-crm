@@ -86,7 +86,7 @@ export function TodayClient({
     <section style={{ maxWidth: 960 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '.6rem', flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0 }}>Today</h2>
-        <span className="subtle mono" suppressHydrationWarning style={{ fontSize: '.78rem' }}>{now()}</span>
+        <span className="subtle mono" suppressHydrationWarning style={{ fontSize: '.78rem' }}>{stamp(today.generatedAt)}</span>
         <span className="muted" style={{ fontSize: '.72rem' }}>· everything since this time yesterday</span>
       </div>
 
@@ -199,10 +199,20 @@ export function TodayClient({
 
 // ---------------------------------------------------------------- chrome
 
-function now(): string {
-  return new Date().toLocaleString(undefined, {
+/**
+ * When the numbers below were counted, NOT when the page was opened. This read
+ * `new Date()` until 2026-08-30, so a recap built the previous afternoon sat
+ * under a clock showing the current minute and there was nothing on screen to
+ * say otherwise. The reader spent the morning acting on yesterday's page.
+ */
+function stamp(generatedAt: string): string {
+  const t = Date.parse(generatedAt);
+  if (!Number.isFinite(t)) return '';
+  const shown = new Date(t).toLocaleString(undefined, {
     weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
+  const minutes = Math.round((Date.now() - t) / 60000);
+  return minutes >= 10 ? `${shown} (counted ${ago(generatedAt)})` : shown;
 }
 
 function clock(iso: string): string {
