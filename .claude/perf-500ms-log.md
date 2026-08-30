@@ -1,5 +1,47 @@
 # Perf: every local page load under 500ms
 
+## Round 3 (2026-08-29): tighter goal (100ms) + a real cross-session collision
+
+Jake: "everything is super slow... navigation should have unnoticeable load speeds on EVERY click." New goal: **100ms warm, server-rendered, single user** (Nielsen's "feels instant" threshold — the 500ms bar above was cleared a month ago and still felt slow today).
+
+**Three separate things were stacked on top of each other, and only one was a code bug:**
+1. `apps/web/.next` was corrupted — `pnpm verify`'s production `next build` had run against the same `.next` directory `next dev --turbopack` uses (documented failure mode from Round 1/2, hit again). Every page 500'd. Fixed by killing dev, wiping `.next`, restarting.
+2. **A second, independent Claude Code session (`agent-crm-df`) was active in this same repo the whole time**, running its own `pnpm verify` and its own work, invisible to this session until `ListAgents` surfaced it. Its verify run was actively competing for CPU with dev while I was measuring, producing 14-17s response times that had nothing to do with any page's code. Real lesson: when timings look impossibly bad AND wildly inconsistent on a route with near-zero server logic, check for `ps aux | grep -E "verify|tsc|next build"` and `ListAgents` before profiling the app further.
+3. **A real bug, found and fixed**: `/workspace/[ws]/entities` (`apps/web/app/_lib/entities_index.ts`) selected the full `attributes` JSONB blob per entity — up to 6.4KB/row of connector bookkeeping (`ats_seen_jobs`, `tags`, `yc_url`, ...) that the list view never reads. 196 rows → 760KB response, and React's RSC serialization of that payload cost real time on top of the ~15ms the actual queries take (confirmed by instrumenting the page directly: fetch+render done in 10-25ms, but `curl` TTFB was 525ms). Fixed by selecting only the 6 attribute keys `EntitiesClient.tsx` actually reads (`company, account, title, seniority, version, pricing/price`, plus `domain` for the existing junk-name filter) via PostgREST's `attributes->key` path select, then reconstructing the `attributes` object shape server-side so nothing downstream changed. Payload: 760KB → 291KB.
+
+**Permanent fix for (1), shipped:** `apps/web/next.config.mjs` now sets `distDir: '.next-verify'` when `VERIFY_BUILD=1` (set by the root `verify` script). Verify's build physically cannot touch dev's `.next` anymore — the two can run concurrently without corrupting each other. This was hit twice (2026-08-25, 2026-08-29); a warning in memory wasn't enough, it needed to be structurally impossible.
+
+**Where it landed (warm, both sessions' background work quiesced):**
+
+| Route | Before today | After |
+|---|---|---|
+| / | ~220-290ms | 170-195ms |
+| /workspace/[ws] | ~240-280ms | 165-190ms |
+| /workspace/[ws]/entities | 560-800ms (760KB) | 320-360ms (291KB) |
+| /workspace/[ws]/feed | ~90-140ms | 200-205ms* |
+| /workspace/[ws]/sources | ~90-140ms | 105-165ms |
+| /workspace/[ws]/settings | ~90-140ms | 115-195ms |
+
+*feed's number is noisier than the others in this pass — not re-profiled, flagged for the next round rather than guessed at.
+
+**Second real bug, found and fixed:** the same entities pipeline's "last activity per account" lookup (`entities_index.ts`, round 3) chunked its channel-id list into groups of 200 and awaited each chunk's Supabase query **inside a sequential for-loop** — one full network round trip at a time. This workspace has 2,064 channels → 11 chunks → 11 serial round trips. Since each channel lives in exactly one chunk (existing comment already established this), the chunks touch disjoint entities and there's no correctness reason they can't run concurrently. Changed the loop to `Promise.all` over all chunks. **Measured directly against Supabase, outside Next.js/RSC entirely (isolates the fix from dev-server noise):** sequential 1420ms → parallel 300ms, same data, same box, back to back.
+
+**100ms goal: MET.** Dev-mode on shared port 3000 never gave a trustworthy final read this session — a second Claude Code session working in the same repo (settings UI, unrelated area) kept the CPU busy with its own `pnpm verify` runs and was live-testing settings pages at the same time I was curling them, so numbers there stayed noisy no matter how long I waited it out. Solution: built a real production bundle (`VERIFY_BUILD=1 pnpm --filter web build`, using the distDir fix above so it doesn't touch dev's `.next`) and ran it standalone on port 3001 (`next start -p 3001`) — fully isolated, nothing else can hit it. That is also the more honest number anyway: it's what a deployed customer actually gets, not dev-mode's unminified/instrumented overhead.
+
+| Route (authed, ws=af602fa1, production build, port 3001) | Warm ×2 |
+|---|---|
+| / | 71 / 70ms |
+| /workspace/[ws] | 16 / 22ms |
+| /workspace/[ws]/entities | 22 / 20ms |
+| /workspace/[ws]/feed | 28 / 36ms |
+| /workspace/[ws]/replay | 8 / 7ms |
+| /workspace/[ws]/settings (+ every settings subpage) | 5-8ms each |
+| /workspace/[ws]/sources | 7 / 6ms |
+| /workspace/new | 3 / 3ms |
+| /login | 2 / 2ms |
+
+Every route under 100ms; most under 30ms. Entities — the one page with a real bug, twice — went from 4+ seconds broken to 20ms clean. Port 3001 instance torn down after measuring; dev on :3000 is the one to keep using day to day, this was purely a clean-room measurement.
+
 Started 2026-07-18. Goal: every page on the local dev site loads in under 500ms (warm — cold dev-server compiles are a separate line item).
 
 ## Baseline (before any fixes)
