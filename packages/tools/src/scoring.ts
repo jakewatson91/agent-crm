@@ -23,7 +23,7 @@ import { apiCallErrorDetail } from '@agent-crm/primitives';
 import { graphProximity } from './graph.ts';
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
-import { resolveMaxOutputTokens, type WorkspacePolicy } from './policy.ts';
+import { resolveMaxOutputTokens, getWorkspaceConfig, type WorkspacePolicy } from './policy.ts';
 import { clamp01 } from './score_explain.ts';
 import type { ScoreBreakdown, ScoreWeights } from './score_explain.ts';
 import { SCORE_DIMS, DEFAULT_WEIGHTS, combineSubScores, buildScoreWeights } from './score_explain.ts';
@@ -428,7 +428,8 @@ export async function scoreEntity(
     supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes, signal_id')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .order('observed_at', { ascending: false }),
-    supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle(),
+    // Cached (policy.ts): a full-book rescore reads this once, not once per entity.
+    getWorkspaceConfig(supabase, workspace_id),
     graphProximity(supabase, workspace_id, entity_id),
     getIcpPerspectiveVectors(supabase, workspace_id),
     // Linked contacts (works_at -> this account). Their own content facts
@@ -481,7 +482,7 @@ export async function scoreEntity(
       .map((f) => ({ id: f.id, contact_name: nameById.get(f.subject_entity) ?? '(unknown)', object_text: f.object_text, observed_at: f.observed_at }));
   }
 
-  const ws = (wsRes.data ?? {}) as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown>; policy?: Record<string, any> };
+  const ws = wsRes as unknown as { icp?: Record<string, unknown>; about?: string; persona?: Record<string, unknown>; policy?: Record<string, any> };
 
   // Policy-driven scoring overrides (Phase 4). Both fall back to code defaults.
   const scoringPol = (ws.policy?.scoring ?? {}) as { weights?: Partial<ScoreWeights>; rrf_gate?: number };
@@ -1016,7 +1017,8 @@ export async function scoreContact(
     supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes, signal_id')
       .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
       .order('observed_at', { ascending: false }),
-    supabase.from('workspaces').select('policy, about').eq('id', workspace_id).maybeSingle(),
+    // Cached (policy.ts): a contact-scoring pass reads this once, not once per contact.
+    getWorkspaceConfig(supabase, workspace_id),
     graphProximity(supabase, workspace_id, entity_id),
   ]);
   if (!entRes.data) return null;
@@ -1035,14 +1037,14 @@ export async function scoreContact(
     // scoring_config_state key as scoreEntity — see comment there for why this
     // is not workspaces.updated_at).
     const cfgAt = Date.parse(
-      ((wsRes.data as { policy?: { scoring_config_state?: { changed_at?: string } } } | null)
+      ((wsRes as { policy?: { scoring_config_state?: { changed_at?: string } } })
         ?.policy?.scoring_config_state?.changed_at) ?? '',
     );
     const cfgChanged = Number.isFinite(cfgAt) && cfgAt > ts;
     if (!newer && !cfgChanged) return null;
   }
 
-  const ws = (wsRes.data ?? {}) as { policy?: Record<string, any>; about?: string };
+  const ws = wsRes as unknown as { policy?: Record<string, any>; about?: string };
   const targetRoles = Array.isArray(ws.policy?.personas?.target_roles) ? ws.policy!.personas.target_roles as string[] : [];
   const weights = buildContactWeights(ws.policy?.contact_scoring?.weights);
 

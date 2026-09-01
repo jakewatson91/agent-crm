@@ -1447,8 +1447,9 @@ export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrich
   scoring: {},
 };
 
-// getPolicy has no caller-side memoization anywhere — 41 call sites across
-// scoring, drafting, research and chat, each doing its own fresh fetch.
+// Why this is cached at all: getPolicy had no caller-side memoization
+// anywhere — 41 call sites across scoring, drafting, research and chat, each
+// doing its own fresh fetch.
 // Egress investigation 2026-08-25: the bare `select policy` shape alone ran
 // 153,247 times against pg_stat_statements since the last reset, and every
 // variant that reads `policy` combined totals over 300,000 calls — the
@@ -1463,11 +1464,59 @@ export const DEFAULT_POLICY: Required<Pick<WorkspacePolicy, 'outreach' | 'enrich
 // is shared by many more writers than a self-contained read-modify-write
 // cache is.
 const POLICY_CACHE_TTL_MS = 15_000;
-const policyCache = new Map<string, { policy: WorkspacePolicy; fetchedAt: number }>();
+const configCache = new Map<string, { config: WorkspaceConfig; fetchedAt: number }>();
 
 /** Call after any write to workspaces.policy so the next read in this process is fresh. */
 export function invalidatePolicyCache(workspace_id: string): void {
-  policyCache.delete(workspace_id);
+  configCache.delete(workspace_id);
+}
+
+/** The four workspace columns that describe how this workspace behaves. */
+export interface WorkspaceConfig {
+  icp: Record<string, unknown> | null;
+  about: string | null;
+  persona: Record<string, unknown> | null;
+  policy: WorkspacePolicy;
+}
+
+/**
+ * The workspace's config row, with each policy section shallow-merged over
+ * DEFAULT_POLICY. Cached, so a batch reads it once instead of once per item.
+ * Returns empty config (no errors thrown) if the workspace is missing —
+ * callers decide whether that's a fatal condition.
+ *
+ * Scoring used to fetch these same four columns itself, once per entity. On
+ * the live workspace that shipped 16.6 KB per read (the templates in
+ * policy.drafter are 9.2 KB of it, and scoring reads none of them), so a
+ * 2,132-entity rescore moved 35 MB of config it could not use. Reading the
+ * whole row here rather than only `policy` costs a cache miss an extra ~1.6 KB
+ * for icp/about/persona and saves scoring a second full-row fetch.
+ */
+export async function getWorkspaceConfig(supabase: SupabaseClient, workspace_id: string): Promise<WorkspaceConfig> {
+  const cached = configCache.get(workspace_id);
+  if (cached && Date.now() - cached.fetchedAt < POLICY_CACHE_TTL_MS) return cached.config;
+
+  const r = await supabase.from('workspaces').select('icp, about, persona, policy').eq('id', workspace_id).maybeSingle();
+  const row = (r.data ?? {}) as { icp?: Record<string, unknown> | null; about?: string | null; persona?: Record<string, unknown> | null; policy?: WorkspacePolicy | null };
+  const raw = (row.policy ?? {}) as WorkspacePolicy;
+  const config: WorkspaceConfig = {
+    icp: row.icp ?? null,
+    about: row.about ?? null,
+    persona: row.persona ?? null,
+    policy: {
+      ...raw,
+      outreach: { ...DEFAULT_POLICY.outreach, ...(raw.outreach ?? {}) },
+      enrichment: { ...DEFAULT_POLICY.enrichment, ...(raw.enrichment ?? {}) },
+      drafter: { ...DEFAULT_POLICY.drafter, ...(raw.drafter ?? {}) },
+      llm: { ...DEFAULT_POLICY.llm, ...(raw.llm ?? {}) },
+      routing: { ...DEFAULT_POLICY.routing, ...(raw.routing ?? {}) },
+      scoring: { ...DEFAULT_POLICY.scoring, ...(raw.scoring ?? {}) },
+      research: { ...(raw.research ?? {}) },
+      env: { ...(raw.env ?? {}) },
+    },
+  };
+  configCache.set(workspace_id, { config, fetchedAt: Date.now() });
+  return config;
 }
 
 /**
@@ -1476,35 +1525,22 @@ export function invalidatePolicyCache(workspace_id: string): void {
  * decide whether that's a fatal condition.
  */
 export async function getPolicy(supabase: SupabaseClient, workspace_id: string): Promise<WorkspacePolicy> {
-  const cached = policyCache.get(workspace_id);
-  if (cached && Date.now() - cached.fetchedAt < POLICY_CACHE_TTL_MS) return cached.policy;
-
-  const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
-  const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
-  const merged: WorkspacePolicy = {
-    ...raw,
-    outreach: { ...DEFAULT_POLICY.outreach, ...(raw.outreach ?? {}) },
-    enrichment: { ...DEFAULT_POLICY.enrichment, ...(raw.enrichment ?? {}) },
-    drafter: { ...DEFAULT_POLICY.drafter, ...(raw.drafter ?? {}) },
-    llm: { ...DEFAULT_POLICY.llm, ...(raw.llm ?? {}) },
-    routing: { ...DEFAULT_POLICY.routing, ...(raw.routing ?? {}) },
-    scoring: { ...DEFAULT_POLICY.scoring, ...(raw.scoring ?? {}) },
-    research: { ...(raw.research ?? {}) },
-    env: { ...(raw.env ?? {}) },
-  };
-  policyCache.set(workspace_id, { policy: merged, fetchedAt: Date.now() });
-  return merged;
+  return (await getWorkspaceConfig(supabase, workspace_id)).policy;
 }
 
 /**
  * Read the live pipeline status the UI banner shows. Returns null when the
- * workspace has never run (no status written yet). Reads the raw policy so it
- * doesn't pull the default-merge machinery in getPolicy.
+ * workspace has never run (no status written yet).
+ *
+ * Deliberately NOT read through getWorkspaceConfig: this is the pause switch,
+ * so every caller checking "may I spend money" has to see a Continue click
+ * immediately rather than up to a cache TTL later. Selecting the one key
+ * instead of the whole column keeps that freshness at ~200 bytes a call
+ * instead of the full policy blob.
  */
 export async function getPipelineStatus(supabase: SupabaseClient, workspace_id: string): Promise<PipelineStatus | null> {
-  const r = await supabase.from('workspaces').select('policy').eq('id', workspace_id).maybeSingle();
-  const raw = (r.data?.policy ?? {}) as WorkspacePolicy;
-  return raw.pipeline ?? null;
+  const r = await supabase.from('workspaces').select('pipeline:policy->pipeline').eq('id', workspace_id).maybeSingle();
+  return ((r.data as { pipeline?: PipelineStatus | null } | null)?.pipeline) ?? null;
 }
 
 /**
