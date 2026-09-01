@@ -20,7 +20,21 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { embed } from '@agent-crm/primitives';
 import { act } from '@agent-crm/primitives';
 import { apiCallErrorDetail } from '@agent-crm/primitives';
-import { graphProximity } from './graph.ts';
+import { graphProximity, graphProximityFrom, type GraphEdges } from './graph.ts';
+
+/**
+ * What score_inputs() (migration 0059) returns for one entity. `facts` and
+ * `contact_facts` arrive RAW, superseded rows included, because scoreEntity
+ * filters them against the fetched set itself; the graph arrays arrive already
+ * filtered, matching what excludeSuperseded did on the client.
+ */
+interface ScoreInputs extends GraphEdges {
+  entity: { id: string; name: string; attributes: Record<string, unknown> } | null;
+  facts: Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null; signal_id: string | null }>;
+  contact_ids: string[];
+  contact_facts: Array<{ id: string; subject_entity: string; predicate: string; object_text: string | null; observed_at: string; supersedes: string | null }>;
+  contact_names: Array<{ id: string; name: string }>;
+}
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
 import { resolveMaxOutputTokens, getWorkspaceConfig, type WorkspacePolicy } from './policy.ts';
@@ -423,25 +437,28 @@ export async function scoreEntity(
   entity_id: string,
   opts?: ScoreOpts,
 ): Promise<EntityScore | null> {
-  const [entRes, factsRes, wsRes, graphRes, icpVecs, worksAtRes] = await Promise.all([
-    supabase.from('entities').select('id, name, attributes').eq('id', entity_id).maybeSingle(),
-    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes, signal_id')
-      .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
-      .order('observed_at', { ascending: false }),
+  // One round trip for everything about this entity: the row, its facts, both
+  // graph edge directions with the superseded rows already dropped, the
+  // neighbours' icp_fit, and the linked contacts with their facts and names
+  // (migration 0059). This was nine to twelve separate requests, and Supabase
+  // bills egress far more per request (~1.9 KB of measured overhead) than per
+  // byte, so the request count is what the free tier actually charges for.
+  //
+  // Linked contacts are works_at -> this account. Their own content facts feed
+  // signal_strength below by reading across the edge, never by copying onto
+  // this entity -- see contactSignalFacts.
+  const [bundleRes, wsRes, icpVecs] = await Promise.all([
+    supabase.rpc('score_inputs', { p_workspace: workspace_id, p_entity: entity_id }),
     // Cached (policy.ts): a full-book rescore reads this once, not once per entity.
     getWorkspaceConfig(supabase, workspace_id),
-    graphProximity(supabase, workspace_id, entity_id),
     getIcpPerspectiveVectors(supabase, workspace_id),
-    // Linked contacts (works_at -> this account). Their own content facts
-    // feed signal_strength below via a read across the edge, not a copy onto
-    // this entity -- see contactSignalFacts.
-    supabase.from('facts').select('subject_entity')
-      .eq('workspace_id', workspace_id).eq('predicate', 'works_at').eq('object_entity', entity_id)
-      .is('supersedes', null),
   ]);
+  const bundle = (bundleRes.data ?? {}) as ScoreInputs;
+  const graphRes = graphProximityFrom(bundle);
 
-  if (!entRes.data) return null;
-  const entity = entRes.data as { name: string; attributes: Record<string, unknown> };
+  if (!bundle.entity) return null;
+  const entity = bundle.entity as { name: string; attributes: Record<string, unknown> };
+  const factsRes = { data: bundle.facts ?? [] };
   // Candidate entities are thin connection points (name + is_a + domain, no
   // signals or embedding). Scoring one produces a meaningless number and
   // pollutes the score distribution. Skip until it is promoted to a full entity.
@@ -464,18 +481,13 @@ export async function scoreEntity(
   // linked contact so a busy account's prompt cost stays flat. Feeds the
   // staleness guard, inputs_hash, and the rubric prompt below -- never
   // evidence_depth or graph_proximity, which measure the company itself.
-  const contactIds = ((worksAtRes.data ?? []) as Array<{ subject_entity: string }>).map((r) => r.subject_entity);
+  const contactIds = bundle.contact_ids ?? [];
   let contactSignalFacts: Array<{ id: string; contact_name: string; object_text: string | null; observed_at: string }> = [];
   if (contactIds.length) {
-    const [contactFactsRes, contactEntsRes] = await Promise.all([
-      supabase.from('facts').select('id, subject_entity, predicate, object_text, observed_at, supersedes')
-        .eq('workspace_id', workspace_id).in('subject_entity', contactIds),
-      supabase.from('entities').select('id, name').in('id', contactIds),
-    ]);
-    const rawContactFacts = (contactFactsRes.data ?? []) as Array<{ id: string; subject_entity: string; predicate: string; object_text: string | null; observed_at: string; supersedes: string | null }>;
+    const rawContactFacts = bundle.contact_facts ?? [];
     const contactSupersededIds = new Set(rawContactFacts.map((f) => f.supersedes).filter((x): x is string => !!x));
     const activeContactFacts = rawContactFacts.filter((f) => !contactSupersededIds.has(f.id));
-    const nameById = new Map(((contactEntsRes.data ?? []) as Array<{ id: string; name: string }>).map((e) => [e.id, e.name]));
+    const nameById = new Map((bundle.contact_names ?? []).map((e) => [e.id, e.name]));
     contactSignalFacts = contactContentFacts(activeContactFacts)
       .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))
       .slice(0, 3)
@@ -1012,15 +1024,18 @@ export async function scoreContact(
   workspace_id: string,
   entity_id: string,
 ): Promise<EntityScore | null> {
-  const [entRes, factsRes, wsRes, graphRes] = await Promise.all([
-    supabase.from('entities').select('id, name, attributes').eq('id', entity_id).maybeSingle(),
-    supabase.from('facts').select('id, predicate, object_text, confidence, observed_at, created_at, supersedes, signal_id')
-      .eq('workspace_id', workspace_id).eq('subject_entity', entity_id)
-      .order('observed_at', { ascending: false }),
+  // Same one-round-trip bundle scoreEntity uses (migration 0059). A contact has
+  // no works_at contacts of its own, so those arrays come back empty and cost
+  // nothing.
+  const [bundleRes, wsRes] = await Promise.all([
+    supabase.rpc('score_inputs', { p_workspace: workspace_id, p_entity: entity_id }),
     // Cached (policy.ts): a contact-scoring pass reads this once, not once per contact.
     getWorkspaceConfig(supabase, workspace_id),
-    graphProximity(supabase, workspace_id, entity_id),
   ]);
+  const bundle = (bundleRes.data ?? {}) as ScoreInputs;
+  const graphRes = graphProximityFrom(bundle);
+  const entRes = { data: bundle.entity };
+  const factsRes = { data: bundle.facts ?? [] };
   if (!entRes.data) return null;
 
   const rawFacts = (factsRes.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; confidence: number; observed_at: string; created_at: string; supersedes: string | null; signal_id: string | null }>;

@@ -39,18 +39,27 @@ export interface GraphProximityResult {
   evidence_fact_ids: string[];
 }
 
+/** Live, superseded-free graph rows for one entity, however they were fetched. */
+export interface GraphEdges {
+  subj_edges: Array<{ id: string; predicate: string; object_entity: string }>;
+  obj_edges: Array<{ id: string; predicate: string; subject_entity: string }>;
+  fits: Array<{ id: string; subject_entity: string; object_text: string }>;
+}
+
 /**
  * For the given entity, find every other entity it's linked to via one of the
  * edge predicates (in either direction — both `subject` and `object_entity`).
  * Look up each neighbor's latest `icp_fit` fact. Return the mean.
+ *
+ * Five requests. scoreEntity does not use this path: it gets the same rows in
+ * the one bundle score_inputs() returns and calls graphProximityFrom directly.
+ * This stays for callers holding nothing but an entity id.
  */
 export async function graphProximity(
   supabase: SupabaseClient,
   workspace_id: string,
   entity_id: string,
 ): Promise<GraphProximityResult> {
-  const empty: GraphProximityResult = { score: 0, edge_count: 0, scored_neighbor_count: 0, predicates: {}, evidence_fact_ids: [] };
-
   // 1. Edges where this entity is the subject: facts(subject=entity_id, predicate∈EDGES, object_entity!=null)
   const subjRes = await supabase
     .from('facts')
@@ -70,6 +79,37 @@ export async function graphProximity(
   const objEdges = await excludeSuperseded(supabase, workspace_id,
     (objRes.data ?? []) as Array<{ id: string; predicate: string; subject_entity: string; supersedes: string | null }>);
 
+  const neighborIds = [...new Set([
+    ...subjEdges.map((e) => e.object_entity),
+    ...objEdges.map((e) => e.subject_entity),
+  ])];
+  let fits: Array<{ id: string; subject_entity: string; object_text: string; supersedes: string | null }> = [];
+  if (neighborIds.length) {
+    // 3. Look up latest icp_fit for each neighbor.
+    const fitsRes = await supabase
+      .from('facts')
+      .select('id, subject_entity, object_text, supersedes')
+      .eq('workspace_id', workspace_id)
+      .eq('predicate', 'icp_fit')
+      .in('subject_entity', neighborIds);
+    fits = await excludeSuperseded(supabase, workspace_id,
+      (fitsRes.data ?? []) as Array<{ id: string; subject_entity: string; object_text: string; supersedes: string | null }>);
+  }
+  return graphProximityFrom({ subj_edges: subjEdges, obj_edges: objEdges, fits });
+}
+
+/**
+ * The arithmetic, over rows someone else already fetched. Subject edges are
+ * walked before object edges and the first edge per neighbour wins, because
+ * `predicates` counts one edge per neighbour and which one it names depends on
+ * that order.
+ */
+export function graphProximityFrom(edges: GraphEdges): GraphProximityResult {
+  const empty: GraphProximityResult = { score: 0, edge_count: 0, scored_neighbor_count: 0, predicates: {}, evidence_fact_ids: [] };
+  const subjEdges = edges.subj_edges ?? [];
+  const objEdges = edges.obj_edges ?? [];
+  const fits = edges.fits ?? [];
+
   const neighbors = new Map<string, { predicate: string; edge_fact_id: string }>();
   const predicates: Record<string, number> = {};
   for (const e of subjEdges) {
@@ -86,17 +126,6 @@ export async function graphProximity(
   }
 
   if (neighbors.size === 0) return empty;
-
-  // 3. Look up latest icp_fit for each neighbor.
-  const neighborIds = [...neighbors.keys()];
-  const fitsRes = await supabase
-    .from('facts')
-    .select('id, subject_entity, object_text, supersedes')
-    .eq('workspace_id', workspace_id)
-    .eq('predicate', 'icp_fit')
-    .in('subject_entity', neighborIds);
-  const fits = await excludeSuperseded(supabase, workspace_id,
-    (fitsRes.data ?? []) as Array<{ id: string; subject_entity: string; object_text: string; supersedes: string | null }>);
 
   const fitValues: number[] = [];
   const evidenceFactIds: string[] = [];

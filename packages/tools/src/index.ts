@@ -73,7 +73,7 @@ export {
   type ScoreContribution, type ScoreExplanation, type ScoreMove, type ScoreMoveLine, type ScoreMoveCause,
   type ScoreOpts,
 } from './scoring.ts';
-export { graphProximity, type GraphProximityResult } from './graph.ts';
+export { graphProximity, graphProximityFrom, type GraphProximityResult, type GraphEdges } from './graph.ts';
 export { resolveOrCreateEntity, normalizeEntityName, trigramSim, looksLikeEntityName, type ResolveResult } from './resolve.ts';
 export { findMergeCandidatesForEntity, mergeAccounts, dismissMergeCandidate, type MergeCandidate, type MergeResult } from './merge.ts';
 export { getEntityTypes, getEntityTypesBatch, isEntityOfType, entityIdsOfType } from './entity_types.ts';
