@@ -38,6 +38,7 @@ export { getSourceMetrics, type SourceMetric } from './source_metrics.ts';
 export { resolveSourceForFacts, type FactSource } from './resolve_source.ts';
 export { curateWorkspaceSources, type CuratorAction, type CuratorDecision, type CurateOpts } from './source_curator.ts';
 export { runRetention, type RetentionResult, pruneHttpResponses, type HttpResponsePruneResult } from './retention.ts';
+export { sampleUsage, judgeUsage, readMetrics, cycleStart, USAGE_SAMPLE_ACTION, type UsageLimits, type UsageReading, type UsageVerdict } from './usage.ts';
 export { getPolicy, getWorkspaceConfig, DEFAULT_POLICY, resolveEnvVar, invalidatePolicyCache, type WorkspaceConfig } from './policy.ts';
 export { DEFAULT_RESEARCH_SEARCHES_PER_RUN, DEFAULT_SELECTION_MIX, DEFAULT_TIER_CADENCE_HOURS, resolveTierCadenceHours, DEFAULT_EMPTY_RUN_BACKOFF_MAX, EMPTY_RUN_BACKOFF_TRIGGER, emptyRunBackoff, DEFAULT_MAX_OUTPUT_TOKENS, resolveMaxOutputTokens, MODEL_BEHAVIORS, resolveBehaviorModel, TIER_ANGLE_COUNT, RESEARCH_DISPATCH_CRON, DEFAULT_QUALIFICATION, resolveQualification } from './policy.ts';
 export { getPipelineStatus, setPipelineStatus, getPipelineActivity, PIPELINE_ACTIVITY_ACTIONS, ensureScoringConfigState } from './policy.ts';

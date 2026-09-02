@@ -16,6 +16,7 @@ import { getPolicy } from './policy.ts';
 import { uncoveredQuestions } from './research_strategy.ts';
 import { resolveBrief } from './research_brief.ts';
 import { loadArgumentRecords, whyQuestioned, MIN_WRONG_REASON } from './argument_review.ts';
+import { sampleUsage, judgeUsage, USAGE_SAMPLE_ACTION, type UsageLimits } from './usage.ts';
 
 export type Severity = 'red' | 'yellow' | 'green';
 export type CheckResult = {
@@ -646,6 +647,55 @@ export async function sweepWorkspace(sb: SupabaseClient, workspace_id: string): 
     }
   } catch (e) {
     console.error('contact_pull check failed:', (e as Error)?.message ?? e);
+  }
+
+
+  // Hosting-plan headroom. Supabase stops a project on two meters, egress per
+  // billing cycle and database size, and neither is readable from inside
+  // Postgres. This samples the project's metrics endpoint, adds the delta to a
+  // running cycle total (the counter is cumulative, so the total has to be ours),
+  // and pauses the pipeline before the ceiling rather than after the email.
+  //
+  // Silent unless policy.limits is configured: the caps belong to whatever plan
+  // the customer is on, and a guessed limit is worse than no limit.
+  try {
+    const limits = ((await getPolicy(sb, workspace_id)).limits ?? {}) as UsageLimits;
+    if (limits.egress_gb || limits.db_mb) {
+      const reading = await sampleUsage(sb, workspace_id, limits);
+      if (reading) {
+        await sb.from('events').insert({
+          workspace_id, actor_kind: 'system', actor_id: 'usage',
+          action: USAGE_SAMPLE_ACTION, target_kind: 'workspace', target_id: workspace_id,
+          payload: {
+            transmit_total: reading.transmit_total,
+            egress_bytes_cycle: reading.egress_bytes_cycle,
+            db_bytes: reading.db_bytes,
+            counter_reset: reading.counter_reset,
+          },
+        });
+        const v = judgeUsage(reading, limits);
+        const pct = Math.round(v.worst * 100);
+        if (v.breach) {
+          out.push({
+            id: 'usage_ceiling',
+            severity: 'red',
+            metric: v.detail,
+            threshold: `${Math.round((limits.pause_at ?? 0.85) * 100)}% of plan`,
+            action: `${pct}% of the ${v.meter} allowance. Nothing is paused: a stopped pipeline is not a fix, and the cost per entity is the thing to bring down.`,
+          });
+        } else if (v.worst >= 0.6) {
+          out.push({
+            id: 'usage_ceiling',
+            severity: 'yellow',
+            metric: v.detail,
+            threshold: `${Math.round((limits.pause_at ?? 0.85) * 100)}% of plan`,
+            action: `${pct}% of the ${v.meter} allowance on current pace. Nothing paused yet.`,
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.error('usage check failed:', (e as Error)?.message ?? e);
   }
 
   // Research-loop health. The runner writes research_triggered / research_completed

@@ -1370,39 +1370,56 @@ export async function scoreAndAssert(
     });
   } catch { /* non-fatal */ }
 
-  // Sub-scores asserted as their own facts for audit + future calibration.
-  // Each one supersedes the prior version. We do this in a loop so a write
-  // failure on one doesn't abort the rest. Contacts reuse the score_* sub
+  // Score rows, written to the fact log. Contacts reuse the score_* sub
   // predicates (remapped meanings) but write `contact_score` as the total and
   // never `icp_fit`.
-  const subScores: Array<{ predicate: string; value: number }> = [
-    { predicate: 'score_industry_match', value: score.breakdown.industry_match },
-    { predicate: 'score_stage_match', value: score.breakdown.stage_match },
-    { predicate: 'score_signal_strength', value: score.breakdown.signal_strength },
-    { predicate: 'score_evidence_depth', value: score.breakdown.evidence_depth },
-    { predicate: 'score_recency', value: score.breakdown.recency },
-    { predicate: 'score_graph_proximity', value: score.breakdown.graph_proximity },
-    { predicate: isContact ? 'contact_score' : 'score_total', value: score.icp_total },
-    ...(isContact ? [] : [{ predicate: 'icp_fit', value: score.icp_total }]), // backward compat, account-only
+  //
+  // Every number here also lives inside the icp_fit_breakdown JSON written
+  // above, so a separate row per dimension is a duplicate that earns its place
+  // only if something reads it. Four of them (industry_match, stage_match,
+  // recency, graph_proximity) were read by nothing, anywhere, and were still
+  // written every pass. On this project that habit is most of the database:
+  // 137,330 of 168,865 fact rows are scoring output against 31,535 real
+  // observations, and supersede_fact is 111,651 of 243,121 events. Four rows an
+  // entity a pass, for values already stored one line earlier. They are gone;
+  // the breakdown JSON is where they were always read from.
+  //
+  // `always` vs `if_changed` is about timestamps, not values. The sweep's
+  // coupling check asks whether icp_fit's observed_at moved after new facts
+  // landed, and the stale guard reads score_total's, so those two refresh even
+  // when the number is identical. Nothing reads the other two's timestamps —
+  // only their current value — so an unchanged score writes nothing.
+  const subScores: Array<{ predicate: string; value: number; always: boolean }> = [
+    { predicate: 'score_signal_strength', value: score.breakdown.signal_strength, always: false },
+    { predicate: 'score_evidence_depth', value: score.breakdown.evidence_depth, always: false },
+    { predicate: isContact ? 'contact_score' : 'score_total', value: score.icp_total, always: true },
+    ...(isContact ? [] : [{ predicate: 'icp_fit', value: score.icp_total, always: true }]), // backward compat, account-only
   ];
+  // One read for every score predicate at once, rather than the same query
+  // repeated per predicate. The CURRENT fact is the one NOT superseded by any
+  // other row: supersede_fact writes the new row with supersedes = <old id>, so
+  // `supersedes is null` returns the stale ORIGINAL, and superseding that forks
+  // the chain. So take all rows and pick the not-pointed-to one per predicate
+  // (newest by observed_at among any that survive a prior leak).
+  const priorRows = await supabase.from('facts').select('id, predicate, object_text, supersedes, observed_at')
+    .eq('workspace_id', actor.workspace_id)
+    .eq('subject_entity', entity_id)
+    .in('predicate', subScores.map((s) => s.predicate))
+    .order('observed_at', { ascending: false });
+  const allPrior = (priorRows.data ?? []) as Array<{ id: string; predicate: string; object_text: string | null; supersedes: string | null; observed_at: string }>;
+  const pointedTo = new Set(allPrior.map((r) => r.supersedes).filter((x): x is string => !!x));
+  const currentByPredicate = new Map<string, { id: string; object_text: string | null }>();
+  for (const r of allPrior) {
+    if (pointedTo.has(r.id) || currentByPredicate.has(r.predicate)) continue;
+    currentByPredicate.set(r.predicate, { id: r.id, object_text: r.object_text });
+  }
+
   for (const s of subScores) {
-    // The CURRENT fact is the one NOT superseded by any other row.
-    // supersede_fact writes the new row with supersedes = <old id>, so
-    // `supersedes is null` returns the stale ORIGINAL — superseding that forks
-    // the chain. Fetch all rows for the predicate and pick the not-pointed-to
-    // one (newest by observed_at among any that survive a prior leak).
-    const allRows = await supabase.from('facts').select('id, object_text, supersedes, observed_at')
-      .eq('workspace_id', actor.workspace_id)
-      .eq('subject_entity', entity_id)
-      .eq('predicate', s.predicate)
-      .order('observed_at', { ascending: false });
-    const rows = (allRows.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null; observed_at: string }>;
-    const pointedTo = new Set(rows.map((r) => r.supersedes).filter((x): x is string => !!x));
-    const existing = { data: rows.find((r) => !pointedTo.has(r.id)) ?? null };
+    const existing = { data: currentByPredicate.get(s.predicate) ?? null };
     const newText = s.value.toFixed(2);
-    // Always write — even when the value is unchanged — so observed_at refreshes
-    // and the sweep's score_signal_coupling check can see that the scorer ran.
-    // scoreEntity (LLM + embeddings) already executed; this is just 8 row writes.
+    // An unchanged number on a predicate whose timestamp nothing reads is a row,
+    // an event, and two requests that carry no information. Skip it.
+    if (!s.always && existing.data?.object_text === newText) continue;
     try {
       if (existing.data) {
         await act(supabase, actor, {

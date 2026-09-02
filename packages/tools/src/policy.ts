@@ -8,6 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { UsageLimits } from './usage.ts';
 import type { DisplayPolicy } from './fact_groups.ts';
 
 export interface OutreachPolicy {
@@ -1150,6 +1151,12 @@ export interface PipelineStatus {
 }
 
 export interface WorkspacePolicy {
+  /**
+   * Hosting-plan ceilings the pipeline throttles itself against (usage.ts).
+   * Empty by default: the caps belong to whatever plan the customer is on, so
+   * there is no sane default to guess, and an unset limit is not enforced.
+   */
+  limits?: UsageLimits;
   // pre-existing fields
   suppression_list?: string[];
   daily_send_cap?: number;
