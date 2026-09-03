@@ -25,7 +25,7 @@ const RECOVERY_LIMIT_PER_RUN = 25;
  */
 export const recoverUnmatchedSignals = inngest.createFunction(
   { id: 'recover-unmatched-signals' },
-  { cron: '*/15 * * * *' },
+  { cron: '0 * * * *' },
   async ({ step }) => {
     const candidates = await step.run('scan-workspaces', async () => {
       const supabase = createServerClient();
@@ -246,7 +246,7 @@ export async function runRescoreBatch(
 
 export const rescoreOnIcpChange = inngest.createFunction(
   { id: 'rescore-on-icp-change' },
-  { cron: '*/30 * * * *' },
+  { cron: '20 * * * *' },
   async ({ step }) => {
     const candidates = await step.run('scan-stale-scores', async () =>
       scanRescoreCandidates(createServerClient()));

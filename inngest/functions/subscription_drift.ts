@@ -64,7 +64,7 @@ function toVecLit(v: number[]): string {
 
 export const subscriptionDriftLearner = inngest.createFunction(
   { id: 'subscription-drift-learner' },
-  { cron: '*/30 * * * *' },
+  { cron: '40 * * * *' },
   async ({ step }) => {
     return await step.run('drift-update', async () => {
       const sb = createServerClient();
