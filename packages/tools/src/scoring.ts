@@ -37,7 +37,7 @@ interface ScoreInputs extends GraphEdges {
 }
 import { getIcpPerspectiveVectors, cosine, rrfFuse, type Perspective } from './icp_embeddings.ts';
 import { chatCompleteForWorkspace } from './chat_workspace.ts';
-import { resolveMaxOutputTokens, getWorkspaceConfig, type WorkspacePolicy } from './policy.ts';
+import { resolveMaxOutputTokens, getPolicy, getWorkspaceConfig, type WorkspacePolicy } from './policy.ts';
 import { clamp01 } from './score_explain.ts';
 import type { ScoreBreakdown, ScoreWeights } from './score_explain.ts';
 import { SCORE_DIMS, DEFAULT_WEIGHTS, combineSubScores, buildScoreWeights } from './score_explain.ts';
@@ -1253,12 +1253,21 @@ export async function scoreAndAssert(
   // the distribution. Gate at the write path so every caller is covered.
   // Workspace policy.scorable_types lists which is_a values are scoreable;
   // default to ['account'] for back-compat with the old kind enum.
-  const [typeRes, polRes] = await Promise.all([
+  //
+  // Through getWorkspaceConfig, not a direct select. This reads one field,
+  // scorable_types, and a direct `select('policy')` ships the entire policy
+  // column to get it: 16.6 KB on the busiest workspace, about 29 KB on the wire
+  // once PostgREST re-renders the jsonb as text. Once per entity scored, so a
+  // full pass over 2,132 accounts moved 62 MB to read an array of strings.
+  // c317033 fixed exactly this shape one level up in scoreEntity and this call
+  // was left behind. The config read is cached in-process for 15s, which covers
+  // a batch.
+  const [typeRes, policy] = await Promise.all([
     supabase.from('facts').select('id, object_text, supersedes')
       .eq('workspace_id', actor.workspace_id)
       .eq('subject_entity', entity_id)
       .eq('predicate', 'is_a'),
-    supabase.from('workspaces').select('policy').eq('id', actor.workspace_id).maybeSingle(),
+    getPolicy(supabase, actor.workspace_id),
   ]);
   const typeRows = (typeRes.data ?? []) as Array<{ id: string; object_text: string | null; supersedes: string | null }>;
   const typeSuperseded = new Set(typeRows.map((r) => r.supersedes).filter((x): x is string => !!x));
@@ -1266,8 +1275,8 @@ export async function scoreAndAssert(
     .filter((r) => !typeSuperseded.has(r.id))
     .map((r) => r.object_text)
     .filter((s): s is string => !!s);
-  const scorableTypes: string[] = Array.isArray(polRes.data?.policy?.scorable_types)
-    ? polRes.data!.policy.scorable_types as string[]
+  const scorableTypes: string[] = Array.isArray(policy.scorable_types)
+    ? policy.scorable_types
     : ['account'];
   if (!entityTypes.some((t) => scorableTypes.includes(t))) return null;
 
