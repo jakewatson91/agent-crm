@@ -18,7 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, hiringEventDate, pickAnchorCandidates, UNPROVEN_ARGUMENT_DRAFT_LIMIT, cannotWriteAbout, type StepPurpose, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
+import { breakdownFromFacts, callTool, pastOutcomes as pastOutcomesFn, findContacts as findContactsFn, linkContactToAccount as linkContactFn, scoreAndAssert as scoreAndAssertFn, selectAction, buildThresholds, loadActionContext, loadBestContactScore, chatCompleteForWorkspace, buildDrafterDecision, renderAttributesProse, scoreFacts, pickDraftAngle, setOutreachStage, resolveOrCreateEntity, looksLikeEntityName, recordActivityMarker, ACTIVITY_MARKERS, resolveQualification, isSubstantiveFact, contactContentFacts, applyContentDate, unreadableContentDate, researchSignalMagnitude, DEFAULT_DECAY_HALF_LIFE_DAYS, resolveBrief, resolveMaxOutputTokens, resolveHappenedAt, hiringEventDate, pickAnchorCandidates, UNPROVEN_ARGUMENT_DRAFT_LIMIT, cannotWriteAbout, type StepPurpose, type WorkspacePolicy, type BriefQuestion, type FactScore, type AngleDecision } from '@agent-crm/tools';
 // chatComplete is wrapped via chatCompleteForWorkspace from @agent-crm/tools.
 import { embed, apiCallErrorDetail } from '@agent-crm/primitives';
 import { createHash } from 'node:crypto';
@@ -564,24 +564,35 @@ export async function runAgent(
       }
     }
 
-    // Scoring v2: rebuild the breakdown from the sub-score facts the scorer
-    // most recently asserted on this entity. If the scorer has never run for
-    // this entity (no `score_total` fact yet), we fall back to `icp_fit` as
-    // icp_total with empty rubric — action_selector treats that as low
-    // signal_strength and will route to deep_research or continue.
+    // Scoring v2: the breakdown from the scorer's last pass on this entity.
+    //
+    // It comes out of the icp_fit_breakdown JSON, which is the only place four
+    // of the six dimensions still exist. industry_match, stage_match, recency
+    // and graph_proximity stopped being written as their own fact rows in
+    // 7fd71bc: the JSON already carried every number, and a second copy per
+    // dimension per pass was 60,025 rows and 60,025 events that nothing
+    // computed from. Reading them back off those rows here would have handed
+    // selectAction four zeros. breakdownFromFacts is the read three other call
+    // sites already share, and it keeps unknown_dims, which a row-by-row read
+    // cannot recover ("no scored connections" vs "its connections are a bad
+    // fit").
+    //
+    // Nothing at all — the scorer has never run here — falls back to icp_fit as
+    // the total against a zeroed breakdown, which action_selector reads as low
+    // signal_strength and routes to deep_research or continue.
     function readScoreFact(predicate: string, fallback: number = 0): number {
       const f = activeFacts.find((x) => x.predicate === predicate);
       if (!f) return fallback;
       const v = parseFloat(f.object_text ?? '');
       return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : fallback;
     }
-    const scoreBreakdown = {
-      industry_match: readScoreFact('score_industry_match'),
-      stage_match: readScoreFact('score_stage_match'),
-      signal_strength: readScoreFact('score_signal_strength'),
-      evidence_depth: readScoreFact('score_evidence_depth'),
-      recency: readScoreFact('score_recency'),
-      graph_proximity: readScoreFact('score_graph_proximity'),
+    const scoreBreakdown = breakdownFromFacts(activeFacts)?.breakdown ?? {
+      industry_match: 0,
+      stage_match: 0,
+      signal_strength: 0,
+      evidence_depth: 0,
+      recency: 0,
+      graph_proximity: 0,
       rrf_prefilter: 0,
     };
     const icpTotal = readScoreFact('score_total', readScoreFact('icp_fit'));

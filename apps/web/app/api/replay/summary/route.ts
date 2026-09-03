@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@agent-crm/db';
 import { pickSourceUrl, type StructuredTags } from '../../_lib/source_url';
+import { SCORE_DIMS } from '@agent-crm/tools';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -115,14 +116,22 @@ export async function GET(req: NextRequest) {
     .slice(0, 5);
   const newestIds = newestSlice.map((e) => e.id);
 
-  // Pull every score_* + icp_fit fact for these entities, latest-wins.
+  // Score rows + the breakdown JSON for these entities, latest-wins.
+  //
+  // The six dimensions are read off icp_fit_breakdown, not off a row each.
+  // Four of them (industry_match, stage_match, recency, graph_proximity) have
+  // no row of their own any more — 7fd71bc stopped writing a duplicate per
+  // dimension per pass, since the JSON already held the number. Reading rows
+  // here would have quietly dropped four of the seven lines this block draws.
+  // score_total keeps its own row (the breakdown holds dimensions, not the
+  // total), so its trace still points at the fact that recorded it.
   type ScoreFact = { subject_entity: string; predicate: string; object_text: string; id: string; supersedes: string | null };
   const scoreFacts = newestIds.length
     ? await sb.from('facts')
         .select('subject_entity, predicate, object_text, id, supersedes')
         .eq('workspace_id', ws)
         .in('subject_entity', newestIds)
-        .like('predicate', 'score_%')
+        .or('predicate.like.score_%,predicate.eq.icp_fit_breakdown')
         .order('observed_at', { ascending: false })
     : { data: [] as ScoreFact[] };
   const scoreFactsTyped = (scoreFacts.data ?? []) as ScoreFact[];
@@ -131,11 +140,25 @@ export async function GET(req: NextRequest) {
   const activeScoreFacts = scoreFactsTyped.filter((f) => !supersededFactIds.has(f.id));
 
   const scoresByEntity = new Map<string, Record<string, { value: number; fact_id: string }>>();
+  const put = (entity: string, predicate: string, value: number, fact_id: string) => {
+    if (!Number.isFinite(value)) return;
+    if (!scoresByEntity.has(entity)) scoresByEntity.set(entity, {});
+    scoresByEntity.get(entity)![predicate] = { value, fact_id };
+  };
   for (const f of activeScoreFacts) {
-    const v = parseFloat(f.object_text);
-    if (!Number.isFinite(v)) continue;
-    if (!scoresByEntity.has(f.subject_entity)) scoresByEntity.set(f.subject_entity, {});
-    scoresByEntity.get(f.subject_entity)![f.predicate] = { value: v, fact_id: f.id };
+    if (f.predicate === 'icp_fit_breakdown') continue;
+    put(f.subject_entity, f.predicate, parseFloat(f.object_text), f.id);
+  }
+  // Dimensions from the breakdown win over any surviving row of the same name:
+  // it is written on every pass, so it is never the staler of the two.
+  for (const f of activeScoreFacts) {
+    if (f.predicate !== 'icp_fit_breakdown') continue;
+    let dims: Record<string, unknown>;
+    try { dims = JSON.parse(f.object_text) as Record<string, unknown>; } catch { continue; }
+    for (const dim of SCORE_DIMS) {
+      const v = dims[dim];
+      if (typeof v === 'number') put(f.subject_entity, `score_${dim}`, v, f.id);
+    }
   }
 
   const newestEntities = newestSlice.map((e) => ({

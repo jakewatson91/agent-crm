@@ -7,12 +7,12 @@
  *     refuses to delete any event a fact references;
  *   - only whitelisted fact predicates roll up (prune_fact_history, 0058):
  *     the current value of every fact is untouched, and old (superseded)
- *     readings only go once a later same-day reading exists to stand in for
- *     them, so a metric built from the history still spans the account's
- *     full life at daily resolution. Freeing a fact this way is also what
- *     lets its assert_fact/supersede_fact event clear on the same pass,
- *     since prune_events refuses to delete an event any fact still points
- *     to.
+ *     readings only go once a later reading in the same period exists to
+ *     stand in for them, so a metric built from the history still spans the
+ *     account's full life at whatever resolution fact_history_grain sets.
+ *     Freeing a fact this way is also what lets its assert_fact /
+ *     supersede_fact event clear on the same pass, since prune_events refuses
+ *     to delete an event any fact still points to.
  *
  * Driven entirely by workspaces.policy.retention (off by default). Callable from
  * the launchd loop (run_loop) and from an Inngest cron; an internal ~daily
@@ -37,9 +37,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // `.in('id', [...])`, which PostgREST encodes into the query string of a PATCH
 // request — 2000 UUIDs blew the URL length limit ("Bad Request", also
 // confirmed 2026-08-14), so that path needs a much smaller batch.
-const EVENT_PRUNE_BATCH = 2000;
+//
+// The fact and event batches were 2000 and are 500, measured 2026-09-03 on the
+// first monthly-grain pass. A batch's cost is mostly the scan that finds the
+// candidates, not the rows it deletes, so it is worst when there is a backlog
+// and the caches are cold: the first batch of 2000 facts took 5.4s and the
+// first batch of 2000 events took 7.0s, both against an 8s wall, and the same
+// call over PostgREST was killed mid-batch. Later batches ran in under a
+// second. A batch that cannot finish is not slow, it is a job that makes zero
+// progress and stays stuck forever, so the size has to fit the cold case with
+// room, and 500 costs only more round trips.
+const EVENT_PRUNE_BATCH = 500;
 const EMBEDDING_ARCHIVE_BATCH = 200;
-const FACT_HISTORY_PRUNE_BATCH = 2000;
+const FACT_HISTORY_PRUNE_BATCH = 500;
 
 // pg_net's internal async-HTTP response log (net._http_response) — not app
 // data, not workspace-scoped. Found holding ~46MB of dead rows against ~500
@@ -113,16 +123,18 @@ export async function runRetention(
     }
   }
 
-  // 2. Roll up old fact history (migration 0058): for whitelisted predicates
-  //    (score_total and its scoring inputs — never a one-off account fact),
-  //    delete superseded readings older than the window once a later
-  //    same-day reading exists to replace them. Keeps one reading per
-  //    entity/predicate/day forever plus the chain's original — a metric
-  //    built from this still spans the account's full history, just at
-  //    daily instead of per-recompute resolution past the window. Runs
-  //    before the event prune below so the assert_fact/supersede_fact
-  //    events those deleted facts were the last reference to become
-  //    eligible in the same pass.
+  // 2. Roll up old fact history (migrations 0058, 0060): for whitelisted
+  //    predicates (score_total and its scoring inputs — never a one-off
+  //    account fact), delete superseded readings older than the window once a
+  //    later reading in the same period exists to replace them. Keeps one
+  //    reading per entity/predicate/period forever plus the chain's original —
+  //    a metric built from this still spans the account's full history, just
+  //    at the grain's resolution instead of per-recompute past the window.
+  //    'day' is the default and reaches very little on a book that scores about
+  //    once a day; 'month' is what a workspace sets when it would rather have
+  //    the space than the resolution. Runs before the event prune below so the
+  //    assert_fact/supersede_fact events those deleted facts were the last
+  //    reference to become eligible in the same pass.
   const factTtl = ret.fact_history_ttl_days ?? 0;
   // A structural floor, not just config discipline: even if a predicate that
   // scoring treats as real evidence about the account ever lands in this
@@ -144,6 +156,7 @@ export async function runRetention(
         p_predicates: factPredicates,
         p_cutoff: cutoff,
         p_limit: FACT_HISTORY_PRUNE_BATCH,
+        p_grain: ret.fact_history_grain ?? 'day',
       });
       if (pruned.error) {
         console.error(`[retention ${workspace_id}] fact history prune failed: ${pruned.error.message}`);

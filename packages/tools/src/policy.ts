@@ -771,14 +771,24 @@ export interface LifecyclePolicy {
  * fact_history_ttl_days + prunable_fact_predicates: a rollup, not a delete.
  *   A fact's CURRENT value is never touched by this — only replaced
  *   (superseded) values whose predicate is in the list, and only once
- *   there's a newer reading for the same entity+predicate on a LATER
- *   calendar day. One reading per entity per predicate per day survives
- *   forever; same-day re-reads older than the window are what gets dropped.
- *   A metric built from this (e.g. a score trend chart) still spans the
- *   account's full history — it just loses intra-day resolution past the
- *   window instead of losing the metric. Empty list / unset = delete
- *   nothing. Meant for predicates the scorer recomputes on every pass
- *   (score_total and its inputs), not for one-off facts about the account.
+ *   there's a newer reading for the same entity+predicate in a LATER
+ *   period. One reading per entity per predicate per period survives
+ *   forever; earlier re-reads inside the same period, older than the
+ *   window, are what gets dropped. A metric built from this (e.g. a score
+ *   trend chart) still spans the account's full history — it just loses
+ *   resolution inside a period past the window instead of losing the
+ *   metric. Empty list / unset = delete nothing. Meant for predicates the
+ *   scorer recomputes on every pass (score_total and its inputs), not for
+ *   one-off facts about the account.
+ *
+ * fact_history_grain: the period above — 'day' (default) or 'month'.
+ *   A day only collapses re-reads that happened within one calendar day, so
+ *   on a book scored about once a day it reaches almost nothing: measured
+ *   2026-09-03, 1,225 of 111,228 replaced score rows, all from one burst
+ *   day. 'month' reached 18,876 on the same data. The cost is how far back
+ *   the score-history chart can zoom: past the window it keeps one point per
+ *   month, so an old delta is attributed to a month of facts rather than a
+ *   day of them. Inside the window nothing changes either way.
  */
 export interface RetentionPolicy {
   signal_embedding_ttl_days?: number;
@@ -786,6 +796,7 @@ export interface RetentionPolicy {
   prunable_event_actions?: string[];
   fact_history_ttl_days?: number;
   prunable_fact_predicates?: string[];
+  fact_history_grain?: 'day' | 'month';
 }
 
 /**
